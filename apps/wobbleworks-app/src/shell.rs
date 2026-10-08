@@ -671,6 +671,10 @@ impl WobbleApp {
         let tool = self.app.ui.tool;
         if self.last_tool.is_some_and(|t| t != tool) {
             self.audio.play(Sound::Pop);
+            // The button just clicked pops (keyboard shortcuts sparkle at the pointer instead).
+            if let Some(p) = pointer.filter(|p| !canvas.contains(*p)) {
+                self.juice.pop_at(now, Rect::from_center_size(p, vec2(36.0, 36.0)));
+            }
             self.juice.splat(now, at, &[self.theme.sun, self.theme.cool], 8);
         }
         self.last_tool = Some(tool);

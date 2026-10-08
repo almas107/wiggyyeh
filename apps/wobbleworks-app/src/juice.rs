@@ -47,6 +47,8 @@ pub struct Juice {
     seen: HashMap<LayerId, f64>,
     shake: Option<(f64, f32)>,
     particles: Vec<Particle>,
+    /// Spots that pop (a tool button just picked): where, and when.
+    spots: Vec<(Rect, f64)>,
     rng: u64,
 }
 
@@ -60,6 +62,14 @@ impl Juice {
     pub fn shake(&mut self, now: f64, strength: f32) {
         if !self.reduce_motion {
             self.shake = Some((now, strength.clamp(0.0, 20.0)));
+        }
+    }
+
+    /// Make whatever is drawn around `rect` (a button) pop: a quick springy bump in size.
+    pub fn pop_at(&mut self, now: f64, rect: Rect) {
+        if !self.reduce_motion && rect.is_finite() {
+            self.spots.retain(|(_, t)| now - t < POP_SECONDS);
+            self.spots.push((rect, now));
         }
     }
 
@@ -100,7 +110,10 @@ impl Juice {
 
     /// Is anything still moving (so the caller keeps frames coming)?
     pub fn busy(&self, now: f64) -> bool {
-        !self.particles.is_empty() || self.shake.is_some_and(|(t, _)| now - t < SHAKE_SECONDS) || self.seen.values().any(|t| now - t < POP_SECONDS)
+        !self.particles.is_empty()
+            || !self.spots.is_empty()
+            || self.shake.is_some_and(|(t, _)| now - t < SHAKE_SECONDS)
+            || self.seen.values().any(|t| now - t < POP_SECONDS)
     }
 
     /// Apply pops and shake to this frame's shapes and draw the particles. `skip` names layers
@@ -131,7 +144,10 @@ impl Juice {
                 }
             }
         }
-        if shake.is_none() && pops.is_empty() {
+        self.spots.retain(|(_, t)| now - t < POP_SECONDS);
+        let spots: Vec<(Rect, f32)> =
+            if self.reduce_motion { Vec::new() } else { self.spots.iter().map(|(r, t)| (*r, ((now - t) / POP_SECONDS) as f32)).collect() };
+        if shake.is_none() && pops.is_empty() && spots.is_empty() {
             self.particles_draw(ctx, now);
             return;
         }
@@ -146,6 +162,24 @@ impl Juice {
                 let c = bounds.center().to_vec2();
                 list.transform(TSTransform::from_translation(c) * TSTransform::from_scaling(scale) * TSTransform::from_translation(-c));
             }
+            // Spots: shapes centred inside the spot grow and settle back, on any layer.
+            for (spot, f) in &spots {
+                let k = 1.0 + 0.28 * (f * std::f32::consts::PI).sin() * (1.0 - f);
+                let c = spot.center().to_vec2();
+                let t = TSTransform::from_translation(c) * TSTransform::from_scaling(k) * TSTransform::from_translation(-c);
+                for &layer in &layers {
+                    let Some(list) = g.get_mut(layer) else { continue };
+                    for i in 0..list.next_idx().0 {
+                        list.mutate_shape(egui::layers::ShapeIdx(i), |cs| {
+                            let b = cs.shape.visual_bounding_rect();
+                            if b.is_finite() && spot.contains(b.center()) && b.width() <= spot.width() * 1.5 {
+                                cs.shape.transform(t);
+                                cs.clip_rect = cs.clip_rect.expand(spot.width() * 0.3);
+                            }
+                        });
+                    }
+                }
+            }
             if let Some(off) = shake {
                 for &layer in &layers {
                     if let Some(list) = g.get_mut(layer) {
@@ -154,7 +188,7 @@ impl Juice {
                 }
             }
         });
-        if !pops.is_empty() || shake.is_some() {
+        if !pops.is_empty() || shake.is_some() || !spots.is_empty() {
             ctx.request_repaint();
         }
         self.particles_draw(ctx, now);
@@ -251,5 +285,13 @@ mod tests {
         }
         assert_eq!(first, Some(0.0), "the window was seen opening");
         assert!(!j.busy(0.5));
+        j.pop_at(1.0, Rect::from_center_size(pos2(5.0, 5.0), vec2(20.0, 20.0)));
+        assert!(j.busy(1.1));
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.painter().rect_filled(Rect::from_center_size(pos2(5.0, 5.0), vec2(10.0, 10.0)), 0.0, Color32::RED);
+            j.apply(&ctx, 1.1, &[]);
+        })
+        .textures_delta
+        .clear();
     }
 }

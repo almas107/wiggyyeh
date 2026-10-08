@@ -153,9 +153,16 @@ impl Mascot {
         }
         // Eyes: follow the pointer; wide when surprised; shut when sleepy.
         let pointer = ctx.pointer_hover_pos().filter(|q| q.is_finite());
+        // Blink every few seconds; when the pointer is still, glance around.
+        let blink = motion && (now % 4.3) < 0.12 && mood != Mood::Surprised;
+        let still = ctx.input(|i| i.pointer.time_since_last_movement()) > 3.0;
+        let glance = Vec2::angled((now * 0.7).sin() as f32 * 2.2) * 2.4;
         for side in [-1.0f32, 1.0] {
             let eye = centre + vec2(side * w * 0.17, -h * 0.12);
             match mood {
+                _ if blink => {
+                    rough::line(&p, &rough::segment(eye - vec2(5.0, 0.0), eye + vec2(5.0, 0.0), 3), look.ink(2.0), 0xb11c, frame, 0.3);
+                }
                 Mood::Sleepy => {
                     rough::line(&p, &rough::segment(eye - vec2(5.0, 0.0), eye + vec2(5.0, 0.0), 3), look.ink(2.0), 0xe7e, frame, 0.4);
                 }
@@ -163,7 +170,11 @@ impl Mascot {
                     let r = if mood == Mood::Surprised { 7.5 } else { 6.0 };
                     p.add(Shape::circle_filled(eye, r, Color32::WHITE));
                     p.add(Shape::circle_stroke(eye, r, look.ink(1.8)));
-                    let look_at = pointer.map_or(Vec2::ZERO, |q| (q - eye).normalized() * (r * 0.4));
+                    let look_at = match pointer {
+                        Some(q) if !(still && motion) => (q - eye).normalized() * (r * 0.4),
+                        _ if motion => glance,
+                        _ => Vec2::ZERO,
+                    };
                     let look_at = if look_at.is_finite() { look_at } else { Vec2::ZERO };
                     p.add(Shape::circle_filled(eye + look_at, r * 0.45, look.t.ink));
                     p.add(Shape::circle_filled(eye + look_at - vec2(1.2, 1.2), 1.1, Color32::WHITE));
