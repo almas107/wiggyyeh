@@ -43,9 +43,14 @@ pub fn codec_services() -> Services {
 
 /// `name` with its extension replaced by `.psd` (`cat.png` → `cat.psd`, `Wobble` → `Wobble.psd`).
 pub fn psd_name(name: &str) -> String {
+    with_extension(name, "psd")
+}
+
+/// `name` with its extension replaced by `ext` (or `ext` added when it has none).
+pub fn with_extension(name: &str, ext: &str) -> String {
     let path = std::path::Path::new(name);
     let has_ext = path.extension().is_some() && path.file_stem().is_some_and(|s| !s.is_empty());
-    if has_ext { path.with_extension("psd").to_string_lossy().into_owned() } else { format!("{name}.psd") }
+    if has_ext { path.with_extension(ext).to_string_lossy().into_owned() } else { format!("{name}.{ext}") }
 }
 
 #[cfg(test)]

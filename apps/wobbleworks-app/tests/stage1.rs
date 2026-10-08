@@ -83,7 +83,7 @@ fn draw_save_psd_and_reopen() {
 fn palette_sets_the_foreground_and_new_starts_over() {
     let (mut w, _) = app();
     w.pick_colour(1).unwrap();
-    assert_eq!(w.colour, 1);
+    assert_eq!(w.colour, Some(1));
     w.new_picture().unwrap();
     assert_eq!(w.app.session.documents().len(), 2);
     // The brush paints the palette colour when the stroke names none.
@@ -178,7 +178,8 @@ mod ui {
     }
 
     /// Offscreen screenshot through wgpu, for looking at the UI:
-    /// `WOBBLE_SNAPSHOT=shot.png WOBBLE_ADVANCED=1 cargo test -p wobbleworks-app snapshot -- --ignored`.
+    /// `WOBBLE_SNAPSHOT=shot.png WOBBLE_ADVANCED=1 cargo test` (or `WOBBLE_DRAWER=1`, `WOBBLE_MIXER=1`,
+    /// `WOBBLE_WIDTH=390`): `cargo test -p wobbleworks-app snapshot -- --ignored`.
     #[test]
     #[ignore = "needs a GPU or software renderer; run on demand"]
     fn snapshot() {
@@ -198,6 +199,8 @@ mod ui {
         if std::env::var("WOBBLE_ADVANCED").is_ok() {
             h.state_mut().set_simple(false);
         }
+        h.state_mut().show_tools = std::env::var("WOBBLE_DRAWER").is_ok();
+        h.state_mut().show_mixer = std::env::var("WOBBLE_MIXER").is_ok();
         h.run_steps(6);
         h.render().unwrap().save(&out).unwrap();
     }

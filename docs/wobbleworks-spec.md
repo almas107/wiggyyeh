@@ -113,3 +113,23 @@ deliverable. Mine it, then delete it once the new app replaces it:
     restyles it, probably via a backdrop hook in `ui-egui`); Esc in simple mode drops to the
     advanced editor (PhotoCraft's full-screen exit); no preferences persistence yet; the bar is
     plain egui (stage 3).
+- **Stage 3 (2026-10-08): first pass done, pulled forward at the user's request** ("looks like a
+  Photoshop ripoff"; asked for a different font and colours and hand-painted containers and
+  buttons). The user chose a chunky pixel font defined in code (no font files: craft-fonts has no
+  playful Latin face) and the Bubblegum palette.
+  - `pixfont.rs` (5 × 7 glyphs + descenders, all printable ASCII), `rough.rs` (wobbly marker
+    outlines, smooth-noise edges that boil over 3 frames, hard shadows, blobs), `widgets.rs`
+    (buttons that rise on hover and squash on press, tool tiles, paint-blob swatches, sliders,
+    painted cards, boiling logo), `icons.rs` (hand-drawn tool icons), `theme.rs` (presets;
+    PhotoCraft's `Tokens` recoloured over its light Studio layout, re-applied whenever PhotoCraft
+    resets its theme).
+  - Simple mode: top bar (New, Open, Save PSD, Export PNG, Undo/Redo, Advanced), a 20-tool strip
+    plus a "More" drawer with all 49 PhotoCraft tools, a paint dock (16 blobs, colour mixer, size and
+    opacity via `tools.setBrush`, tool name, picture switcher, status), the canvas as a paper sheet
+    (dots, wobbly outline, hard shadow; PhotoCraft's pasteboard set to the paper colour). Phones:
+    icon-only top bar, tools in a scrolling row above the dock.
+  - WigglyPaint licence checked on its itch.io page: code MIT, assets CC0. Nothing copied; credited
+    in `ATTRIBUTION.md` as inspiration, with rows for the pixel font and icons.
+  - Still open: WigglyPaint-style brush strip (wiggle brushes are stage 2), mascot and sound (stage
+    4), theme picker and dark mode in settings, a restyle of PhotoCraft's own panel widgets beyond
+    colours (stage 5), the logo's ink letters read a bit jumbled while boiling.
