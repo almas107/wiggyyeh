@@ -1,218 +1,198 @@
-//! Chunky cartoon widgets: outlined buttons with hard drop shadows that squash when pressed,
-//! icon tiles, swatches and collapsible cards. When "boiling UI" is on, outlines jitter by half
-//! a pixel in step with the canvas, like the drawing they sit around.
+//! Hand-painted widgets: marker-outlined buttons with hard shadows that rise on hover and squash
+//! when pressed, icon tiles, paint-blob swatches, wobbly sliders and painted cards. Labels use the
+//! pixel font.
 
-use egui::{Align2, Color32, FontId, Id, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2, vec2};
+use egui::{Color32, Rect, Response, Sense, Shape, Stroke, Ui, Vec2, pos2, vec2};
 
-use crate::icons::{self, Icon};
-use crate::theme::{Look, mix};
+use crate::pixfont;
+use crate::rough::{self, Paint};
+use crate::theme::{Theme, mix};
 
-/// Paint the chunky body of a widget: shadow, fill, outline. Returns the body rect.
-fn body(ui: &Ui, look: &Look, rect: Rect, resp: &Response, fill: Color32, enabled: bool) -> Rect {
-    let pressed = resp.is_pointer_button_down_on() && enabled;
-    let depth = look.shadow.clamp(0.0, 12.0);
-    let j = look.jitter(resp.id);
-    let r = rect.translate(j);
-    let r = if pressed { r.translate(vec2(depth, depth) * 0.8) } else { r };
-    let p = ui.painter();
-    if !pressed && depth > 0.0 {
-        p.rect_filled(rect.translate(vec2(depth, depth) * 0.6 + j), look.radius(), if enabled { look.t.shadow } else { mix(look.t.shadow, look.t.card, 0.6) });
+/// Everything a widget needs to paint itself.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Look {
+    pub t: Theme,
+    /// The boil frame (see [`rough::boil_frame`]).
+    pub frame: u64,
+}
+
+impl Look {
+    pub fn ink(&self, width: f32) -> Stroke {
+        Stroke::new(width, self.t.ink)
     }
-    let fill = if !enabled {
-        mix(fill, look.t.paper, 0.5)
-    } else if resp.hovered() && !pressed {
-        mix(fill, look.t.sun, 0.22)
-    } else {
-        fill
-    };
-    p.rect(r, look.radius(), fill, Stroke::new(look.line, if enabled { look.t.ink } else { mix(look.t.ink, look.t.card, 0.5) }), StrokeKind::Inside);
+}
+
+/// Text scale for labels and buttons (one font pixel = 2 points).
+pub const TEXT: f32 = 2.0;
+/// Hard shadow depth.
+const DEPTH: f32 = 4.0;
+
+/// How far a widget is lifted (hover) or pressed, eased (0 = resting).
+fn motion(ui: &Ui, resp: &Response, enabled: bool) -> (f32, f32) {
+    let hover = ui.ctx().animate_bool_with_time(resp.id.with("hover"), enabled && resp.hovered(), 0.12);
+    let press = ui.ctx().animate_bool_with_time(resp.id.with("press"), enabled && resp.is_pointer_button_down_on(), 0.05);
+    (hover, press)
+}
+
+/// The painted body of a button-like widget in `rect`; returns the rect its content goes in.
+fn body(ui: &Ui, look: &Look, rect: Rect, resp: &Response, fill: Color32, enabled: bool, radius: f32) -> Rect {
+    let (hover, press) = motion(ui, resp, enabled);
+    // Rest with a shadow; lift a little on hover; squash into the shadow when pressed.
+    let lift = vec2(-1.0, -1.5) * hover * (1.0 - press) + vec2(DEPTH, DEPTH) * 0.8 * press;
+    let squash = 1.0 - 0.05 * press;
+    let r = Rect::from_center_size(rect.center() + lift, vec2(rect.width() * (2.0 - squash), rect.height() * squash));
+    let fill = if !enabled { mix(fill, look.t.paper, 0.55) } else { mix(fill, look.t.sun, 0.3 * hover * if fill == look.t.card { 1.0 } else { 0.4 }) };
+    let ink = if enabled { look.t.ink } else { mix(look.t.ink, look.t.paper, 0.55) };
+    let shadow = (enabled && press < 0.99).then(|| (vec2(DEPTH, DEPTH) * (1.0 - press) - lift.max(Vec2::ZERO), look.t.shadow));
+    rough::boxed(ui.painter(), r, &Paint { fill, ink: Stroke::new(2.5, ink), shadow, radius, wobble: 1.4 }, resp.id.value(), look.frame);
     if resp.has_focus() {
-        p.rect_stroke(r.expand(3.0), look.radius(), Stroke::new(2.5, look.t.hot), StrokeKind::Outside);
+        rough::boxed(
+            ui.painter(),
+            r.expand(4.0),
+            &Paint { fill: Color32::TRANSPARENT, ink: Stroke::new(2.0, look.t.hot), shadow: None, radius: radius + 4.0, wobble: 1.0 },
+            resp.id.value() ^ 7,
+            look.frame,
+        );
     }
     r
 }
 
-/// A text button. `on` shows it toggled.
-pub fn button(ui: &mut Ui, look: &Look, text: &str, on: bool) -> Response {
-    button_ex(ui, look, text, on, true)
-}
-
-pub fn button_ex(ui: &mut Ui, look: &Look, text: &str, on: bool, enabled: bool) -> Response {
-    let font = egui::TextStyle::Button.resolve(ui.style());
-    let galley = ui.painter().layout_no_wrap(text.to_owned(), font, look.t.ink);
-    let pad = ui.spacing().button_padding;
-    let size = vec2(galley.size().x + pad.x * 2.0, (galley.size().y + pad.y * 2.0).max(ui.spacing().interact_size.y)) + Vec2::splat(look.shadow * 0.6);
-    let (rect, resp) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
-    if ui.is_rect_visible(rect) {
-        let inner = Rect::from_min_size(rect.min, rect.size() - Vec2::splat(look.shadow * 0.6));
-        let r = body(ui, look, inner, &resp, if on { look.t.sun } else { look.t.card }, enabled);
-        let color = if enabled { look.t.ink } else { mix(look.t.ink, look.t.card, 0.5) };
-        ui.painter().galley(r.center() - galley.size() / 2.0, galley, color);
-    }
+fn cursor(resp: Response, enabled: bool) -> Response {
     resp.on_hover_cursor(if enabled { egui::CursorIcon::PointingHand } else { egui::CursorIcon::NotAllowed })
 }
 
-/// A square icon tile, optionally with a caption (Settings → Look → "Show tool names").
-pub fn icon_button(ui: &mut Ui, look: &Look, icon: Icon, on: bool, tip: &str, caption: Option<&str>, accent: Color32) -> Response {
-    icon_button_sized(ui, look, icon, on, tip, caption, accent, 38.0, true)
+/// A chunky pixel-font button. `on` shows it toggled.
+pub fn button(ui: &mut Ui, look: &Look, text: &str, on: bool, enabled: bool) -> Response {
+    let ts = pixfont::size(text, TEXT);
+    let size = vec2((ts.x + 24.0).max(36.0), 36.0) + Vec2::splat(DEPTH);
+    let (rect, resp) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, on, text));
+    if ui.is_rect_visible(rect) {
+        let inner = Rect::from_min_size(rect.min, rect.size() - Vec2::splat(DEPTH));
+        let fill = if on { look.t.sun } else { look.t.card };
+        let r = body(ui, look, inner, &resp, fill, enabled, 11.0);
+        let ink = if enabled { look.t.ink } else { mix(look.t.ink, look.t.paper, 0.5) };
+        pixfont::paint_centered(ui.painter(), r.center(), text, TEXT, ink, None);
+    }
+    cursor(resp, enabled)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn icon_button_sized(
+/// A paint-blob colour swatch. `on` marks the current colour.
+pub fn swatch(ui: &mut Ui, look: &Look, colour: Color32, on: bool, radius: f32) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(radius * 2.0 + 6.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let (hover, press) = motion(ui, &resp, true);
+        let grow = 1.0 + 0.12 * hover - 0.1 * press + if on { 0.08 } else { 0.0 };
+        let c = rect.center() - vec2(1.5, 1.5);
+        let seed = resp.id.value();
+        rough::blob(ui.painter(), c, radius * grow, &blob_paint(colour, look.ink(2.0), Some((vec2(3.0, 3.0), look.t.shadow))), seed, look.frame);
+        if on {
+            rough::blob(ui.painter(), c, radius * grow + 4.0, &blob_paint(Color32::TRANSPARENT, Stroke::new(2.0, look.t.ink), None), seed ^ 3, look.frame);
+            // A white glint, like a drop of wet paint.
+            ui.painter().circle_filled(c + vec2(-radius * 0.35, -radius * 0.35), radius * 0.18, Color32::from_white_alpha(200));
+        }
+    }
+    cursor(resp, true)
+}
+
+/// A wobbly slider with a pixel-font label and value. Returns the response; `value` changes while
+/// dragging or clicking along the track.
+pub fn slider(
     ui: &mut Ui,
     look: &Look,
-    icon: Icon,
-    on: bool,
-    tip: &str,
-    caption: Option<&str>,
-    accent: Color32,
-    side: f32,
-    enabled: bool,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    width: f32,
+    show: impl Fn(f32) -> String,
 ) -> Response {
-    let cap = caption.filter(|_| look.labels);
-    let extra = if cap.is_some() { 14.0 } else { 0.0 };
-    let size = vec2(side, side + extra) + Vec2::splat(look.shadow * 0.6);
-    let (rect, resp) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
-    if ui.is_rect_visible(rect) {
-        let inner = Rect::from_min_size(rect.min, rect.size() - Vec2::splat(look.shadow * 0.6));
-        let r = body(ui, look, inner, &resp, if on { look.t.sun } else { look.t.card }, enabled);
-        let ink = if enabled { look.t.ink } else { mix(look.t.ink, look.t.card, 0.55) };
-        let icon_rect = Rect::from_min_size(r.min, vec2(r.width(), r.width())).shrink(r.width() * 0.16);
-        icons::paint(ui.painter(), icon_rect, icon, ink, if enabled { accent } else { ink });
-        if let Some(c) = cap {
-            ui.painter().text(egui::pos2(r.center().x, r.max.y - 8.0), Align2::CENTER_CENTER, c, FontId::proportional(9.5), ink);
-        }
+    let (lo, hi) = (*range.start(), *range.end());
+    let width = width.max(80.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 40.0), Sense::click_and_drag());
+    let track = Rect::from_min_max(pos2(rect.min.x + 10.0, rect.min.y + 26.0), pos2(rect.max.x - 10.0, rect.min.y + 26.0));
+    if (resp.dragged() || resp.clicked())
+        && let Some(p) = resp.interact_pointer_pos()
+        && track.width() > 0.0
+        && hi > lo
+    {
+        let f = ((p.x - track.min.x) / track.width()).clamp(0.0, 1.0);
+        *value = lo + f * (hi - lo);
     }
-    let resp = if tip.is_empty() { resp } else { resp.on_hover_text(tip) };
-    resp.on_hover_cursor(if enabled { egui::CursorIcon::PointingHand } else { egui::CursorIcon::NotAllowed })
+    if !value.is_finite() {
+        *value = lo;
+    }
+    *value = value.clamp(lo, hi);
+    if ui.is_rect_visible(rect) {
+        let f = if hi > lo { (*value - lo) / (hi - lo) } else { 0.0 };
+        let p = ui.painter();
+        pixfont::paint(p, pos2(rect.min.x + 2.0, rect.min.y + 2.0), label, TEXT, look.t.ink, |_| 0.0);
+        let v = show(*value);
+        let vs = pixfont::size(&v, TEXT);
+        pixfont::paint(p, pos2(rect.max.x - vs.x - 2.0, rect.min.y + 2.0), &v, TEXT, look.t.dim, |_| 0.0);
+        let seed = resp.id.value();
+        let a = track.left_center();
+        let b = track.right_center();
+        let knob = a + (b - a) * f;
+        rough::line(p, &rough::segment(a, b, 24), Stroke::new(5.0, mix(look.t.ink, look.t.card, 0.75)), seed, look.frame, 0.8);
+        rough::line(p, &rough::segment(a, knob, 24), Stroke::new(5.0, mix(look.t.cool, look.t.ink, 0.3)), seed, look.frame, 0.8);
+        let (hover, press) = motion(ui, &resp, true);
+        rough::blob(
+            p,
+            knob,
+            8.0 + 2.0 * hover - 1.5 * press,
+            &blob_paint(look.t.card, look.ink(2.5), Some((vec2(2.0, 2.0), look.t.shadow))),
+            seed ^ 11,
+            look.frame,
+        );
+    }
+    resp.on_hover_cursor(egui::CursorIcon::ResizeHorizontal)
 }
 
-/// A colour swatch; `on` rings it.
-pub fn swatch(ui: &mut Ui, look: &Look, c: Color32, on: bool, side: f32) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(side), Sense::click());
+fn blob_paint(fill: Color32, ink: Stroke, shadow: Option<(Vec2, Color32)>) -> Paint {
+    Paint { fill, ink, shadow, radius: 0.0, wobble: 0.0 }
+}
+
+/// Pixel-font text.
+pub fn label(ui: &mut Ui, look: &Look, text: &str, scale: f32, colour: Color32) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(pixfont::size(text, scale) + vec2(0.0, 2.0 * scale), Sense::hover());
+    if ui.is_rect_visible(rect) {
+        pixfont::paint(ui.painter(), rect.min, text, scale, colour, |_| 0.0);
+    }
+    let _ = look;
+    resp
+}
+
+/// The WobbleWorks logo: boiling pixel letters in alternating colours with a hard shadow.
+pub fn logo(ui: &mut Ui, look: &Look, scale: f32) -> Response {
+    let text = "WobbleWorks";
+    // As tall as a button, so the letters sit on the bar's centre line with room to jiggle.
+    let size = pixfont::size(text, scale) + vec2(scale, 0.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(size.x, size.y.max(44.0)), Sense::hover());
     if ui.is_rect_visible(rect) {
         let p = ui.painter();
-        let r = rect.shrink(1.0).translate(look.jitter(resp.id));
-        let rr = egui::CornerRadius::same((look.round * 0.6).clamp(0.0, 12.0) as u8);
-        if c.a() < 255 {
-            checker(p, r, 4.0, Color32::WHITE, Color32::from_gray(200));
+        let jiggle = |i: usize| (rough::hash(look.frame + 1, i as u64) * 0.6).round();
+        let pos = pos2(rect.min.x, (rect.center().y - size.y / 2.0 - 2.0).round());
+        pixfont::paint(p, pos + vec2(scale, scale), text, scale, look.t.shadow, jiggle);
+        let colours = [look.t.hot, look.t.ink];
+        // One letter at a time, so each gets its own colour.
+        let mut x = pos.x;
+        for (i, ch) in text.chars().enumerate() {
+            let s = ch.to_string();
+            let y = pos.y + jiggle(i) * scale;
+            let c = colours.get(usize::from(i >= 6)).copied().unwrap_or(look.t.ink);
+            pixfont::paint(p, pos2(x, y), &s, scale, c, |_| 0.0);
+            x += pixfont::size(&s, scale).x + scale;
         }
-        p.rect(r, rr, c, Stroke::new(look.line.min(2.0), look.t.ink), StrokeKind::Inside);
-        if on {
-            p.rect_stroke(r.expand(2.5), rr, Stroke::new(2.5, look.t.hot), StrokeKind::Outside);
-        }
-        if resp.hovered() {
-            p.rect_stroke(r.expand(1.0), rr, Stroke::new(1.5, look.t.ink), StrokeKind::Outside);
-        }
-    }
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
-}
-
-/// A small checkerboard (for transparent swatches).
-pub fn checker(p: &egui::Painter, r: Rect, cell: f32, a: Color32, b: Color32) {
-    p.rect_filled(r, 0.0, a);
-    let (nx, ny) = ((r.width() / cell).ceil() as i32, (r.height() / cell).ceil() as i32);
-    for y in 0..ny {
-        for x in 0..nx {
-            if (x + y) % 2 == 1 {
-                let c = Rect::from_min_size(r.min + vec2(x as f32 * cell, y as f32 * cell), Vec2::splat(cell)).intersect(r);
-                p.rect_filled(c, 0.0, b);
-            }
-        }
-    }
-}
-
-/// A cartoon card with a clickable header that folds it away. The open state is remembered.
-pub fn card<R>(ui: &mut Ui, look: &Look, id: &str, title: &str, default_open: bool, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
-    let id = Id::new(("wob-card", id));
-    let mut open = ui.data_mut(|d| *d.get_persisted_mut_or(id, default_open));
-    let frame = egui::Frame::new()
-        .fill(look.t.card)
-        .stroke(look.outline())
-        .corner_radius(look.radius())
-        .shadow(look.hard_shadow())
-        .inner_margin(egui::Margin::same(10));
-    let out = frame
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            let head = ui.horizontal(|ui| {
-                let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 18.0), Sense::click());
-                let p = ui.painter();
-                let tri = if open {
-                    vec![r.left_center() + vec2(0.0, -4.0), r.left_center() + vec2(9.0, -4.0), r.left_center() + vec2(4.5, 4.0)]
-                } else {
-                    vec![r.left_center() + vec2(1.0, -5.0), r.left_center() + vec2(9.0, 0.0), r.left_center() + vec2(1.0, 5.0)]
-                };
-                p.add(egui::Shape::convex_polygon(tri, look.t.hot, Stroke::NONE));
-                for dx in [0.0, 0.6] {
-                    p.text(r.left_center() + vec2(16.0 + dx, 0.0), Align2::LEFT_CENTER, title.to_uppercase(), FontId::proportional(11.5), look.t.dim);
-                }
-                resp
-            });
-            if head.inner.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                open = !open;
-            }
-            if open {
-                // Dashed rule under the title, like the original.
-                let y = ui.cursor().top() - 2.0;
-                let (l, r) = (ui.min_rect().left(), ui.max_rect().right());
-                ui.painter().add(egui::Shape::dashed_line(
-                    &[egui::pos2(l, y), egui::pos2(r, y)],
-                    Stroke::new(1.5, mix(look.t.ink, look.t.card, 0.6)),
-                    5.0,
-                    4.0,
-                ));
-                ui.add_space(4.0);
-                Some(add(ui))
-            } else {
-                None
-            }
-        })
-        .inner;
-    ui.data_mut(|d| d.insert_persisted(id, open));
-    ui.add_space(look.shadow.max(2.0) + 4.0);
-    out
-}
-
-/// The title with each letter boiling on its own.
-pub fn wobbly_title(ui: &mut Ui, look: &Look, text: &str, size: f32) -> Response {
-    let font = FontId::proportional(size);
-    let glyphs: Vec<_> = text.chars().map(|c| ui.painter().layout_no_wrap(c.to_string(), font.clone(), look.t.ink)).collect();
-    let w: f32 = glyphs.iter().map(|g| g.size().x + 0.5).sum();
-    let (rect, resp) = ui.allocate_exact_size(vec2(w + 8.0, size * 1.3), Sense::click());
-    let colors = [look.t.hot, look.t.ink, look.t.ink, look.t.ink];
-    let mut x = rect.min.x + 2.0;
-    for (i, g) in glyphs.into_iter().enumerate() {
-        let id = Id::new(("title", i));
-        let j = look.jitter(id) * 2.0;
-        let lift = if i % 2 == 0 { -1.0 } else { 1.0 };
-        let pos = egui::pos2(x, rect.center().y - g.size().y / 2.0 + lift) + j;
-        let c = colors.get(i % colors.len()).copied().unwrap_or(look.t.ink);
-        // Shadowed letters, cartoon style.
-        ui.painter().galley(pos + vec2(look.shadow * 0.5, look.shadow * 0.5), g.clone(), look.t.shadow);
-        x += g.size().x + 0.5;
-        // Faux bold: the default font is light, so draw each letter twice.
-        let ink = if i == 0 { c } else { look.t.ink };
-        ui.painter().galley(pos + vec2(0.8, 0.0), g.clone(), ink);
-        ui.painter().galley(pos, g, ink);
     }
     resp
 }
 
-/// A labelled row: small caps label on the left, controls after it.
-pub fn row<R>(ui: &mut Ui, look: &Look, label: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
-    ui.horizontal(|ui| {
-        if !label.is_empty() {
-            ui.add_sized([58.0, 18.0], egui::Label::new(egui::RichText::new(label.to_uppercase()).size(10.5).color(look.t.dim)));
-        }
-        // Sliders fill what's left, leaving room for their value box.
-        ui.spacing_mut().slider_width = (ui.available_width() - 72.0).max(48.0);
-        add(ui)
-    })
-    .inner
-}
-
-/// A small dim hint paragraph.
-pub fn hint(ui: &mut Ui, look: &Look, text: &str) {
-    ui.label(egui::RichText::new(text).small().color(look.t.dim));
+/// A painted card around `add`. The card's paint goes behind the content.
+pub fn card<R>(ui: &mut Ui, look: &Look, id: &str, margin: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let behind = ui.painter().add(Shape::Noop);
+    let out = egui::Frame::NONE.inner_margin(egui::Margin::same(margin.clamp(0.0, 100.0) as i8)).show(ui, add);
+    let rect = out.response.rect;
+    let style = Paint { fill: look.t.card, ink: look.ink(2.5), shadow: Some((vec2(DEPTH + 1.0, DEPTH + 1.0), look.t.shadow)), radius: 16.0, wobble: 1.8 };
+    ui.painter().set(behind, Shape::Vec(rough::boxed_shapes(rect, &style, egui::Id::new(id).value(), look.frame)));
+    out.inner
 }

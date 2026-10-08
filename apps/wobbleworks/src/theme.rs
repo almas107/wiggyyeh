@@ -1,14 +1,15 @@
-//! The cartoon look: colour tokens, presets, and how they map onto egui's style.
+//! The cartoon look: colour presets, and how they restyle PhotoCraft's editor.
 //!
-//! Everything visual comes from [`Theme`] plus a few shape settings (roundness, outline width,
-//! shadow depth), all user-editable in Settings → Look.
+//! WobbleWorks paints its own widgets from [`Theme`]. PhotoCraft's editor (canvas surround,
+//! dialogs, and every panel in the advanced editor) reads `photocraft_ui_egui::theme::Tokens`
+//! from egui's context; [`apply`] publishes tokens made from the same colours, over PhotoCraft's
+//! light Studio layout, so both halves of the app match.
 
-use egui::{Color32, CornerRadius, FontId, Shadow, Stroke, TextStyle, Visuals};
-use serde::{Deserialize, Serialize};
+use egui::{Color32, CornerRadius, Stroke};
+use photocraft_ui_egui::theme::{ThemeKind, Tokens};
 
 /// Colour tokens.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Theme {
     /// Text and outlines.
     pub ink: Color32,
@@ -16,11 +17,11 @@ pub struct Theme {
     pub paper: Color32,
     /// Panels and buttons.
     pub card: Color32,
-    /// Accent: focus rings, sliders, selection outlines.
+    /// Accent: the current tool, focus, sliders.
     pub hot: Color32,
-    /// Selected rows (current layer, current project).
+    /// Secondary accent: selected rows, the logo.
     pub cool: Color32,
-    /// Toggled-on buttons.
+    /// Hover and toggled-on buttons.
     pub sun: Color32,
     /// Quiet text.
     pub dim: Color32,
@@ -31,7 +32,7 @@ pub struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        PRESETS.first().map_or(BUBBLEGUM, |p| p.1)
+        BUBBLEGUM
     }
 }
 
@@ -39,19 +40,19 @@ const fn hex(v: u32) -> Color32 {
     Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
 }
 
-const BUBBLEGUM: Theme = Theme {
+pub const BUBBLEGUM: Theme = Theme {
     ink: hex(0x17161c),
     paper: hex(0xe4e1ee),
     card: hex(0xfbfaff),
     hot: hex(0xff2e88),
     cool: hex(0x2ee6c5),
     sun: hex(0xffd23f),
-    dim: hex(0x8b8798),
+    dim: hex(0x6b6878),
     shadow: hex(0x17161c),
     dark: false,
 };
 
-/// Built-in looks.
+/// Built-in looks (from the earlier WobbleWorks; more arrive with the settings in a later stage).
 pub const PRESETS: &[(&str, Theme)] = &[
     ("Bubblegum", BUBBLEGUM),
     (
@@ -83,34 +84,6 @@ pub const PRESETS: &[(&str, Theme)] = &[
         },
     ),
     (
-        "Grape Soda",
-        Theme {
-            ink: hex(0x2a1240),
-            paper: hex(0xd9c8f5),
-            card: hex(0xf8f2ff),
-            hot: hex(0x8b3dff),
-            cool: hex(0xffb3e6),
-            sun: hex(0x7ee8fa),
-            dim: hex(0x806c99),
-            shadow: hex(0x2a1240),
-            dark: false,
-        },
-    ),
-    (
-        "Peach Fuzz",
-        Theme {
-            ink: hex(0x4a2121),
-            paper: hex(0xffd8c2),
-            card: hex(0xfff6f0),
-            hot: hex(0xff5a5f),
-            cool: hex(0xffe08a),
-            sun: hex(0x9be7d8),
-            dim: hex(0x9a7470),
-            shadow: hex(0x4a2121),
-            dark: false,
-        },
-    ),
-    (
         "Midnight Snack",
         Theme {
             ink: hex(0xf3efff),
@@ -124,125 +97,110 @@ pub const PRESETS: &[(&str, Theme)] = &[
             dark: true,
         },
     ),
-    (
-        "Arcade",
-        Theme {
-            ink: hex(0xe8fff4),
-            paper: hex(0x0f2027),
-            card: hex(0x183842),
-            hot: hex(0x39ff14),
-            cool: hex(0x1f7a8c),
-            sun: hex(0xb3367a),
-            dim: hex(0x7fa8a8),
-            shadow: hex(0x000000),
-            dark: true,
-        },
-    ),
 ];
-
-/// Shape settings that go with the colours.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Look {
-    pub t: Theme,
-    pub round: f32,
-    pub line: f32,
-    pub shadow: f32,
-    /// UI boil frame (0–2), or `None` when the UI holds still.
-    pub boil: Option<u8>,
-    pub labels: bool,
-}
-
-impl Look {
-    /// A small whole-pixel jitter for widget `id` on the current boil frame.
-    pub fn jitter(&self, id: egui::Id) -> egui::Vec2 {
-        let Some(f) = self.boil else { return egui::Vec2::ZERO };
-        let h = id.value();
-        let n = |k: u64| crate::brush::rnd((h ^ (h >> 32)) as u32 ^ (u32::from(f).wrapping_add(k as u32)).wrapping_mul(0x9E37_79B9));
-        egui::vec2(((n(1) * 3.0).floor() - 1.0) as f32 * 0.5, ((n(7) * 3.0).floor() - 1.0) as f32 * 0.5)
-    }
-
-    pub fn radius(&self) -> CornerRadius {
-        CornerRadius::same(self.round.clamp(0.0, 30.0) as u8)
-    }
-
-    pub fn hard_shadow(&self) -> Shadow {
-        let s = self.shadow.clamp(0.0, 12.0) as i8;
-        Shadow { offset: [s, s], blur: 0, spread: 0, color: self.t.shadow }
-    }
-
-    pub fn outline(&self) -> Stroke {
-        Stroke::new(self.line, self.t.ink)
-    }
-}
 
 /// Mix two colours (`t` = 0 gives `a`).
 pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
-    let t = t.clamp(0.0, 1.0);
+    let t = if t.is_finite() { t.clamp(0.0, 1.0) } else { 0.0 };
     let m = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
     Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
 }
 
-/// Apply the look to egui's global style.
-pub fn apply(ctx: &egui::Context, look: &Look, text_size: f32) {
-    let t = look.t;
-    let mut v = if t.dark { Visuals::dark() } else { Visuals::light() };
-    let ink = Stroke::new(look.line, t.ink);
-    let r = look.radius();
-    v.override_text_color = Some(t.ink);
-    v.panel_fill = t.paper;
-    v.window_fill = t.card;
-    v.faint_bg_color = mix(t.card, t.paper, 0.5);
-    v.extreme_bg_color = mix(t.card, t.paper, 0.35);
-    v.code_bg_color = t.paper;
-    v.window_stroke = ink;
-    v.window_corner_radius = r;
-    v.menu_corner_radius = r;
-    v.window_shadow = look.hard_shadow();
-    v.popup_shadow = look.hard_shadow();
-    v.hyperlink_color = t.hot;
-    v.selection.bg_fill = mix(t.hot, t.card, 0.35);
-    v.selection.stroke = Stroke::new(look.line, t.ink);
-    v.slider_trailing_fill = true;
-    v.handle_shape = egui::style::HandleShape::Circle;
-    v.striped = false;
-    v.text_cursor.stroke = Stroke::new(2.0, t.hot);
-    let w = &mut v.widgets;
-    for (st, fill) in [
-        (&mut w.noninteractive, t.card),
-        (&mut w.inactive, t.card),
-        (&mut w.hovered, mix(t.card, t.sun, 0.35)),
-        (&mut w.active, t.sun),
-        (&mut w.open, mix(t.card, t.cool, 0.4)),
-    ] {
-        st.bg_fill = fill;
-        st.weak_bg_fill = fill;
-        st.bg_stroke = ink;
-        st.fg_stroke = Stroke::new(look.line.max(1.0), t.ink);
-        st.corner_radius = r;
-        st.expansion = 0.0;
-    }
-    w.noninteractive.bg_stroke = Stroke::new(look.line * 0.75, mix(t.ink, t.card, 0.55));
-    w.inactive.bg_fill = mix(t.paper, t.card, 0.3);
-    w.hovered.expansion = 1.0;
-    let s = text_size.clamp(9.0, 24.0);
-    // Same look whatever the system's light/dark preference is.
-    ctx.all_styles_mut(|st| {
-        st.visuals = v.clone();
-        st.text_styles = [
-            (TextStyle::Small, FontId::proportional(s * 0.82)),
-            (TextStyle::Body, FontId::proportional(s)),
-            (TextStyle::Button, FontId::proportional(s)),
-            (TextStyle::Heading, FontId::proportional(s * 1.55)),
-            (TextStyle::Monospace, FontId::monospace(s * 0.95)),
-        ]
-        .into();
-        st.spacing.item_spacing = egui::vec2(7.0, 7.0);
-        st.spacing.button_padding = egui::vec2(9.0, 5.0);
-        st.spacing.slider_width = 120.0;
-        st.spacing.interact_size.y = s + 10.0;
-        st.spacing.window_margin = egui::Margin::same(12);
-        st.spacing.menu_margin = egui::Margin::same(8);
-        st.interaction.tooltip_delay = 0.35;
+/// `#rrggbb` of a colour.
+pub fn to_hex(c: Color32) -> String {
+    format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
+}
+
+/// The PhotoCraft layout WobbleWorks restyles: rounded cards, no Photoshop tab strips.
+pub fn base_kind(t: &Theme) -> ThemeKind {
+    if t.dark { ThemeKind::Studio } else { ThemeKind::StudioLight }
+}
+
+/// PhotoCraft tokens in WobbleWorks colours.
+pub fn tokens(t: &Theme) -> Tokens {
+    let mut k = Tokens::for_kind(base_kind(t));
+    k.chrome = mix(t.card, t.paper, 0.45);
+    k.canvas = t.paper;
+    k.canvas_dot = mix(t.ink, t.paper, 0.75);
+    k.dock = t.paper;
+    k.card = t.card;
+    k.card_border = mix(t.ink, t.card, 0.25);
+    k.field = mix(t.card, t.paper, 0.35);
+    k.field_border = mix(t.ink, t.card, 0.45);
+    k.hover = mix(t.card, t.sun, 0.4);
+    k.pressed = t.sun;
+    k.text = t.ink;
+    k.text_dim = t.dim;
+    k.text_faint = mix(t.dim, t.card, 0.35);
+    k.icon = t.ink;
+    // Calm accents: the current tool and selected rows get a soft sunshine wash and an ink
+    // outline; toggles and sliders a gentle teal. No loud pink in the chrome.
+    k.accent = mix(t.cool, t.ink, 0.3);
+    k.accent_soft = mix(t.sun, t.card, 0.45);
+    k.accent_border = mix(t.ink, t.card, 0.25);
+    k.accent_text = t.ink;
+    k.separator = mix(t.ink, t.card, 0.7);
+    k.shadow = t.shadow.gamma_multiply(0.35);
+    // Default buttons (OK, Create, Export): sunshine with ink, like the current tool.
+    k.primary_bg = t.sun;
+    k.primary_text = t.ink;
+    k.radius_sm = 7.0;
+    k.radius = 11.0;
+    k.radius_lg = 16.0;
+    k.bevel = false;
+    k.pro = false;
+    k.tab_strip = t.paper;
+    k.row_selected = mix(t.cool, t.card, 0.45);
+    k
+}
+
+const TOKENS_ID: &str = "photocraft-theme";
+
+/// Are WobbleWorks' tokens the ones PhotoCraft will read this frame?
+pub fn is_applied(ctx: &egui::Context, t: &Theme) -> bool {
+    Tokens::get(ctx) == tokens(t)
+}
+
+/// Restyle egui and PhotoCraft with `t`: PhotoCraft's own theme setup first (fonts, sizes,
+/// spacing), then WobbleWorks' colours and chunky outlines on top.
+pub fn apply(ctx: &egui::Context, t: &Theme) {
+    photocraft_ui_egui::theme::apply(ctx, base_kind(t));
+    let k = tokens(t);
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(TOKENS_ID), k));
+    let ink = Stroke::new(2.0, t.ink);
+    let hard = |o: i8| egui::Shadow { offset: [o, o], blur: 0, spread: 0, color: t.shadow };
+    ctx.all_styles_mut(|s| {
+        // Tool names pop up right away, beside the pointer.
+        s.interaction.tooltip_delay = 0.12;
+        let v = &mut s.visuals;
+        v.dark_mode = t.dark;
+        v.panel_fill = k.chrome;
+        v.window_fill = t.card;
+        v.window_stroke = ink;
+        v.window_shadow = hard(5);
+        v.popup_shadow = hard(4);
+        v.window_corner_radius = CornerRadius::same(14);
+        v.menu_corner_radius = CornerRadius::same(10);
+        v.extreme_bg_color = k.field;
+        v.faint_bg_color = mix(t.card, t.paper, 0.5);
+        v.code_bg_color = k.field;
+        v.override_text_color = Some(t.ink);
+        v.hyperlink_color = mix(t.cool, t.ink, 0.4);
+        v.selection.bg_fill = mix(t.sun, t.card, 0.3);
+        v.selection.stroke = Stroke::new(1.5, t.ink);
+        v.text_cursor.stroke = Stroke::new(2.0, t.ink);
+        let w = &mut v.widgets;
+        w.noninteractive.bg_fill = t.card;
+        w.noninteractive.weak_bg_fill = t.card;
+        w.noninteractive.bg_stroke = Stroke::new(1.0, k.separator);
+        w.noninteractive.fg_stroke = Stroke::new(1.0, t.ink);
+        for (st, fill) in [(&mut w.inactive, k.field), (&mut w.hovered, k.hover), (&mut w.active, t.sun), (&mut w.open, k.hover)] {
+            st.bg_fill = fill;
+            st.weak_bg_fill = fill;
+            st.bg_stroke = Stroke::new(1.5, mix(t.ink, t.card, 0.3));
+            st.fg_stroke = Stroke::new(1.5, t.ink);
+            st.corner_radius = CornerRadius::same(8);
+        }
     });
 }
 
@@ -252,8 +210,8 @@ mod tests {
 
     #[test]
     fn presets_have_readable_text() {
+        let lum = |c: Color32| 0.299 * f32::from(c.r()) + 0.587 * f32::from(c.g()) + 0.114 * f32::from(c.b());
         for (name, t) in PRESETS {
-            let lum = |c: Color32| 0.299 * f32::from(c.r()) + 0.587 * f32::from(c.g()) + 0.114 * f32::from(c.b());
             assert!((lum(t.ink) - lum(t.card)).abs() > 120.0, "{name}: ink on card");
             assert!((lum(t.ink) - lum(t.paper)).abs() > 100.0, "{name}: ink on paper");
             assert_eq!(t.dark, lum(t.card) < 128.0, "{name}: dark flag");
@@ -261,12 +219,16 @@ mod tests {
     }
 
     #[test]
-    fn jitter_is_whole_half_pixels_and_off_when_still() {
-        let mut l = Look { t: Theme::default(), round: 9.0, line: 2.0, shadow: 3.0, boil: None, labels: false };
-        assert_eq!(l.jitter(egui::Id::new(1)), egui::Vec2::ZERO);
-        l.boil = Some(2);
-        let j = l.jitter(egui::Id::new("x"));
-        assert!(j.x.abs() <= 0.5 && j.y.abs() <= 0.5);
-        assert_eq!(mix(Color32::BLACK, Color32::WHITE, 0.0), Color32::BLACK);
+    fn tokens_restyle_photocraft_and_stick() {
+        let ctx = egui::Context::default();
+        assert!(!is_applied(&ctx, &BUBBLEGUM));
+        apply(&ctx, &BUBBLEGUM);
+        assert!(is_applied(&ctx, &BUBBLEGUM));
+        let k = Tokens::get(&ctx);
+        assert_eq!(k.canvas, BUBBLEGUM.paper);
+        assert_ne!(k.accent, BUBBLEGUM.hot, "no loud pink in the chrome");
+        assert!(!k.pro, "no Photoshop tab strips");
+        assert_eq!(to_hex(BUBBLEGUM.hot), "#ff2e88");
+        assert_eq!(mix(Color32::BLACK, Color32::WHITE, f32::NAN), Color32::BLACK);
     }
 }
