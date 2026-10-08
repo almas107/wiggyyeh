@@ -247,6 +247,38 @@ mod ui {
         h.state_mut().track_recent();
         h.state_mut().show_settings = std::env::var("WOBBLE_SETTINGS").is_ok();
         h.run_steps(6);
+        // `WOBBLE_INVOKE=image.imageSize` opens any PhotoCraft command or dialog.
+        if let Ok(id) = std::env::var("WOBBLE_INVOKE") {
+            let ctx = h.ctx.clone();
+            if let Err(e) = photocraft_ui_egui::menus::invoke(&mut h.state_mut().app, &ctx, &id, serde_json::json!({})) {
+                eprintln!("{id}: {e}");
+            }
+            h.run_steps(8);
+        }
+        // `WOBBLE_CLICK=x,y` clicks somewhere (a menu title, say).
+        if let Some((x, y)) =
+            std::env::var("WOBBLE_CLICK").ok().and_then(|s| s.split_once(',').and_then(|(x, y)| Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?))))
+        {
+            let p = egui::pos2(x, y);
+            h.input_mut().events.push(egui::Event::PointerMoved(p));
+            h.step();
+            h.input_mut().events.push(egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.step();
+            h.input_mut().events.push(egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            for _ in 0..20 {
+                h.step();
+            }
+        }
         if std::env::var("WOBBLE_CELEBRATE").is_ok() {
             h.state_mut().app.ui.status = "Saved wobble.psd".into();
             for _ in 0..3 {

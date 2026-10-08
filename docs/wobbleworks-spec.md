@@ -215,3 +215,19 @@ deliverable. Mine it, then delete it once the new app replaces it:
   - Pre-existing, not ours: wasm `-D warnings` stops in `photocraft-cms` (unused `PAR_*` consts).
   - Still open: Wob idle animations beyond breathing, sound for the boil playback itself, haptic-y
     "tool pop" on PhotoCraft's toolbar button (we sparkle at the pointer instead).
+- **Stage 5 (2026-10-08): every PhotoCraft feature reachable, restyled.**
+  - WobbleWorks runs PhotoCraft's full editor (standard screen mode: menu bar, options bar, tools,
+    panels), so every live menu item (`docs/parity.md`, ≥ `FLOOR` 627) is reachable.
+    `tests/stage5.rs::every_live_menu_item_opens_inside_wobbleworks` (ignored by default, ~80 s)
+    invokes every live catalog item inside WobbleWorks (hand-drawn pass, pixel font, juice on)
+    one frame at a time: no panics.
+  - Dialogs reviewed by screenshot (New, Image Size, Canvas Size, Gaussian Blur, Levels, Curves,
+    Hue/Saturation, Preferences, Export As, Unsharp Mask, File and Select menus): readable, no
+    clipping beyond a tight "Canvas extension color:" label. Default buttons (OK, Create, Export)
+    are now sunshine with ink instead of hot pink. Wob ducks out of sight while a window, menu or
+    popup overlaps its corner (it covered Preferences' OK/Cancel and could eat their clicks).
+  - Fixed in PhotoCraft (`crates/ui-egui/src/canvas.rs`): the canvas scrollbar ids now include
+    the layer, so a document shown twice (Window › Arrange › New Window for Document, embedded
+    where there are no extra OS windows: web, tests) no longer trips egui's "widget changed
+    layer" debug assertion. Regression test: `stage5.rs::a_second_window_on_the_document_renders`
+    (fails without the fix; a plain-PhotoCraft version of it did not reproduce).

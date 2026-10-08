@@ -794,7 +794,17 @@ impl eframe::App for WobbleApp {
             self.settings(&ctx, &look);
         }
         let canvas = self.app.last_canvas_rect;
-        if canvas.width() > 200.0 && canvas.height() > 160.0 && self.mascot.show(&ctx, &look, now, canvas.right_bottom() - vec2(56.0, 14.0)) {
+        let foot = canvas.right_bottom() - vec2(56.0, 14.0);
+        // Wob ducks out of the way of windows, menus and popups over its corner.
+        let wob = Rect::from_center_size(foot - vec2(0.0, 60.0), vec2(220.0, 150.0));
+        let own =
+            [egui::Id::new("wobble-colour-card"), egui::Id::new("wobble-mascot"), egui::Id::new("wobble-mascot-paint"), egui::Id::new("wobble-particles")];
+        let covered = ctx.memory(|m| {
+            m.layer_ids()
+                .filter(|l| matches!(l.order, egui::Order::Middle | egui::Order::Foreground) && !own.contains(&l.id))
+                .any(|l| m.area_rect(l.id).is_some_and(|r| r.intersects(wob)))
+        });
+        if canvas.width() > 200.0 && canvas.height() > 160.0 && !covered && self.mascot.show(&ctx, &look, now, foot) {
             self.audio.play(Sound::Boing);
             self.mascot.react(now, mascot::Event::Poked);
             self.juice.confetti(now, canvas.right_bottom() - vec2(56.0, 50.0), &[self.theme.hot, self.theme.sun, self.theme.cool], 24);

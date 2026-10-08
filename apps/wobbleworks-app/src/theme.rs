@@ -141,8 +141,9 @@ pub fn tokens(t: &Theme) -> Tokens {
     k.accent_text = t.ink;
     k.separator = mix(t.ink, t.card, 0.7);
     k.shadow = t.shadow.gamma_multiply(0.35);
-    k.primary_bg = t.hot;
-    k.primary_text = Color32::WHITE;
+    // Default buttons (OK, Create, Export): sunshine with ink, like the current tool.
+    k.primary_bg = t.sun;
+    k.primary_text = t.ink;
     k.radius_sm = 7.0;
     k.radius = 11.0;
     k.radius_lg = 16.0;
