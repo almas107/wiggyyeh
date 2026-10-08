@@ -4,8 +4,9 @@
 //! there. WobbleWorks restyles it: its colours (theme tokens), the pixel font (built into a
 //! TrueType font at startup), wobbly boiling outlines on every box and line (`handdrawn`), its
 //! icons redrawn as soft marker lines (`svgicon`), and dots on the paper around the picture.
-//! Below the editor sits the colour strip: the current colour, recently used colours, and the
-//! user's own palette (kept between sessions).
+//! Below the editor sits the colour picker (`colour`): the current colour, recently used colours
+//! and the user's own palette (kept between sessions), opening into a card with a colour wheel,
+//! the palette and a reference image.
 
 use std::sync::{Arc, Mutex};
 
@@ -16,10 +17,11 @@ use photocraft_ui_egui::state::Tool;
 use photocraft_ui_egui::{ExportSettings, PhotocraftApp, Services};
 use serde_json::{Value, json};
 
+use crate::colour::ColourPicker;
 use crate::rough::{self, Paint};
 use crate::svgicon::{self, IconInk};
 use crate::theme::{self, Theme, mix};
-use crate::widgets::{self, Look, TEXT};
+use crate::widgets::Look;
 use crate::{handdrawn, ttf};
 
 /// The canvas a new picture gets.
@@ -71,8 +73,8 @@ pub struct WobbleApp {
     pub recent: Vec<Color32>,
     /// The user's palette.
     pub palette: Vec<Color32>,
-    /// The colour mixer popup.
-    pub show_mixer: bool,
+    /// The colour picker under the editor.
+    pub picker: ColourPicker,
     /// The boil frame and colours the icon painter reads.
     icons: Arc<Mutex<(u64, IconInk)>>,
     /// (document, revision) last seen, to notice painting.
@@ -107,7 +109,7 @@ impl WobbleApp {
             custom_icons: true,
             recent: Vec::new(),
             palette: PALETTE.iter().filter_map(|(_, h)| hex(h)).collect(),
-            show_mixer: false,
+            picker: ColourPicker::default(),
             icons: Arc::new(Mutex::new((0, ink))),
             seen: None,
             frames: 0,
@@ -293,93 +295,31 @@ impl WobbleApp {
         }
     }
 
-    /// The colour strip: current colour, recent colours, the palette.
+    /// The colour picker: a strip of blobs under the editor that opens into a card.
     fn colour_strip(&mut self, ui: &mut Ui, look: &Look) {
         let frame = egui::Frame::NONE.fill(self.theme.paper).inner_margin(egui::Margin { left: 10, right: 10, top: 6, bottom: 8 });
-        egui::Panel::bottom("wobble_colours").show_separator_line(false).frame(frame).show(ui, |ui| {
-            let avail = ui.available_width();
-            widgets::card(ui, look, "wobble-colour-card", 8.0, |ui| {
-                ui.set_max_width((avail - 24.0).max(100.0));
-                ui.spacing_mut().item_spacing = vec2(2.0, 4.0);
-                ui.horizontal_wrapped(|ui| {
-                    let fg = self.foreground();
-                    if widgets::swatch(ui, look, fg, self.show_mixer, 17.0).on_hover_text("Mix a colour").clicked() {
-                        self.show_mixer = !self.show_mixer;
-                    }
-                    ui.add_space(8.0);
-                    widgets::label(ui, look, "Recent", TEXT, look.t.dim);
-                    ui.add_space(4.0);
-                    if self.recent.is_empty() {
-                        widgets::label(ui, look, "(paint something!)", TEXT, mix(look.t.dim, look.t.card, 0.4));
-                    }
-                    let mut pick = None;
-                    for (i, &c) in self.recent.iter().enumerate() {
-                        if widgets::swatch(ui, look, c, c == fg, 11.0).on_hover_text(theme::to_hex(c)).clicked() {
-                            pick = Some(c);
-                        }
-                        let _ = i;
-                    }
-                    ui.add_space(12.0);
-                    widgets::label(ui, look, "Palette", TEXT, look.t.dim);
-                    ui.add_space(4.0);
-                    let mut remove = None;
-                    for (i, &c) in self.palette.iter().enumerate() {
-                        let r = widgets::swatch(ui, look, c, c == fg, 11.0).on_hover_text(format!("{}  (right-click to remove)", theme::to_hex(c)));
-                        if r.clicked() {
-                            pick = Some(c);
-                        }
-                        if r.secondary_clicked() {
-                            remove = Some(i);
-                        }
-                    }
-                    if widgets::button(ui, look, "+", false, !self.palette.contains(&fg) && self.palette.len() < PALETTE_MAX)
-                        .on_hover_text("Add the current colour to your palette")
-                        .clicked()
-                    {
-                        self.add_to_palette();
-                    }
-                    if let Some(i) = remove
-                        && i < self.palette.len()
-                    {
-                        self.palette.remove(i);
-                    }
-                    if let Some(c) = pick {
-                        let r = self.set_foreground(c);
-                        self.report_result(r);
-                    }
-                });
-            });
-        });
-    }
-
-    /// The colour mixer popup above the strip.
-    fn mixer(&mut self, ctx: &egui::Context, look: &Look) {
-        let screen = ctx.content_rect();
-        egui::Area::new(egui::Id::new("wobble-mixer"))
-            .order(egui::Order::Foreground)
-            .anchor(egui::Align2::LEFT_BOTTOM, vec2(14.0, -78.0))
-            .constrain_to(screen)
-            .show(ctx, |ui| {
-                widgets::card(ui, look, "wobble-mixer-card", 12.0, |ui| {
-                    widgets::label(ui, look, "Mix a colour", TEXT, look.t.ink);
-                    ui.add_space(4.0);
-                    let mut c = self.foreground();
-                    ui.spacing_mut().slider_width = 220.0;
-                    if egui::color_picker::color_picker_color32(ui, &mut c, egui::color_picker::Alpha::Opaque) {
-                        let r = self.set_foreground(c);
-                        self.report_result(r);
-                    }
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        if widgets::button(ui, look, "Add to palette", false, !self.palette.contains(&self.foreground())).clicked() {
-                            self.add_to_palette();
-                        }
-                        if widgets::button(ui, look, "Done", false, true).clicked() {
-                            self.show_mixer = false;
-                        }
-                    });
-                });
-            });
+        let fg = self.foreground();
+        let (recent, palette) = (self.recent.clone(), self.palette.clone());
+        let picked = egui::Panel::bottom("wobble_colours")
+            .show_separator_line(false)
+            .frame(frame)
+            .show(ui, |ui| self.picker.show(ui, look, fg, &recent, &palette))
+            .inner;
+        if let Some(c) = picked.colour {
+            let r = self.set_foreground(c);
+            self.report_result(r);
+        }
+        if picked.add {
+            self.add_to_palette();
+        }
+        if let Some(i) = picked.remove
+            && i < self.palette.len()
+        {
+            self.palette.remove(i);
+        }
+        if let Some(e) = picked.error {
+            self.report(&e);
+        }
     }
 
     /// Dots on the paper around the picture, and the picture's own wobbly outline and shadow.
@@ -470,9 +410,6 @@ impl eframe::App for WobbleApp {
         self.app.ui(ui, frame);
         self.track_recent();
         self.sheet(ui, &look);
-        if self.show_mixer {
-            self.mixer(&ctx, &look);
-        }
         if self.hand_drawn {
             handdrawn::apply(&ctx, self.app.last_canvas_rect, look.frame);
         }

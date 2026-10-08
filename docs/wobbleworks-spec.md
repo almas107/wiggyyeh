@@ -152,3 +152,12 @@ deliverable. Mine it, then delete it once the new app replaces it:
     don't repeat their first point.
   - Still open: PhotoCraft's title bar still shows its kitsune icon and "Discord"; the colour
     picker inside the mixer is egui's; performance of the post-pass not measured yet (stage 6).
+- **UI rework 3 (2026-10-08), user feedback:** side panels looked better without wobbly outer
+  frames; the colour strip looked better without labels and should open into a card.
+  - `handdrawn.rs`: boxes at least 100 × 100 (panels, cards, canvas surround) keep straight edges;
+    their contents still wobble.
+  - `colour.rs`: the strip (current colour, up to 8 recent, a dot, the palette; no labels) opens on
+    a click into a 372 × 420 card that grows from the strip with an ease-out-back pop, content
+    fading in. Bottom tabs: Colour (Wheel / HSV / Hex modes, "+ Palette"), Palette (recent and
+    palette with labels, add/remove), Reference (load an image through the platform picker, shown
+    fitted; hover previews and click/drag picks its colour). Click away or Esc closes it.

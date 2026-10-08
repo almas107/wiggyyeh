@@ -200,7 +200,7 @@ mod ui {
         for size in [egui::vec2(1280.0, 820.0), egui::vec2(390.0, 760.0)] {
             let mut h = harness(size);
             h.run_steps(4);
-            h.state_mut().show_mixer = true;
+            h.state_mut().picker.open = true;
             h.run_steps(4);
             let has_font = h.ctx.fonts(|f| f.definitions().font_data.contains_key(wobbleworks_app::ttf::FONT_NAME));
             assert!(has_font);
@@ -229,7 +229,14 @@ mod ui {
         h.run_steps(3);
         h.state_mut().stroke(&[(150.0, 200.0), (400.0, 300.0), (700.0, 220.0), (1000.0, 380.0)], "#ff2e88", 28.0).unwrap();
         h.state_mut().stroke(&[(200.0, 600.0), (600.0, 520.0), (900.0, 640.0)], "#2f7bff", 18.0).unwrap();
-        h.state_mut().show_mixer = std::env::var("WOBBLE_MIXER").is_ok();
+        h.state_mut().picker.open = std::env::var("WOBBLE_MIXER").is_ok();
+        if let Ok(tab) = std::env::var("WOBBLE_TAB") {
+            h.state_mut().picker.tab = match tab.as_str() {
+                "palette" => wobbleworks_app::colour::Tab::Palette,
+                "reference" => wobbleworks_app::colour::Tab::Reference,
+                _ => wobbleworks_app::colour::Tab::Colour,
+            };
+        }
         h.state_mut().track_recent();
         h.run_steps(6);
         if let Some((x, y)) = std::env::var("WOBBLE_HOVER").ok().and_then(|s| s.split_once(',').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)))) {

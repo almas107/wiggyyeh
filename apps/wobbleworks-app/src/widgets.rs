@@ -134,7 +134,7 @@ pub fn slider(
         let b = track.right_center();
         let knob = a + (b - a) * f;
         rough::line(p, &rough::segment(a, b, 24), Stroke::new(5.0, mix(look.t.ink, look.t.card, 0.75)), seed, look.frame, 0.8);
-        rough::line(p, &rough::segment(a, knob, 24), Stroke::new(5.0, look.t.hot), seed, look.frame, 0.8);
+        rough::line(p, &rough::segment(a, knob, 24), Stroke::new(5.0, mix(look.t.cool, look.t.ink, 0.3)), seed, look.frame, 0.8);
         let (hover, press) = motion(ui, &resp, true);
         rough::blob(
             p,

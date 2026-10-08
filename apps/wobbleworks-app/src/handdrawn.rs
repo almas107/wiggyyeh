@@ -12,6 +12,9 @@ use crate::rough;
 
 /// Smallest box (points) worth roughening; tiny ones (text cursors, ticks) stay crisp.
 const MIN_SIDE: f32 = 5.0;
+/// Boxes at least this big on both sides are containers (panels, cards, the canvas surround):
+/// their edges stay straight so the frame of the window reads calm; what's inside wobbles.
+const CONTAINER: f32 = 100.0;
 /// Outline weight for roughened boxes: a marker, not a hairline.
 const MIN_WIDTH: f32 = 1.5;
 
@@ -81,7 +84,13 @@ fn rect(r: &RectShape, frame: u64) -> Option<Shape> {
     let b = r.rect;
     // Textured rects are images (thumbnails, swatches drawn as textures): leave them be. Blurred
     // ones are soft shadows.
-    if r.brush.is_some() || r.blur_width > 0.0 || !b.is_finite() || b.width() < MIN_SIDE || b.height() < MIN_SIDE {
+    if r.brush.is_some()
+        || r.blur_width > 0.0
+        || !b.is_finite()
+        || b.width() < MIN_SIDE
+        || b.height() < MIN_SIDE
+        || (b.width() >= CONTAINER && b.height() >= CONTAINER)
+    {
         return None;
     }
     let has_fill = r.fill.a() > 0;
@@ -139,6 +148,8 @@ mod tests {
         let mut dot = Shape::circle_filled(pos2(5.0, 5.0), 8.0, Color32::BLUE);
         assert!(roughen(&mut dot, 2));
         // Tiny things, invisible boxes, textured rects and NaNs are left alone.
+        let mut panel = Shape::rect_filled(Rect::from_min_size(Pos2::ZERO, egui::vec2(280.0, 400.0)), 8.0, Color32::WHITE);
+        assert!(!roughen(&mut panel, 0), "containers keep straight edges");
         let mut tiny = Shape::rect_filled(Rect::from_min_size(Pos2::ZERO, egui::vec2(2.0, 20.0)), 0.0, Color32::RED);
         assert!(!roughen(&mut tiny, 0));
         let mut clear = Shape::rect_filled(r, 0.0, Color32::TRANSPARENT);

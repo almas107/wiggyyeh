@@ -31,6 +31,13 @@ pub fn run() -> eframe::Result {
             PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
             let mut w = WobbleApp::new(services());
             w.restore(cc.storage);
+            w.picker.pick_reference = Some(Box::new(|inbox| {
+                let Some(path) = rfd::FileDialog::new().add_filter("Images", OPEN_EXTS).pick_file() else { return };
+                match photocraft_format::read_file(&path) {
+                    Ok(bytes) => *inbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((path.to_string_lossy().into_owned(), bytes)),
+                    Err(e) => log::warn!("couldn't read {}: {e}", path.display()),
+                }
+            }));
             w.app.background_jobs = true;
             if let Some(rs) = cc.wgpu_render_state.clone() {
                 w.app.set_wgpu(rs);

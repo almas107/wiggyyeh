@@ -33,6 +33,16 @@ pub fn start() {
                     let inbox: Inbox = Arc::default();
                     let mut w = WobbleApp::new(services(inbox.clone(), cc.egui_ctx.clone()));
                     w.restore(cc.storage);
+                    let repaint = cc.egui_ctx.clone();
+                    w.picker.pick_reference = Some(Box::new(move |inbox| {
+                        let ctx = repaint.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            let Some(file) = rfd::AsyncFileDialog::new().add_filter("Images", OPEN_EXTS).pick_file().await else { return };
+                            let bytes = file.read().await;
+                            *inbox.lock().unwrap_or_else(|e| e.into_inner()) = Some((file.file_name(), bytes));
+                            ctx.request_repaint();
+                        });
+                    }));
                     if let Some(rs) = cc.wgpu_render_state.clone() {
                         w.app.set_wgpu(rs);
                     }
