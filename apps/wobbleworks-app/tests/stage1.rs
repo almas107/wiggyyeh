@@ -191,6 +191,13 @@ mod ui {
         let st = h.state().app.session.active().unwrap();
         assert!(st.revision > rev, "the drag painted (status: {})", h.state().app.ui.status);
         assert!(h.state().app.session.is_enabled("edit.undo"));
+        // Drawn on a wiggle layer, so it lands on every boil frame.
+        let wig = photocraft_engine::wiggle_cmds::all(&st.doc)[0];
+        for id in photocraft_engine::wiggle_cmds::frames(wig) {
+            let s = st.doc.layer(id).unwrap().surface().unwrap();
+            let ink: f32 = s.read_region(photocraft_geom::Rect::from_xywh(0, 0, 1200, 800)).chunks(4).map(|p| p[3]).sum();
+            assert!(ink > 0.0, "frame {id:?} has the stroke");
+        }
     }
 
     /// The editor runs headless at desktop and phone widths, with the mixer open, without
@@ -246,5 +253,9 @@ mod ui {
             }
         }
         h.render().unwrap().save(&out).unwrap();
+        if let Ok(path) = std::env::var("WOBBLE_GIF") {
+            let doc = h.state().app.session.active().unwrap().doc.clone();
+            std::fs::write(path, wobbleworks_app::anim::gif(&doc, h.state().boil_fps).unwrap()).unwrap();
+        }
     }
 }

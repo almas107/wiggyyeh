@@ -94,6 +94,8 @@ pub mod vp_cmds;
 pub mod warp_cmds;
 pub mod web_cmds;
 mod wia_cmds;
+/// Wiggle layers: boiling lines (WobbleWorks).
+pub mod wiggle_cmds;
 
 use std::sync::Arc;
 

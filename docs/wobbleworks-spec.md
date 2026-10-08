@@ -161,3 +161,29 @@ deliverable. Mine it, then delete it once the new app replaces it:
     fading in. Bottom tabs: Colour (Wheel / HSV / Hex modes, "+ Palette"), Palette (recent and
     palette with labels, add/remove), Reference (load an image through the platform picker, shown
     fitted; hover previews and click/drag picks its colour). Click away or Esc closes it.
+- **Stage 2 (2026-10-08): wiggle engine done.**
+  - `crates/engine/src/wiggle_cmds.rs` (registered in `commands.rs`): a wiggle layer is a plain
+    group of pixel layers `Boil 1..N`, so blend modes, opacity, masks and effects work and it
+    round-trips through PSD as per-frame layers. Commands: `wiggle.new {frames 2..12=3}`,
+    `wiggle.apply {command, params, amount}` (runs `paint.stroke|paint.pencil|paint.bucket|
+    paint.gradient|paint.mixerBrush|edit.fill` on every frame as one history step, rolling back on
+    failure), `wiggle.stroke`, `wiggle.showFrame {frame}` (playback: no history step, document stays
+    saved, the active frame follows so live strokes stay visible), `wiggle.info`; helpers
+    `at_frame`, `frame_count`, `wiggle_of`, `frames`. Noise is the original Wobbleworks `rnd`/`jr`
+    (tests pin the original values); strokes are resampled every 8 px before wobbling so whole
+    lines boil. `panic_hunt` and all 778 engine tests pass.
+  - App: new pictures get a wiggle layer; strokes and fills made with PhotoCraft's own tools on a
+    boil frame are taken back and re-applied to every frame (`spread_to_frames`, watching
+    `Session::journal`); playback at ~7.7 fps in step with the UI boil, held while the pointer is
+    down; recent colours now follow history length, not revision. `anim.rs`: animated GIF (image
+    crate, loops forever) and PNG-sequence export of the frames, capped at 4096² pixels. Wiggle
+    dock next to the colour strip: Boil on/off, Wiggle amount 0–10, + Layer, GIF, PNGs.
+  - Tests: `tests/stage2.rs` (frames painted as one undo step, spread from a plain paint.stroke,
+    playback without history or dirtiness, GIF/PNG/PSD export) and the real pointer drag in
+    `stage1.rs` now checks every frame got the stroke.
+  - Disk: the 30 GB target dir fills the session allowance; build with `CARGO_INCREMENTAL=0` and
+    delete test executables in `target/debug/deps` after big test runs.
+  - Pre-existing, not ours: clippy `manual_range_contains` in `crates/engine/src/fill_cmds.rs:409`
+    (engine `--all-targets`).
+  - Still open: `.wob` import from the old app, wiggle brush presets (WigglyPaint's brush strip),
+    onion skin, per-layer boil speed.

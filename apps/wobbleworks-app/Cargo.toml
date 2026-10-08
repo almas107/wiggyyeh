@@ -28,8 +28,11 @@ photocraft-ui-egui = { workspace = true }
 egui = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
+# Animated GIF export of the boil frames.
+image = { workspace = true, features = ["gif", "png"] }
 
 [dev-dependencies]
+photocraft-geom = { workspace = true }
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot", "eframe"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
