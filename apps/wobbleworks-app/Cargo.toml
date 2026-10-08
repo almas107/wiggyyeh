@@ -39,6 +39,8 @@ egui_kittest = { workspace = true, features = ["wgpu", "snapshot", "eframe"] }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "persistence"] }
 photocraft-format = { workspace = true }
 rfd = { workspace = true }
+# Sound output (the samples are synthesized in `audio.rs`).
+cpal = "0.16"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # `wgpu` pulls egui-wgpu's defaults: WebGPU plus the WebGL2 fallback.
@@ -47,4 +49,4 @@ rfd = { workspace = true }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "Url", "CssStyleDeclaration", "Event", "EventTarget"] }
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "Url", "CssStyleDeclaration", "Event", "EventTarget", "AudioContext", "BaseAudioContext", "AudioBuffer", "AudioBufferSourceNode", "AudioScheduledSourceNode", "AudioNode", "AudioDestinationNode"] }

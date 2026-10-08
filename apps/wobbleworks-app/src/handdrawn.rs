@@ -18,9 +18,18 @@ const CONTAINER: f32 = 100.0;
 /// Outline weight for roughened boxes: a marker, not a hairline.
 const MIN_WIDTH: f32 = 1.5;
 
+/// The pointer as the pass sees it: where it is, whether a button is held, and a fast-ticking
+/// jiggle frame for whatever it hovers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pointer {
+    pub pos: Pos2,
+    pub pressed: bool,
+    pub jiggle: u64,
+}
+
 /// Roughen every layer's shapes for this frame. Shapes in `keep` on background layers (the canvas
-/// area) are left alone.
-pub fn apply(ctx: &Context, keep: Rect, frame: u64) {
+/// area) are left alone. Small boxes under `pointer` jiggle (hover) or squash (pressed).
+pub fn apply(ctx: &Context, keep: Rect, frame: u64, pointer: Option<Pointer>) {
     let layers: Vec<LayerId> = ctx.memory(|m| m.layer_ids().collect());
     ctx.graphics_mut(|g| {
         for layer in layers {
@@ -31,7 +40,7 @@ pub fn apply(ctx: &Context, keep: Rect, frame: u64) {
                     if skip_canvas && keep.contains_rect(cs.shape.visual_bounding_rect()) {
                         return;
                     }
-                    if roughen(&mut cs.shape, frame) {
+                    if roughen(&mut cs.shape, frame, pointer) {
                         // Wobbly edges stray a little past the shape; don't clip them flat.
                         cs.clip_rect = cs.clip_rect.expand(2.0);
                     }
@@ -48,10 +57,10 @@ fn seed_at(p: Pos2, salt: u64) -> u64 {
 }
 
 /// Swap `shape` for its hand-drawn version; `true` when it changed.
-fn roughen(shape: &mut Shape, frame: u64) -> bool {
+fn roughen(shape: &mut Shape, frame: u64, pointer: Option<Pointer>) -> bool {
     match shape {
-        Shape::Vec(v) => v.iter_mut().fold(false, |any, s| roughen(s, frame) | any),
-        Shape::Rect(r) => match rect(r, frame) {
+        Shape::Vec(v) => v.iter_mut().fold(false, |any, s| roughen(s, frame, pointer) | any),
+        Shape::Rect(r) => match rect(r, frame, pointer) {
             Some(s) => {
                 *shape = s;
                 true
@@ -80,8 +89,8 @@ fn roughen(shape: &mut Shape, frame: u64) -> bool {
     }
 }
 
-fn rect(r: &RectShape, frame: u64) -> Option<Shape> {
-    let b = r.rect;
+fn rect(r: &RectShape, frame: u64, pointer: Option<Pointer>) -> Option<Shape> {
+    let mut b = r.rect;
     // Textured rects are images (thumbnails, swatches drawn as textures): leave them be. Blurred
     // ones are soft shadows.
     if r.brush.is_some()
@@ -100,9 +109,23 @@ fn rect(r: &RectShape, frame: u64) -> Option<Shape> {
     }
     let radius = f32::from(r.corner_radius.nw.max(r.corner_radius.ne).max(r.corner_radius.sw).max(r.corner_radius.se));
     // Big panels wobble a bit more than small fields, but never enough to look broken.
-    let amp = (b.width().min(b.height()) * 0.06).clamp(0.5, 1.6);
-    let base = rough::rounded_outline(b, radius, 4.0);
+    let mut amp = (b.width().min(b.height()) * 0.06).clamp(0.5, 1.6);
     let seed = seed_at(b.min, (b.width() as u64) << 16 ^ b.height() as u64);
+    let mut frame = frame;
+    // Under the pointer: a pressed button squashes, a hovered one jiggles.
+    if let Some(p) = pointer
+        && b.contains(p.pos)
+        && b.width() < 400.0
+        && b.height() < 60.0
+    {
+        if p.pressed {
+            b = Rect::from_center_size(b.center(), egui::vec2(b.width() * 1.03, b.height() * 0.88));
+        } else {
+            amp *= 1.8;
+            frame = p.jiggle;
+        }
+    }
+    let base = rough::rounded_outline(b, radius, 4.0);
     let edge = rough::wobble(&base, b.center(), seed, frame, amp);
     let mut out = Vec::with_capacity(2);
     if has_fill {
@@ -141,32 +164,38 @@ mod tests {
     fn boxes_lines_and_dots_get_wobbly_and_images_text_stay() {
         let r = Rect::from_min_size(pos2(10.0, 10.0), egui::vec2(80.0, 30.0));
         let mut s = Shape::rect_filled(r, 4.0, Color32::RED);
-        assert!(roughen(&mut s, 0));
+        assert!(roughen(&mut s, 0, None));
         assert!(matches!(s, Shape::Vec(ref v) if v.len() == 1));
         let mut line = Shape::line_segment([pos2(0.0, 0.0), pos2(100.0, 0.0)], Stroke::new(1.0, Color32::BLACK));
-        assert!(roughen(&mut line, 1));
+        assert!(roughen(&mut line, 1, None));
         let mut dot = Shape::circle_filled(pos2(5.0, 5.0), 8.0, Color32::BLUE);
-        assert!(roughen(&mut dot, 2));
+        assert!(roughen(&mut dot, 2, None));
         // Tiny things, invisible boxes, textured rects and NaNs are left alone.
         let mut panel = Shape::rect_filled(Rect::from_min_size(Pos2::ZERO, egui::vec2(280.0, 400.0)), 8.0, Color32::WHITE);
-        assert!(!roughen(&mut panel, 0), "containers keep straight edges");
+        assert!(!roughen(&mut panel, 0, None), "containers keep straight edges");
         let mut tiny = Shape::rect_filled(Rect::from_min_size(Pos2::ZERO, egui::vec2(2.0, 20.0)), 0.0, Color32::RED);
-        assert!(!roughen(&mut tiny, 0));
+        assert!(!roughen(&mut tiny, 0, None));
         let mut clear = Shape::rect_filled(r, 0.0, Color32::TRANSPARENT);
-        assert!(!roughen(&mut clear, 0));
+        assert!(!roughen(&mut clear, 0, None));
         let mut img = Shape::image(egui::TextureId::Managed(1), r, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
-        assert!(!roughen(&mut img, 0));
+        assert!(!roughen(&mut img, 0, None));
         let mut nan = Shape::rect_filled(Rect::from_min_size(pos2(f32::NAN, 0.0), egui::vec2(20.0, 20.0)), 0.0, Color32::RED);
-        assert!(!roughen(&mut nan, 0));
+        assert!(!roughen(&mut nan, 0, None));
         let mut nan_line = Shape::line_segment([pos2(f32::NAN, 0.0), pos2(100.0, 0.0)], Stroke::new(1.0, Color32::BLACK));
-        assert!(!roughen(&mut nan_line, 0));
+        assert!(!roughen(&mut nan_line, 0, None));
     }
 
     #[test]
     fn a_still_ui_keeps_its_wobble_between_frames() {
         let r = Rect::from_min_size(pos2(10.0, 10.0), egui::vec2(80.0, 30.0));
-        let a = rect(&RectShape::filled(r, 4.0, Color32::RED), 0);
-        let b = rect(&RectShape::filled(r, 4.0, Color32::RED), 0);
+        let a = rect(&RectShape::filled(r, 4.0, Color32::RED), 0, None);
+        let b = rect(&RectShape::filled(r, 4.0, Color32::RED), 0, None);
         assert_eq!(format!("{a:?}"), format!("{b:?}"));
+        // Hovered, the box jiggles on its own fast frame; pressed, it squashes.
+        let over = |pressed| Some(Pointer { pos: r.center(), pressed, jiggle: 99 });
+        let hovered = rect(&RectShape::filled(r, 4.0, Color32::RED), 0, over(false));
+        assert_ne!(format!("{a:?}"), format!("{hovered:?}"));
+        let Some(Shape::Vec(v)) = rect(&RectShape::filled(r, 4.0, Color32::RED), 0, over(true)) else { panic!() };
+        assert!(v[0].visual_bounding_rect().height() < r.height());
     }
 }

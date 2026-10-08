@@ -31,6 +31,7 @@ pub fn run() -> eframe::Result {
             PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
             let mut w = WobbleApp::new(services());
             w.restore(cc.storage);
+            w.audio.out = CpalOut::open().map(|o| Box::new(o) as Box<dyn wobbleworks_app::audio::AudioOut>);
             w.picker.pick_reference = Some(Box::new(|inbox| {
                 let Some(path) = rfd::FileDialog::new().add_filter("Images", OPEN_EXTS).pick_file() else { return };
                 match photocraft_format::read_file(&path) {
@@ -78,5 +79,67 @@ fn services() -> Services {
         // Crash-safe: temp file, fsync, rename, so a failed save never destroys the old file.
         write: Some(Box::new(|path: &str, bytes: &[u8]| photocraft_format::atomic_write(Path::new(path), bytes).map_err(|e| e.to_string()))),
         ..codec_services()
+    }
+}
+
+/// Sound through the default output device (cpal). Sounds are mixed in the device callback;
+/// without a device (or on any error) the app stays silent.
+/// Sounds playing: their samples and how far through each one the device is.
+type Voices = std::sync::Arc<std::sync::Mutex<Vec<(Vec<f32>, usize)>>>;
+
+pub struct CpalOut {
+    rate: u32,
+    voices: Voices,
+    _stream: cpal::Stream,
+}
+
+impl CpalOut {
+    pub fn open() -> Option<Self> {
+        use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+        let device = cpal::default_host().default_output_device()?;
+        let config = device.default_output_config().ok()?;
+        let channels = usize::from(config.channels()).max(1);
+        let rate = config.sample_rate().0;
+        let voices: Voices = std::sync::Arc::default();
+        let mix = voices.clone();
+        let stream = device
+            .build_output_stream(
+                &config.into(),
+                move |out: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    let mut voices = mix.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    for frame in out.chunks_mut(channels) {
+                        let mut v = 0.0;
+                        for (samples, pos) in voices.iter_mut() {
+                            if let Some(s) = samples.get(*pos) {
+                                v += s;
+                                *pos += 1;
+                            }
+                        }
+                        let v = v.clamp(-1.0, 1.0);
+                        frame.iter_mut().for_each(|c| *c = v);
+                    }
+                    voices.retain(|(s, pos)| *pos < s.len());
+                },
+                |e| log::warn!("sound: {e}"),
+                None,
+            )
+            .map_err(|e| log::warn!("no sound: {e}"))
+            .ok()?;
+        stream.play().map_err(|e| log::warn!("no sound: {e}")).ok()?;
+        Some(Self { rate, voices, _stream: stream })
+    }
+}
+
+impl wobbleworks_app::audio::AudioOut for CpalOut {
+    fn rate(&self) -> u32 {
+        self.rate
+    }
+
+    fn play(&mut self, samples: Vec<f32>) {
+        let mut v = self.voices.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A busy moment can't pile up unbounded sound.
+        if v.len() < 32 {
+            v.push((samples, 0));
+        }
     }
 }

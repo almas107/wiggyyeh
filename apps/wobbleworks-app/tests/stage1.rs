@@ -245,7 +245,14 @@ mod ui {
             };
         }
         h.state_mut().track_recent();
+        h.state_mut().show_settings = std::env::var("WOBBLE_SETTINGS").is_ok();
         h.run_steps(6);
+        if std::env::var("WOBBLE_CELEBRATE").is_ok() {
+            h.state_mut().app.ui.status = "Saved wobble.psd".into();
+            for _ in 0..3 {
+                h.step();
+            }
+        }
         if let Some((x, y)) = std::env::var("WOBBLE_HOVER").ok().and_then(|s| s.split_once(',').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)))) {
             h.input_mut().events.push(egui::Event::PointerMoved(egui::pos2(x, y)));
             for _ in 0..40 {

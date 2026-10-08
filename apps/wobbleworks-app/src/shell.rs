@@ -10,14 +10,17 @@
 
 use std::sync::{Arc, Mutex};
 
-use egui::{Color32, Rect, Ui, pos2, vec2};
+use egui::{Color32, Pos2, Rect, Ui, pos2, vec2};
 use photocraft_engine::prefs::{CanvasBorder, CanvasColor, Theme as PrefTheme};
 use photocraft_engine::{Session, wiggle_cmds};
 use photocraft_ui_egui::state::Tool;
 use photocraft_ui_egui::{ExportSettings, PhotocraftApp, Services};
 use serde_json::{Value, json};
 
+use crate::audio::{Audio, Sound};
 use crate::colour::ColourPicker;
+use crate::juice::Juice;
+use crate::mascot::{self, Mascot};
 use crate::rough::{self, Paint};
 use crate::svgicon::{self, IconInk};
 use crate::theme::{self, Theme, mix};
@@ -56,6 +59,7 @@ pub const PALETTE_MAX: usize = 48;
 pub const FONT_SCALE: f32 = 1.0;
 
 const STORE_KEY: &str = "wobbleworks.colours";
+const SETTINGS_KEY: &str = "wobbleworks.settings";
 
 pub struct WobbleApp {
     /// PhotoCraft's editor, which owns the engine session.
@@ -85,6 +89,23 @@ pub struct WobbleApp {
     shown_frame: Option<u64>,
     /// Journal entries already looked at for strokes to spread onto every boil frame.
     journal_seen: usize,
+    /// Synthesized sound effects.
+    pub audio: Audio,
+    /// Pops, shake and particles.
+    pub juice: Juice,
+    /// Wob, the mascot.
+    pub mascot: Mascot,
+    /// Reduce motion: no boiling UI, pops, shake, particles or bouncing mascot.
+    pub reduce_motion: bool,
+    /// The settings card.
+    pub show_settings: bool,
+    /// Journal entries already looked at for sounds and effects.
+    fx_seen: usize,
+    last_tool: Option<Tool>,
+    last_status: String,
+    picker_was_open: bool,
+    /// Something has been drawn this session (the first stroke is celebrated).
+    drawn: bool,
     /// The boil frame and colours the icon painter reads.
     icons: Arc<Mutex<(u64, IconInk)>>,
     /// (document, history length) last seen, to notice painting.
@@ -125,6 +146,16 @@ impl WobbleApp {
             boil_fps: (1.0 / rough::BOIL_SECONDS) as f32,
             shown_frame: None,
             journal_seen: 0,
+            audio: Audio::default(),
+            juice: Juice::default(),
+            mascot: Mascot::default(),
+            reduce_motion: false,
+            show_settings: false,
+            fx_seen: 0,
+            last_tool: None,
+            last_status: String::new(),
+            picker_was_open: false,
+            drawn: false,
             icons: Arc::new(Mutex::new((0, ink))),
             seen: None,
             frames: 0,
@@ -364,6 +395,9 @@ impl WobbleApp {
         if let Some(text) = storage.and_then(|s| s.get_string(STORE_KEY)) {
             self.restore_colours(&text);
         }
+        if let Some(text) = storage.and_then(|s| s.get_string(SETTINGS_KEY)) {
+            self.restore_settings(&text);
+        }
     }
 
     /// Show `error` on the status line (a cancelled dialog is not an error).
@@ -473,8 +507,187 @@ impl WobbleApp {
                     let r = self.export_png_sequence(None);
                     self.report_result(r);
                 }
+                if widgets::button(ui, look, "Settings", self.show_settings, true).on_hover_text("Sound, motion and Wob").clicked() {
+                    self.show_settings = !self.show_settings;
+                }
             });
         });
+    }
+
+    /// Reduce motion everywhere (the UI holds still; no pops, shake, particles or hops).
+    pub fn set_reduce_motion(&mut self, on: bool) {
+        self.reduce_motion = on;
+        self.boiling = !on;
+        self.juice.reduce_motion = on;
+        self.mascot.reduce_motion = on;
+    }
+
+    /// The settings as saved between sessions.
+    pub fn settings_json(&self) -> String {
+        json!({
+            "volume": self.audio.volume,
+            "muted": self.audio.muted,
+            "reduceMotion": self.reduce_motion,
+            "mascot": self.mascot.enabled,
+            "handDrawn": self.hand_drawn,
+            "wiggle": self.wiggle_amount,
+        })
+        .to_string()
+    }
+
+    /// Restore settings saved by [`Self::settings_json`]; anything unreadable is ignored.
+    pub fn restore_settings(&mut self, text: &str) {
+        let Ok(v) = serde_json::from_str::<Value>(text) else { return };
+        let num = |k: &str| v.get(k).and_then(Value::as_f64).filter(|x| x.is_finite());
+        let flag = |k: &str| v.get(k).and_then(Value::as_bool);
+        if let Some(x) = num("volume") {
+            self.audio.volume = (x as f32).clamp(0.0, 1.0);
+        }
+        if let Some(b) = flag("muted") {
+            self.audio.muted = b;
+        }
+        if let Some(b) = flag("reduceMotion") {
+            self.set_reduce_motion(b);
+        }
+        if let Some(b) = flag("mascot") {
+            self.mascot.enabled = b;
+        }
+        if let Some(b) = flag("handDrawn") {
+            self.hand_drawn = b;
+        }
+        if let Some(x) = num("wiggle") {
+            self.wiggle_amount = (x as f32).clamp(0.0, 10.0).round();
+        }
+    }
+
+    /// The settings card above the dock.
+    fn settings(&mut self, ctx: &egui::Context, look: &Look) {
+        egui::Area::new(egui::Id::new("wobble-settings"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::RIGHT_BOTTOM, vec2(-14.0, -84.0))
+            .constrain_to(ctx.content_rect())
+            .show(ctx, |ui| {
+                widgets::card(ui, look, "wobble-settings-card", 14.0, |ui| {
+                    ui.set_max_width(280.0);
+                    widgets::label(ui, look, "Settings", 3.0, look.t.ink);
+                    ui.add_space(4.0);
+                    let mut v = self.audio.volume * 100.0;
+                    if widgets::slider(ui, look, "Volume", &mut v, 0.0..=100.0, 250.0, |v| format!("{v:.0}")).dragged() {
+                        self.audio.volume = v / 100.0;
+                    }
+                    let toggle = |ui: &mut Ui, label: &str, on: bool| widgets::button(ui, look, label, on, true).clicked();
+                    ui.horizontal_wrapped(|ui| {
+                        if toggle(ui, if self.audio.muted { "Muted" } else { "Sound on" }, !self.audio.muted) {
+                            self.audio.muted = !self.audio.muted;
+                            self.audio.play(Sound::Click);
+                        }
+                        if toggle(ui, "Reduce motion", self.reduce_motion) {
+                            let on = !self.reduce_motion;
+                            self.set_reduce_motion(on);
+                        }
+                        if toggle(ui, "Wob", self.mascot.enabled) {
+                            self.mascot.enabled = !self.mascot.enabled;
+                        }
+                        if toggle(ui, "Hand-drawn UI", self.hand_drawn) {
+                            self.hand_drawn = !self.hand_drawn;
+                        }
+                    });
+                    ui.add_space(4.0);
+                    if widgets::button(ui, look, "Done", false, true).clicked() {
+                        self.show_settings = false;
+                    }
+                });
+            });
+    }
+
+    /// Sounds, particles, shake and Wob's reactions to what just happened.
+    fn effects(&mut self, ctx: &egui::Context, now: f64) {
+        let pointer = ctx.pointer_latest_pos();
+        let canvas = self.app.last_canvas_rect;
+        let at = crate::juice::centre_or(pointer, canvas);
+        let fg = self.foreground();
+        let confetti = [self.theme.hot, self.theme.sun, self.theme.cool, fg, Color32::WHITE];
+        if ctx.input(|i| !i.events.is_empty()) {
+            self.mascot.input(now);
+        }
+        // Commands that just ran.
+        let journal = &self.app.session.journal;
+        let start = self.fx_seen.min(journal.len());
+        let new: Vec<(String, Value)> = journal.get(start..).map(<[_]>::to_vec).unwrap_or_default();
+        self.fx_seen = journal.len();
+        for (id, p) in new {
+            let inner = if id == "wiggle.apply" { p.get("command").and_then(Value::as_str).unwrap_or("").to_string() } else { id.clone() };
+            match inner.as_str() {
+                "edit.undo" => {
+                    self.audio.play(Sound::Undo);
+                    self.mascot.react(now, mascot::Event::Undo);
+                    self.juice.splat(now, at, &[self.theme.dim, self.theme.cool], 10);
+                }
+                "edit.redo" => self.audio.play(Sound::Redo),
+                "paint.bucket" | "edit.fill" | "paint.gradient" => {
+                    self.audio.play(Sound::Pop);
+                    self.juice.splat(now, at, &[fg, crate::theme::mix(fg, Color32::WHITE, 0.4)], 22);
+                }
+                "paint.stroke" | "paint.pencil" | "paint.mixerBrush" if id == "wiggle.apply" || !self.on_wiggle_layer() => {
+                    if !self.drawn {
+                        self.drawn = true;
+                        self.audio.play(Sound::Chime);
+                        self.juice.confetti(now, at, &confetti, 60);
+                        self.mascot.react(now, mascot::Event::FirstStroke);
+                    }
+                }
+                x if x.starts_with("stamp.") => {
+                    self.audio.play(Sound::Pop);
+                    self.juice.splat(now, at, &[fg], 12);
+                }
+                "layer.delete" | "edit.clear" | "layer.mergeDown" | "layer.mergeVisible" | "layer.flatten" | "image.flatten" | "layer.flattenImage" => {
+                    self.audio.play(Sound::Thud);
+                    self.juice.shake(now, 7.0);
+                    self.mascot.react(now, mascot::Event::BigAction);
+                }
+                _ => {}
+            }
+        }
+        // Saves and exports (ours and PhotoCraft's File menu both report on the status line).
+        if self.app.ui.status != self.last_status {
+            self.last_status = self.app.ui.status.clone();
+            // Confetti bursts up out of the picture.
+            let top = if canvas.is_finite() && canvas.width() > 0.0 {
+                pos2(canvas.center().x, canvas.min.y + canvas.height() * 0.4)
+            } else {
+                ctx.content_rect().center()
+            };
+            if self.last_status.starts_with("Saved") {
+                self.audio.play(Sound::Chime);
+                self.juice.confetti(now, top, &confetti, 80);
+                self.mascot.react(now, mascot::Event::Saved);
+            } else if self.last_status.starts_with("Exported") {
+                self.audio.play(Sound::Chime);
+                self.juice.confetti(now, top, &confetti, 80);
+                self.mascot.react(now, mascot::Event::Exported);
+            }
+        }
+        // A new tool pops.
+        let tool = self.app.ui.tool;
+        if self.last_tool.is_some_and(|t| t != tool) {
+            self.audio.play(Sound::Pop);
+            self.juice.splat(now, at, &[self.theme.sun, self.theme.cool], 8);
+        }
+        self.last_tool = Some(tool);
+        if self.picker.open != self.picker_was_open {
+            self.picker_was_open = self.picker.open;
+            self.audio.play(Sound::Pop);
+        }
+        // Clicks off the canvas click; drawing on it scratches with the pointer's speed.
+        let (clicked, down, origin, speed) =
+            ctx.input(|i| (i.pointer.primary_clicked(), i.pointer.primary_down(), i.pointer.press_origin(), i.pointer.velocity().length()));
+        let on_canvas = |p: Option<Pos2>| p.is_some_and(|p| canvas.contains(p));
+        if clicked && !on_canvas(pointer) {
+            self.audio.play(Sound::Click);
+        }
+        if down && on_canvas(origin) {
+            self.audio.scratch(now, speed);
+        }
     }
 
     /// Dots on the paper around the picture, and the picture's own wobbly outline and shadow.
@@ -541,6 +754,7 @@ impl eframe::App for WobbleApp {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         storage.set_string(STORE_KEY, self.colours_json());
+        storage.set_string(SETTINGS_KEY, self.settings_json());
     }
 
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
@@ -570,8 +784,31 @@ impl eframe::App for WobbleApp {
         self.spread_to_frames();
         self.track_recent();
         self.sheet(ui, &look);
+        let now = ctx.input(|i| i.time);
+        self.effects(&ctx, now);
+        if self.show_settings {
+            self.settings(&ctx, &look);
+        }
+        let canvas = self.app.last_canvas_rect;
+        if canvas.width() > 200.0 && canvas.height() > 160.0 && self.mascot.show(&ctx, &look, now, canvas.right_bottom() - vec2(56.0, 14.0)) {
+            self.audio.play(Sound::Boing);
+            self.mascot.react(now, mascot::Event::Poked);
+            self.juice.confetti(now, canvas.right_bottom() - vec2(56.0, 50.0), &[self.theme.hot, self.theme.sun, self.theme.cool], 24);
+        }
         if self.hand_drawn {
-            handdrawn::apply(&ctx, self.app.last_canvas_rect, look.frame);
+            let pointer = ctx.pointer_hover_pos().map(|pos| handdrawn::Pointer {
+                pos,
+                pressed: ctx.input(|i| i.pointer.primary_down()),
+                jiggle: if self.reduce_motion { look.frame } else { (now * 24.0) as u64 },
+            });
+            handdrawn::apply(&ctx, self.app.last_canvas_rect, look.frame, pointer);
+        }
+        let own =
+            [egui::Id::new("wobble-colour-card"), egui::Id::new("wobble-mascot"), egui::Id::new("wobble-mascot-paint"), egui::Id::new("wobble-particles")];
+        self.juice.apply(&ctx, now, &own);
+        if self.mascot.enabled && !self.reduce_motion {
+            // Wob breathes.
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
     }
 }

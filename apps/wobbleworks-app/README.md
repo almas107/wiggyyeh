@@ -10,10 +10,14 @@ tool, panel and file format) and redraws it by hand:
   swapped for a wobbly marker version that boils (text, images and the canvas stay exact).
 - `svgicon.rs`: PhotoCraft's Lucide icons parsed from their SVG and drawn as soft wobbly lines with
   pastel washes, through `photocraft_ui_egui::icons::set_painter`.
+- `juice.rs`, `audio.rs`, `mascot.rs`: pop-ins, shake, particles, synthesized sound (cpal on the
+  desktop, WebAudio on the web) and Wob the mascot; Settings has volume, mute and reduce motion.
 - `shell.rs`: dots and a paper-sheet outline around the picture, and the colour strip (current
   colour + mixer, recently painted colours, the user's palette; kept between sessions).
 
 Plan and progress: `docs/wobbleworks-spec.md`.
+
+Linux builds need ALSA's headers for sound (`libasound2-dev` on Debian/Ubuntu).
 
 ```sh
 cargo run -p wobbleworks-app [-- picture.psd]     # desktop

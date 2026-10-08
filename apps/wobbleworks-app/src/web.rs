@@ -33,6 +33,7 @@ pub fn start() {
                     let inbox: Inbox = Arc::default();
                     let mut w = WobbleApp::new(services(inbox.clone(), cc.egui_ctx.clone()));
                     w.restore(cc.storage);
+                    w.audio.out = Some(Box::new(WebAudioOut::new()));
                     let repaint = cc.egui_ctx.clone();
                     w.picker.pick_reference = Some(Box::new(move |inbox| {
                         let ctx = repaint.clone();
@@ -158,5 +159,48 @@ fn mime_for(name: &str) -> &'static str {
         Some("gif") => "image/gif",
         Some("psd" | "psb") => "image/vnd.adobe.photoshop",
         _ => "application/octet-stream",
+    }
+}
+
+/// Sound through WebAudio: each sound becomes a one-shot buffer source. The context is made on
+/// the first sound (after a click, as browsers require); errors leave the app silent.
+pub struct WebAudioOut {
+    ctx: Option<web_sys::AudioContext>,
+}
+
+impl WebAudioOut {
+    pub fn new() -> Self {
+        Self { ctx: None }
+    }
+
+    fn context(&mut self) -> Option<&web_sys::AudioContext> {
+        if self.ctx.is_none() {
+            self.ctx = web_sys::AudioContext::new().ok();
+        }
+        self.ctx.as_ref()
+    }
+}
+
+impl wobbleworks_app::audio::AudioOut for WebAudioOut {
+    fn rate(&self) -> u32 {
+        self.ctx.as_ref().map_or(44_100, |c| c.sample_rate() as u32)
+    }
+
+    fn play(&mut self, samples: Vec<f32>) {
+        let rate = self.rate() as f32;
+        let Some(ctx) = self.context() else { return };
+        if samples.is_empty() {
+            return;
+        }
+        let _ = ctx.resume();
+        let Ok(buffer) = ctx.create_buffer(1, samples.len() as u32, rate) else { return };
+        if buffer.copy_to_channel(&samples, 0).is_err() {
+            return;
+        }
+        let Ok(source) = ctx.create_buffer_source() else { return };
+        source.set_buffer(Some(&buffer));
+        if source.connect_with_audio_node(&ctx.destination()).is_ok() {
+            let _ = source.start();
+        }
     }
 }

@@ -187,3 +187,31 @@ deliverable. Mine it, then delete it once the new app replaces it:
     (engine `--all-targets`).
   - Still open: `.wob` import from the old app, wiggle brush presets (WigglyPaint's brush strip),
     onion skin, per-layer boil speed.
+- **Stage 4 (2026-10-08): juice, sound and the mascot done.**
+  - `juice.rs`: every Middle/Foreground/Tooltip layer (PhotoCraft windows, menus, popups,
+    tooltips) pops in with an ease-out-back scale over 0.22 s (shape transform after the frame is
+    drawn, reset when a window closes); screen shake (decaying noise translate of every layer,
+    0.32 s); paint-splat and confetti particles (capped at 400) on a Tooltip layer.
+  - `handdrawn.rs`: small boxes under the pointer jiggle (fast boil frame, 1.8× wobble) and
+    squash when pressed: every PhotoCraft button gets hover and press feedback.
+  - `audio.rs`: synthesized Click, Pop, Scratch{speed} (low-passed noise, louder/brighter with
+    pointer speed, paced every 45 ms while drawing on the canvas), Undo/Redo blips, Chime, Thud,
+    Boing; no clicks at onset (tested), never above 0.95. Native output `CpalOut` (cpal 0.16, mixed
+    in the device callback, silent without a device; Linux builds need `libasound2-dev`); web
+    `WebAudioOut` (one-shot AudioBuffer sources via web-sys, no JS).
+  - `mascot.rs`: Wob, a boiling blob on the paper's bottom-right corner: breathes, eyes follow the
+    pointer, cheers (first stroke, save, export, poke), surprised (undo, big actions), sleepy after
+    30 s idle ("z Z z"); pixel-font speech bubbles with cheerful lines; poke = boing + confetti.
+  - Triggers (`shell.rs::effects`): new journal entries (undo/redo, fills, stamps, delete/clear/
+    merge/flatten, the first stroke), status "Saved…"/"Exported…" (also PhotoCraft's File menu),
+    tool changes, the colour card opening, clicks off the canvas.
+  - Settings card (dock "Settings"): volume, mute, reduce motion (stops UI boil, pops, shake,
+    particles, hops), Wob on/off, hand-drawn UI on/off; saved with eframe persistence.
+  - Tests: `tests/stage4.rs` drives real frames (first-stroke chime, undo blip + surprised Wob,
+    save confetti + cheer, delete thud + shake, reduce motion, settings round trip) plus unit
+    tests for sounds, particles, pops and moods.
+  - Disk: build into `CARGO_TARGET_DIR=target/ww` with `CARGO_PROFILE_DEV_DEBUG=line-tables-only`
+    and `CARGO_INCREMENTAL=0`: the whole app plus tests is ~4 GB instead of ~30 GB.
+  - Pre-existing, not ours: wasm `-D warnings` stops in `photocraft-cms` (unused `PAR_*` consts).
+  - Still open: Wob idle animations beyond breathing, sound for the boil playback itself, haptic-y
+    "tool pop" on PhotoCraft's toolbar button (we sparkle at the pointer instead).
