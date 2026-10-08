@@ -133,9 +133,11 @@ pub fn tokens(t: &Theme) -> Tokens {
     k.text_dim = t.dim;
     k.text_faint = mix(t.dim, t.card, 0.35);
     k.icon = t.ink;
-    k.accent = t.hot;
-    k.accent_soft = mix(t.hot, t.card, 0.72);
-    k.accent_border = t.hot;
+    // Calm accents: the current tool and selected rows get a soft sunshine wash and an ink
+    // outline; toggles and sliders a gentle teal. No loud pink in the chrome.
+    k.accent = mix(t.cool, t.ink, 0.3);
+    k.accent_soft = mix(t.sun, t.card, 0.45);
+    k.accent_border = mix(t.ink, t.card, 0.25);
     k.accent_text = t.ink;
     k.separator = mix(t.ink, t.card, 0.7);
     k.shadow = t.shadow.gamma_multiply(0.35);
@@ -167,6 +169,8 @@ pub fn apply(ctx: &egui::Context, t: &Theme) {
     let ink = Stroke::new(2.0, t.ink);
     let hard = |o: i8| egui::Shadow { offset: [o, o], blur: 0, spread: 0, color: t.shadow };
     ctx.all_styles_mut(|s| {
+        // Tool names pop up right away, beside the pointer.
+        s.interaction.tooltip_delay = 0.12;
         let v = &mut s.visuals;
         v.dark_mode = t.dark;
         v.panel_fill = k.chrome;
@@ -180,10 +184,10 @@ pub fn apply(ctx: &egui::Context, t: &Theme) {
         v.faint_bg_color = mix(t.card, t.paper, 0.5);
         v.code_bg_color = k.field;
         v.override_text_color = Some(t.ink);
-        v.hyperlink_color = t.hot;
-        v.selection.bg_fill = mix(t.hot, t.card, 0.55);
+        v.hyperlink_color = mix(t.cool, t.ink, 0.4);
+        v.selection.bg_fill = mix(t.sun, t.card, 0.3);
         v.selection.stroke = Stroke::new(1.5, t.ink);
-        v.text_cursor.stroke = Stroke::new(2.0, t.hot);
+        v.text_cursor.stroke = Stroke::new(2.0, t.ink);
         let w = &mut v.widgets;
         w.noninteractive.bg_fill = t.card;
         w.noninteractive.weak_bg_fill = t.card;
@@ -221,7 +225,7 @@ mod tests {
         assert!(is_applied(&ctx, &BUBBLEGUM));
         let k = Tokens::get(&ctx);
         assert_eq!(k.canvas, BUBBLEGUM.paper);
-        assert_eq!(k.accent, BUBBLEGUM.hot);
+        assert_ne!(k.accent, BUBBLEGUM.hot, "no loud pink in the chrome");
         assert!(!k.pro, "no Photoshop tab strips");
         assert_eq!(to_hex(BUBBLEGUM.hot), "#ff2e88");
         assert_eq!(mix(Color32::BLACK, Color32::WHITE, f32::NAN), Color32::BLACK);

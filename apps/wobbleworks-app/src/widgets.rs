@@ -4,7 +4,6 @@
 
 use egui::{Color32, Rect, Response, Sense, Shape, Stroke, Ui, Vec2, pos2, vec2};
 
-use crate::icons::{self, Icon};
 use crate::pixfont;
 use crate::rough::{self, Paint};
 use crate::theme::{Theme, mix};
@@ -62,11 +61,10 @@ fn cursor(resp: Response, enabled: bool) -> Response {
     resp.on_hover_cursor(if enabled { egui::CursorIcon::PointingHand } else { egui::CursorIcon::NotAllowed })
 }
 
-/// A chunky button: optional icon, pixel-font label. `on` shows it toggled.
-pub fn button(ui: &mut Ui, look: &Look, icon: Option<Icon>, text: &str, on: bool, enabled: bool) -> Response {
+/// A chunky pixel-font button. `on` shows it toggled.
+pub fn button(ui: &mut Ui, look: &Look, text: &str, on: bool, enabled: bool) -> Response {
     let ts = pixfont::size(text, TEXT);
-    let icon_w = if icon.is_some() { 22.0 + if text.is_empty() { 0.0 } else { 6.0 } } else { 0.0 };
-    let size = vec2((ts.x + icon_w + 24.0).max(40.0), 40.0) + Vec2::splat(DEPTH);
+    let size = vec2((ts.x + 24.0).max(36.0), 36.0) + Vec2::splat(DEPTH);
     let (rect, resp) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, on, text));
     if ui.is_rect_visible(rect) {
@@ -74,27 +72,7 @@ pub fn button(ui: &mut Ui, look: &Look, icon: Option<Icon>, text: &str, on: bool
         let fill = if on { look.t.sun } else { look.t.card };
         let r = body(ui, look, inner, &resp, fill, enabled, 11.0);
         let ink = if enabled { look.t.ink } else { mix(look.t.ink, look.t.paper, 0.5) };
-        let content_w = icon_w + ts.x;
-        let mut x = r.center().x - content_w / 2.0;
-        if let Some(i) = icon {
-            icons::paint(ui.painter(), Rect::from_center_size(pos2(x + 11.0, r.center().y), Vec2::splat(22.0)), i, ink, look.t.hot);
-            x += icon_w;
-        }
-        if !text.is_empty() {
-            pixfont::paint(ui.painter(), pos2(x.round(), (r.center().y - ts.y / 2.0).round()), text, TEXT, ink, |_| 0.0);
-        }
-    }
-    cursor(resp, enabled)
-}
-
-/// A square icon tile (tools). `on` marks the current tool.
-pub fn tile(ui: &mut Ui, look: &Look, icon: Icon, on: bool, side: f32, enabled: bool) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(side) + Vec2::splat(DEPTH), if enabled { Sense::click() } else { Sense::hover() });
-    if ui.is_rect_visible(rect) {
-        let inner = Rect::from_min_size(rect.min, Vec2::splat(side));
-        let r = body(ui, look, inner, &resp, if on { look.t.sun } else { look.t.card }, enabled, side * 0.3);
-        let ink = if enabled { look.t.ink } else { mix(look.t.ink, look.t.paper, 0.5) };
-        icons::paint(ui.painter(), r.shrink(side * 0.2), icon, ink, look.t.hot);
+        pixfont::paint_centered(ui.painter(), r.center(), text, TEXT, ink, None);
     }
     cursor(resp, enabled)
 }
@@ -109,7 +87,7 @@ pub fn swatch(ui: &mut Ui, look: &Look, colour: Color32, on: bool, radius: f32) 
         let seed = resp.id.value();
         rough::blob(ui.painter(), c, radius * grow, &blob_paint(colour, look.ink(2.0), Some((vec2(3.0, 3.0), look.t.shadow))), seed, look.frame);
         if on {
-            rough::blob(ui.painter(), c, radius * grow + 5.0, &blob_paint(Color32::TRANSPARENT, Stroke::new(2.5, look.t.hot), None), seed ^ 3, look.frame);
+            rough::blob(ui.painter(), c, radius * grow + 4.0, &blob_paint(Color32::TRANSPARENT, Stroke::new(2.0, look.t.ink), None), seed ^ 3, look.frame);
             // A white glint, like a drop of wet paint.
             ui.painter().circle_filled(c + vec2(-radius * 0.35, -radius * 0.35), radius * 0.18, Color32::from_white_alpha(200));
         }
@@ -158,7 +136,14 @@ pub fn slider(
         rough::line(p, &rough::segment(a, b, 24), Stroke::new(5.0, mix(look.t.ink, look.t.card, 0.75)), seed, look.frame, 0.8);
         rough::line(p, &rough::segment(a, knob, 24), Stroke::new(5.0, look.t.hot), seed, look.frame, 0.8);
         let (hover, press) = motion(ui, &resp, true);
-        rough::blob(p, knob, 8.0 + 2.0 * hover - 1.5 * press, &blob_paint(look.t.card, look.ink(2.5), Some((vec2(2.0, 2.0), look.t.shadow))), seed ^ 11, look.frame);
+        rough::blob(
+            p,
+            knob,
+            8.0 + 2.0 * hover - 1.5 * press,
+            &blob_paint(look.t.card, look.ink(2.5), Some((vec2(2.0, 2.0), look.t.shadow))),
+            seed ^ 11,
+            look.frame,
+        );
     }
     resp.on_hover_cursor(egui::CursorIcon::ResizeHorizontal)
 }

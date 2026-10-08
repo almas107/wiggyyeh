@@ -1,29 +1,31 @@
-//! The WobbleWorks window: a WigglyPaint-style screen around PhotoCraft's editor.
+//! The WobbleWorks window: PhotoCraft's full editor, redrawn by hand.
 //!
-//! Simple mode puts PhotoCraft in its canvas-only screen mode (View › Screen Mode › Full Screen
-//! Mode) and surrounds the canvas with WobbleWorks' own hand-painted chrome: the top bar (file
-//! buttons, undo, the editor switch), a tool strip, and a paint dock (colours, brush size and
-//! opacity). "Advanced editor" switches PhotoCraft back to its standard screen mode with every
-//! menu, tool and panel, recoloured to match. Both modes share one session, so nothing is lost
-//! when switching. Everything the chrome does is a PhotoCraft command or tool.
+//! The editor is PhotoCraft's own (menus, options bar, tools, panels, canvas), so every feature is
+//! there. WobbleWorks restyles it: its colours (theme tokens), the pixel font (built into a
+//! TrueType font at startup), wobbly boiling outlines on every box and line (`handdrawn`), its
+//! icons redrawn as soft marker lines (`svgicon`), and dots on the paper around the picture.
+//! Below the editor sits the colour strip: the current colour, recently used colours, and the
+//! user's own palette (kept between sessions).
 
-use egui::{Color32, Rect, Ui, Vec2, pos2, vec2};
+use std::sync::{Arc, Mutex};
+
+use egui::{Color32, Rect, Ui, pos2, vec2};
 use photocraft_engine::Session;
 use photocraft_engine::prefs::{CanvasBorder, CanvasColor, Theme as PrefTheme};
 use photocraft_ui_egui::state::Tool;
 use photocraft_ui_egui::{ExportSettings, PhotocraftApp, Services};
 use serde_json::{Value, json};
 
-use crate::icons::Icon;
-use crate::pixfont;
 use crate::rough::{self, Paint};
+use crate::svgicon::{self, IconInk};
 use crate::theme::{self, Theme, mix};
 use crate::widgets::{self, Look, TEXT};
+use crate::{handdrawn, ttf};
 
 /// The canvas a new picture gets.
 pub const NEW_SIZE: (u32, u32) = (1200, 800);
 
-/// The paint dock's colours: (name, colour).
+/// The starting palette: (name, colour).
 pub const PALETTE: [(&str, &str); 16] = [
     ("Ink", "#17161c"),
     ("Bubblegum", "#ff2e88"),
@@ -43,49 +45,43 @@ pub const PALETTE: [(&str, &str); 16] = [
     ("Paper", "#ffffff"),
 ];
 
-/// The tool strip: PhotoCraft tools with their icons. Every other tool is in the "More" drawer.
-pub const TOOLS: [(Tool, Icon); 20] = [
-    (Tool::Brush, Icon::Brush),
-    (Tool::Pencil, Icon::Pencil),
-    (Tool::Eraser, Icon::Eraser),
-    (Tool::PaintBucket, Icon::Fill),
-    (Tool::Gradient, Icon::Gradient),
-    (Tool::Smudge, Icon::Smudge),
-    (Tool::Blur, Icon::Blur),
-    (Tool::CloneStamp, Icon::Stamp),
-    (Tool::Lasso, Icon::Lasso),
-    (Tool::RectMarquee, Icon::Marquee),
-    (Tool::MagicWand, Icon::Wand),
-    (Tool::Move, Icon::Move),
-    (Tool::Type, Icon::Text),
-    (Tool::Rectangle, Icon::Rect),
-    (Tool::EllipseShape, Icon::Ellipse),
-    (Tool::Line, Icon::Line),
-    (Tool::Eyedropper, Icon::Pick),
-    (Tool::Hand, Icon::Hand),
-    (Tool::Zoom, Icon::Zoom),
-    (Tool::Crop, Icon::Crop),
-];
+/// Recent colours kept.
+pub const RECENT_MAX: usize = 12;
+/// Palette colours kept.
+pub const PALETTE_MAX: usize = 48;
+/// The pixel font's size against the fonts it replaces (one font pixel ≈ 1.25 points at
+/// PhotoCraft's 12.5 pt body text; larger would overflow its panels, as pixel letters run wide).
+pub const FONT_SCALE: f32 = 1.0;
 
-/// PhotoCraft's screen modes this shell switches between (see `photocraft_ui_egui::view_cmds`).
-const SIMPLE_SCREEN: &str = "fullScreen";
-const ADVANCED_SCREEN: &str = "standard";
-/// Below this width the tool strip moves into the bottom dock (phones).
-const NARROW: f32 = 720.0;
+const STORE_KEY: &str = "wobbleworks.colours";
 
 pub struct WobbleApp {
     /// PhotoCraft's editor, which owns the engine session.
     pub app: PhotocraftApp,
-    /// Index into [`PALETTE`] of the colour last picked, `None` after a custom colour.
-    pub colour: Option<usize>,
     pub theme: Theme,
     /// Boiling outlines (off holds the UI still).
     pub boiling: bool,
-    /// The "More tools" drawer.
-    pub show_tools: bool,
+    /// Redraw PhotoCraft's boxes and lines by hand (off shows them as PhotoCraft draws them).
+    pub hand_drawn: bool,
+    /// Use the pixel font for PhotoCraft's text.
+    pub pixel_font: bool,
+    /// Draw PhotoCraft's icons as hand-drawn lines.
+    pub custom_icons: bool,
+    /// Colours recently painted with, newest first.
+    pub recent: Vec<Color32>,
+    /// The user's palette.
+    pub palette: Vec<Color32>,
     /// The colour mixer popup.
     pub show_mixer: bool,
+    /// The boil frame and colours the icon painter reads.
+    icons: Arc<Mutex<(u64, IconInk)>>,
+    /// (document, revision) last seen, to notice painting.
+    seen: Option<(u64, u64)>,
+    frames: u64,
 }
+
+/// Below this window width the side panels start closed, so the picture gets the room.
+pub const NARROW: f32 = 700.0;
 
 /// A tool's short name ("Brush Tool" → "Brush").
 pub fn tool_name(tool: Tool) -> &'static str {
@@ -93,15 +89,31 @@ pub fn tool_name(tool: Tool) -> &'static str {
     l.strip_suffix(" Tool").unwrap_or(l)
 }
 
+fn hex(c: &str) -> Option<Color32> {
+    Color32::from_hex(c).ok()
+}
+
 impl WobbleApp {
-    /// A WobbleWorks window over a fresh PhotoCraft session: simple mode, a blank picture and the
-    /// Brush tool.
+    /// A WobbleWorks window over a fresh PhotoCraft session with a blank picture and the Brush.
     pub fn new(services: Services) -> Self {
         let theme = Theme::default();
-        let mut w = Self { app: PhotocraftApp::new(Session::new(), services), colour: Some(0), theme, boiling: true, show_tools: false, show_mixer: false };
+        let ink = IconInk { ink: theme.ink, wash: mix(theme.cool, theme.card, 0.7), card: theme.card };
+        let mut w = Self {
+            app: PhotocraftApp::new(Session::new(), services),
+            theme,
+            boiling: true,
+            hand_drawn: true,
+            pixel_font: true,
+            custom_icons: true,
+            recent: Vec::new(),
+            palette: PALETTE.iter().filter_map(|(_, h)| hex(h)).collect(),
+            show_mixer: false,
+            icons: Arc::new(Mutex::new((0, ink))),
+            seen: None,
+            frames: 0,
+        };
         w.app.ui.theme = theme::base_kind(&theme);
         w.style_canvas();
-        w.set_simple(true);
         if let Err(e) = w.new_picture() {
             w.report(&e);
         }
@@ -111,8 +123,8 @@ impl WobbleApp {
         w
     }
 
-    /// PhotoCraft's canvas preferences for the paper look: the theme's paper around the image (our
-    /// own sheet outline and shadow replace PhotoCraft's border), and the light layout.
+    /// PhotoCraft's canvas preferences for the paper look: the theme's paper around the picture
+    /// (WobbleWorks' own outline and shadow replace PhotoCraft's border) and the light layout.
     fn style_canvas(&mut self) {
         let paper = theme::to_hex(self.theme.paper);
         let dark = self.theme.dark;
@@ -122,15 +134,6 @@ impl WobbleApp {
             p.interface.canvas_border = CanvasBorder::None;
             p.interface.theme = if dark { PrefTheme::Studio } else { PrefTheme::StudioLight };
         });
-    }
-
-    /// Is the simple (canvas-only) screen showing, rather than the advanced editor?
-    pub fn is_simple(&self) -> bool {
-        self.app.ui.view.screen_mode == SIMPLE_SCREEN
-    }
-
-    pub fn set_simple(&mut self, simple: bool) {
-        self.app.ui.view.screen_mode = if simple { SIMPLE_SCREEN } else { ADVANCED_SCREEN }.into();
     }
 
     /// Run a PhotoCraft command by id (errors also go to the status line).
@@ -145,28 +148,51 @@ impl WobbleApp {
         Ok(())
     }
 
-    /// Make `PALETTE[index]` the foreground colour.
+    /// Make palette colour `index` the foreground colour.
     pub fn pick_colour(&mut self, index: usize) -> Result<(), String> {
-        let (_, hex) = PALETTE.get(index).ok_or_else(|| format!("no palette colour {index}"))?;
-        self.run("tools.setColors", json!({"foreground": hex}))?;
-        self.colour = Some(index);
-        Ok(())
+        let c = *self.palette.get(index).ok_or_else(|| format!("no palette colour {index}"))?;
+        self.set_foreground(c)
     }
 
-    /// The foreground colour, for display.
+    pub fn set_foreground(&mut self, c: Color32) -> Result<(), String> {
+        self.run("tools.setColors", json!({"foreground": theme::to_hex(c)})).map(|_| ())
+    }
+
+    /// The foreground colour.
     pub fn foreground(&self) -> Color32 {
         let [r, g, b, _] = self.app.session.tools.foreground;
         let c = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
         Color32::from_rgb(c(r), c(g), c(b))
     }
 
-    /// Set the brush size (px) or opacity (0–1) through `tools.setBrush`; a drag is one gesture.
-    pub fn set_brush(&mut self, key: &str, value: f32) -> Result<(), String> {
-        self.run("tools.setBrush", json!({key: value, "coalesce": format!("wobble-{key}")})).map(|_| ())
+    /// Add the foreground colour to the palette (once). Returns whether it was added.
+    pub fn add_to_palette(&mut self) -> bool {
+        let c = self.foreground();
+        if self.palette.contains(&c) || self.palette.len() >= PALETTE_MAX {
+            return false;
+        }
+        self.palette.push(c);
+        true
     }
 
-    /// Paint a brush stroke through `paint.stroke` (what agents and tests use; pointer strokes go
-    /// through PhotoCraft's canvas and Brush tool).
+    /// Remember the foreground colour as recently used when the picture changed since last time
+    /// (something was painted, filled or drawn).
+    pub fn track_recent(&mut self) {
+        let now = self.app.session.active().map(|st| (st.doc.id.0, st.revision));
+        if now != self.seen {
+            let painted = matches!((self.seen, now), (Some((a, r0)), Some((b, r1))) if a == b && r1 > r0);
+            self.seen = now;
+            if painted {
+                let c = self.foreground();
+                self.recent.retain(|&x| x != c);
+                self.recent.insert(0, c);
+                self.recent.truncate(RECENT_MAX);
+            }
+        }
+    }
+
+    /// Paint a brush stroke through `paint.stroke` (agents and tests; pointer strokes go through
+    /// PhotoCraft's canvas and Brush tool).
     pub fn stroke(&mut self, points: &[(f64, f64)], colour: &str, size: f64) -> Result<Value, String> {
         let points: Vec<Value> = points.iter().map(|&(x, y)| json!([x, y])).collect();
         self.run("paint.stroke", json!({"points": points, "color": colour, "size": size}))
@@ -204,6 +230,36 @@ impl WobbleApp {
         Ok(path)
     }
 
+    /// The colours as saved between sessions.
+    pub fn colours_json(&self) -> String {
+        let list = |v: &[Color32]| v.iter().map(|&c| theme::to_hex(c)).collect::<Vec<_>>();
+        json!({"palette": list(&self.palette), "recent": list(&self.recent)}).to_string()
+    }
+
+    /// Restore colours saved by [`Self::colours_json`]; anything unreadable is ignored.
+    pub fn restore_colours(&mut self, text: &str) {
+        let Ok(v) = serde_json::from_str::<Value>(text) else { return };
+        let read = |k: &str, max: usize| -> Option<Vec<Color32>> {
+            let list: Vec<Color32> = v.get(k)?.as_array()?.iter().filter_map(|c| hex(c.as_str()?)).take(max).collect();
+            Some(list)
+        };
+        if let Some(p) = read("palette", PALETTE_MAX)
+            && !p.is_empty()
+        {
+            self.palette = p;
+        }
+        if let Some(r) = read("recent", RECENT_MAX) {
+            self.recent = r;
+        }
+    }
+
+    /// Restore saved colours from eframe's storage.
+    pub fn restore(&mut self, storage: Option<&dyn eframe::Storage>) {
+        if let Some(text) = storage.and_then(|s| s.get_string(STORE_KEY)) {
+            self.restore_colours(&text);
+        }
+    }
+
     /// Show `error` on the status line (a cancelled dialog is not an error).
     fn report(&mut self, error: &str) {
         if error != CANCELLED {
@@ -222,211 +278,86 @@ impl WobbleApp {
         Look { t: self.theme, frame: rough::boil_frame(ctx.input(|i| i.time), self.boiling) }
     }
 
-    fn panel_frame(&self) -> egui::Frame {
-        egui::Frame::NONE.fill(self.theme.paper).inner_margin(egui::Margin { left: 12, right: 12, top: 8, bottom: 8 })
-    }
-
-    /// The top bar: logo, file buttons, undo/redo and the editor switch.
-    fn top_bar(&mut self, ui: &mut Ui, look: &Look, narrow: bool) {
-        let frame = self.panel_frame();
-        egui::Panel::top("wobble_top").show_separator_line(false).frame(frame).show(ui, |ui| {
-            ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
-            ui.horizontal_wrapped(|ui| {
-                widgets::logo(ui, look, if narrow { 2.0 } else { 3.0 });
-                ui.add_space(6.0);
-                let t = |s: &'static str| if narrow { "" } else { s };
-                if widgets::button(ui, look, Some(Icon::New), t("New"), false, true).on_hover_text("A fresh picture").clicked() {
-                    let r = self.new_picture();
-                    self.report_result(r);
-                }
-                if widgets::button(ui, look, Some(Icon::Folder), t("Open"), false, true).on_hover_text("Open a PSD or an image").clicked() {
-                    self.app.open_dialog_file();
-                }
-                if widgets::button(ui, look, Some(Icon::Save), t("Save"), false, true).on_hover_text("Save as a Photoshop document (.psd)").clicked() {
-                    let r = self.save_psd(None);
-                    self.report_result(r);
-                }
-                if widgets::button(ui, look, Some(Icon::Export), t("Export"), false, true).on_hover_text("Export a PNG").clicked() {
-                    let r = self.export_png(None);
-                    self.report_result(r);
-                }
-                ui.add_space(6.0);
-                for (id, icon, tip) in [("edit.undo", Icon::Undo, "Undo"), ("edit.redo", Icon::Redo, "Redo")] {
-                    let enabled = self.app.session.is_enabled(id);
-                    if widgets::button(ui, look, Some(icon), "", false, enabled).on_hover_text(tip).clicked() {
-                        let _ = self.run(id, json!({}));
-                    }
-                }
-                ui.add_space(6.0);
-                let simple = self.is_simple();
-                let label = if simple { t("Advanced") } else { t("Simple") };
-                if widgets::button(ui, look, Some(Icon::Sliders), label, !simple, true)
-                    .on_hover_text(if simple { "Every PhotoCraft menu, tool and panel" } else { "Back to the cosy screen" })
-                    .clicked()
-                {
-                    self.set_simple(!simple);
-                }
-            });
-        });
-    }
-
-    /// The tool strip (two columns of painted tiles) on wide screens.
-    fn tool_strip(&mut self, ui: &mut Ui, look: &Look) {
-        let frame = egui::Frame::NONE.fill(self.theme.paper).inner_margin(egui::Margin { left: 12, right: 6, top: 4, bottom: 8 });
-        egui::Panel::left("wobble_tools").show_separator_line(false).resizable(false).exact_size(138.0).frame(frame).show(ui, |ui| {
-            egui::ScrollArea::vertical().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
-                widgets::card(ui, look, "wobble-tools-card", 10.0, |ui| {
-                    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                    egui::Grid::new("wobble-tool-grid").spacing(vec2(6.0, 6.0)).show(ui, |ui| {
-                        for (i, (tool, icon)) in TOOLS.iter().enumerate() {
-                            self.tool_tile(ui, look, *tool, *icon);
-                            if i % 2 == 1 {
-                                ui.end_row();
-                            }
-                        }
-                        if widgets::tile(ui, look, Icon::More, self.show_tools, 44.0, true).on_hover_text("All the tools").clicked() {
-                            self.show_tools = !self.show_tools;
-                        }
-                    });
-                });
-            });
-        });
-    }
-
-    fn tool_tile(&mut self, ui: &mut Ui, look: &Look, tool: Tool, icon: Icon) {
-        if widgets::tile(ui, look, icon, self.app.ui.tool == tool, 44.0, true).on_hover_text(tool_name(tool)).clicked() {
-            self.app.ui.tool = tool;
+    /// Keep the pixel font first in PhotoCraft's font stacks (PhotoCraft rebuilds them when it
+    /// sets up and when the UI font size changes).
+    fn ensure_font(&self, ctx: &egui::Context) {
+        // PhotoCraft installs its fonts on its first frames; add ours on top once they're in.
+        if self.frames < 2 || !self.pixel_font {
+            return;
+        }
+        let present = ctx.fonts(|f| f.definitions().font_data.contains_key(ttf::FONT_NAME));
+        if !present {
+            let mut defs = ctx.fonts(|f| f.definitions().clone());
+            ttf::install(&mut defs, FONT_SCALE);
+            ctx.set_fonts(defs);
         }
     }
 
-    /// The paint dock: current colour, palette, brush size and opacity, tool name, status. On
-    /// narrow screens the tools ride along in a scrolling row.
-    fn paint_dock(&mut self, ui: &mut Ui, look: &Look, narrow: bool) {
-        let frame = self.panel_frame();
-        egui::Panel::bottom("wobble_dock").show_separator_line(false).frame(frame).show(ui, |ui| {
-            if narrow {
-                egui::ScrollArea::horizontal().id_salt("wobble-tool-row").scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(
-                    ui,
-                    |ui| {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            for (tool, icon) in TOOLS {
-                                self.tool_tile(ui, look, tool, icon);
-                            }
-                            if widgets::tile(ui, look, Icon::More, self.show_tools, 44.0, true).clicked() {
-                                self.show_tools = !self.show_tools;
-                            }
-                        });
-                    },
-                );
-                ui.add_space(4.0);
-            }
+    /// The colour strip: current colour, recent colours, the palette.
+    fn colour_strip(&mut self, ui: &mut Ui, look: &Look) {
+        let frame = egui::Frame::NONE.fill(self.theme.paper).inner_margin(egui::Margin { left: 10, right: 10, top: 6, bottom: 8 });
+        egui::Panel::bottom("wobble_colours").show_separator_line(false).frame(frame).show(ui, |ui| {
             let avail = ui.available_width();
-            widgets::card(ui, look, "wobble-dock-card", 10.0, |ui| {
-                ui.set_max_width((avail - 30.0).max(100.0));
-                ui.spacing_mut().item_spacing = vec2(10.0, 8.0);
+            widgets::card(ui, look, "wobble-colour-card", 8.0, |ui| {
+                ui.set_max_width((avail - 24.0).max(100.0));
+                ui.spacing_mut().item_spacing = vec2(2.0, 4.0);
                 ui.horizontal_wrapped(|ui| {
                     let fg = self.foreground();
-                    if widgets::swatch(ui, look, fg, self.show_mixer, 20.0).on_hover_text("Mix a colour").clicked() {
+                    if widgets::swatch(ui, look, fg, self.show_mixer, 17.0).on_hover_text("Mix a colour").clicked() {
                         self.show_mixer = !self.show_mixer;
                     }
-                    ui.add_space(4.0);
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    for (i, (name, hex)) in PALETTE.iter().enumerate() {
-                        let c = Color32::from_hex(hex).unwrap_or(Color32::BLACK);
-                        if widgets::swatch(ui, look, c, self.colour == Some(i), 12.0).on_hover_text(*name).clicked() {
-                            let r = self.pick_colour(i);
-                            self.report_result(r);
-                        }
-                    }
-                    ui.spacing_mut().item_spacing.x = 10.0;
                     ui.add_space(8.0);
-                    let slider_w = if narrow { (avail - 60.0).clamp(120.0, 260.0) } else { 190.0 };
-                    let mut size = self.app.session.tools.brush.size;
-                    if widgets::slider(ui, look, "Size", &mut size, 1.0..=200.0, slider_w, |v| format!("{v:.0}")).changed_or_dragged() {
-                        let r = self.set_brush("size", size.round().max(1.0));
-                        self.report_result(r);
+                    widgets::label(ui, look, "Recent", TEXT, look.t.dim);
+                    ui.add_space(4.0);
+                    if self.recent.is_empty() {
+                        widgets::label(ui, look, "(paint something!)", TEXT, mix(look.t.dim, look.t.card, 0.4));
                     }
-                    let mut opacity = self.app.session.tools.brush.opacity * 100.0;
-                    if widgets::slider(ui, look, "Opacity", &mut opacity, 1.0..=100.0, slider_w, |v| format!("{v:.0}%")).changed_or_dragged() {
-                        let r = self.set_brush("opacity", (opacity / 100.0).clamp(0.01, 1.0));
-                        self.report_result(r);
-                    }
-                    self.status(ui, look);
-                });
-            });
-        });
-    }
-
-    /// The tool name, picture switcher and status message.
-    fn status(&mut self, ui: &mut Ui, look: &Look) {
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 4.0;
-            widgets::label(ui, look, tool_name(self.app.ui.tool), TEXT, look.t.hot);
-            let n = self.app.session.documents().len();
-            if n > 1
-                && let Some(i) = self.app.session.active_index()
-            {
-                ui.horizontal(|ui| {
-                    if widgets::label(ui, look, "<", TEXT, look.t.ink).interact(egui::Sense::click()).on_hover_text("Previous picture").clicked() {
-                        self.app.session.set_active((i + n - 1) % n);
-                    }
-                    widgets::label(ui, look, &format!("{}/{}", i + 1, n), TEXT, look.t.dim);
-                    if widgets::label(ui, look, ">", TEXT, look.t.ink).interact(egui::Sense::click()).on_hover_text("Next picture").clicked() {
-                        self.app.session.set_active((i + 1) % n);
-                    }
-                });
-            }
-            if !self.app.ui.status.is_empty() {
-                let w = ui.available_width().clamp(120.0, 360.0);
-                let text = pixfont::fit(&self.app.ui.status, TEXT, w);
-                let c = if self.app.ui.status_error { look.t.hot } else { look.t.dim };
-                widgets::label(ui, look, &text, TEXT, c).on_hover_text(self.app.ui.status.clone());
-            }
-        });
-    }
-
-    /// The "More tools" drawer: every PhotoCraft tool by name.
-    fn tool_drawer(&mut self, ctx: &egui::Context, look: &Look) {
-        let screen = ctx.content_rect();
-        let w = (screen.width() - 32.0).clamp(200.0, 620.0);
-        egui::Area::new(egui::Id::new("wobble-tool-drawer")).order(egui::Order::Foreground).anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
-            widgets::card(ui, look, "wobble-drawer-card", 14.0, |ui| {
-                ui.set_max_width(w);
-                ui.horizontal(|ui| {
-                    widgets::label(ui, look, "All the tools", 3.0, look.t.ink);
-                });
-                ui.add_space(6.0);
-                ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                let max_h = (screen.height() - 200.0).max(120.0);
-                egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.set_max_width(w);
-                        for tool in Tool::ALL {
-                            if widgets::button(ui, look, None, tool_name(tool), self.app.ui.tool == tool, true).clicked() {
-                                self.app.ui.tool = tool;
-                                self.show_tools = false;
-                            }
+                    let mut pick = None;
+                    for (i, &c) in self.recent.iter().enumerate() {
+                        if widgets::swatch(ui, look, c, c == fg, 11.0).on_hover_text(theme::to_hex(c)).clicked() {
+                            pick = Some(c);
                         }
-                    });
+                        let _ = i;
+                    }
+                    ui.add_space(12.0);
+                    widgets::label(ui, look, "Palette", TEXT, look.t.dim);
+                    ui.add_space(4.0);
+                    let mut remove = None;
+                    for (i, &c) in self.palette.iter().enumerate() {
+                        let r = widgets::swatch(ui, look, c, c == fg, 11.0).on_hover_text(format!("{}  (right-click to remove)", theme::to_hex(c)));
+                        if r.clicked() {
+                            pick = Some(c);
+                        }
+                        if r.secondary_clicked() {
+                            remove = Some(i);
+                        }
+                    }
+                    if widgets::button(ui, look, "+", false, !self.palette.contains(&fg) && self.palette.len() < PALETTE_MAX)
+                        .on_hover_text("Add the current colour to your palette")
+                        .clicked()
+                    {
+                        self.add_to_palette();
+                    }
+                    if let Some(i) = remove
+                        && i < self.palette.len()
+                    {
+                        self.palette.remove(i);
+                    }
+                    if let Some(c) = pick {
+                        let r = self.set_foreground(c);
+                        self.report_result(r);
+                    }
                 });
-                ui.add_space(6.0);
-                if widgets::button(ui, look, None, "Close", false, true).clicked() {
-                    self.show_tools = false;
-                }
             });
         });
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.show_tools = false;
-        }
     }
 
-    /// The colour mixer popup above the dock.
+    /// The colour mixer popup above the strip.
     fn mixer(&mut self, ctx: &egui::Context, look: &Look) {
         let screen = ctx.content_rect();
         egui::Area::new(egui::Id::new("wobble-mixer"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::LEFT_BOTTOM, vec2(16.0, -110.0))
+            .anchor(egui::Align2::LEFT_BOTTOM, vec2(14.0, -78.0))
             .constrain_to(screen)
             .show(ctx, |ui| {
                 widgets::card(ui, look, "wobble-mixer-card", 12.0, |ui| {
@@ -435,35 +366,39 @@ impl WobbleApp {
                     let mut c = self.foreground();
                     ui.spacing_mut().slider_width = 220.0;
                     if egui::color_picker::color_picker_color32(ui, &mut c, egui::color_picker::Alpha::Opaque) {
-                        let r = self.run("tools.setColors", json!({"foreground": theme::to_hex(c)}));
+                        let r = self.set_foreground(c);
                         self.report_result(r);
-                        self.colour = None;
                     }
                     ui.add_space(4.0);
-                    if widgets::button(ui, look, None, "Done", false, true).clicked() {
-                        self.show_mixer = false;
-                    }
+                    ui.horizontal(|ui| {
+                        if widgets::button(ui, look, "Add to palette", false, !self.palette.contains(&self.foreground())).clicked() {
+                            self.add_to_palette();
+                        }
+                        if widgets::button(ui, look, "Done", false, true).clicked() {
+                            self.show_mixer = false;
+                        }
+                    });
                 });
             });
     }
 
     /// Dots on the paper around the picture, and the picture's own wobbly outline and shadow.
-    fn sheet(&mut self, ui: &Ui, look: &Look) {
+    fn sheet(&self, ui: &Ui, look: &Look) {
         let Some(idx) = self.app.session.active_index() else { return };
         let (Some(view), Some(st)) = (self.app.ui.views.get(idx), self.app.session.active()) else { return };
         let area = self.app.last_canvas_rect;
         let zoom = view.zoom;
-        if !zoom.is_finite() || zoom <= 0.0 || !area.is_finite() {
+        // No room for a canvas (the panels fill a phone screen): nothing to decorate.
+        if !zoom.is_finite() || zoom <= 0.0 || !area.is_finite() || area.width() < 120.0 || area.height() < 120.0 {
             return;
         }
         let size = vec2(st.doc.size.width as f32, st.doc.size.height as f32) * zoom;
-        let min = area.center() - vec2(view.center[0], view.center[1]) * zoom;
-        let img = Rect::from_min_size(min, size);
+        let img = Rect::from_min_size(area.center() - vec2(view.center[0], view.center[1]) * zoom, size);
         if !img.is_finite() {
             return;
         }
         let painter = ui.painter_at(area);
-        // Dots everywhere but the picture (and its outline): little square pixels on a fixed grid.
+        // Dots everywhere but the picture: little square pixels on a fixed grid.
         let hole = img.expand(8.0);
         let dot = mix(look.t.ink, look.t.paper, 0.6);
         let step = 18.0;
@@ -479,12 +414,12 @@ impl WobbleApp {
             }
             y += step;
         }
-        // Hard shadow on the paper, right and below the picture.
-        let d = 8.0;
+        // Hard shadow on the paper, right and below the picture, then a marker outline.
+        let d = 7.0;
         painter.rect_filled(Rect::from_min_max(pos2(img.max.x, img.min.y + d), pos2(img.max.x + d, img.max.y + d)), 0.0, look.t.shadow);
         painter.rect_filled(Rect::from_min_max(pos2(img.min.x + d, img.max.y), pos2(img.max.x, img.max.y + d)), 0.0, look.t.shadow);
-        let edge = Paint { fill: Color32::TRANSPARENT, ink: look.ink(3.0), shadow: None, radius: 3.0, wobble: 1.4 };
-        rough::boxed(&painter, img.expand(2.5), &edge, 0x5ee7, look.frame);
+        let edge = Paint { fill: Color32::TRANSPARENT, ink: look.ink(2.5), shadow: None, radius: 3.0, wobble: 1.3 };
+        rough::boxed(&painter, img.expand(2.0), &edge, 0x5ee7, look.frame);
     }
 }
 
@@ -494,22 +429,14 @@ fn file_name(path: &str) -> String {
     std::path::Path::new(path).file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned())
 }
 
-trait ChangedOrDragged {
-    fn changed_or_dragged(&self) -> bool;
-}
-
-impl ChangedOrDragged for egui::Response {
-    fn changed_or_dragged(&self) -> bool {
-        self.dragged() || self.clicked()
-    }
-}
-
 impl eframe::App for WobbleApp {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.app.logic(ctx, frame);
         // PhotoCraft (re)applies its own theme on its first frame and when preferences change.
         if !theme::is_applied(ctx, &self.theme) {
             theme::apply(ctx, &self.theme);
+            let painter = self.custom_icons.then(|| svgicon::painter(self.icons.clone()));
+            photocraft_ui_egui::icons::set_painter(ctx, painter);
         }
     }
 
@@ -517,30 +444,37 @@ impl eframe::App for WobbleApp {
         self.app.raw_input_hook(ctx, raw_input);
     }
 
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        storage.set_string(STORE_KEY, self.colours_json());
+    }
+
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.frames += 1;
+        if self.frames == 1 && ctx.content_rect().width() < NARROW {
+            // The rail on the right still opens each panel.
+            let p = &mut self.app.ui.panels;
+            (p.layers, p.color, p.properties, p.navigator, p.history) = (false, false, false, false, false);
+        }
+        self.ensure_font(&ctx);
         let look = self.look(&ctx);
+        if let Ok(mut s) = self.icons.lock() {
+            s.0 = look.frame;
+        }
         if self.boiling {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(rough::BOIL_SECONDS));
         }
-        let narrow = ui.available_width() < NARROW;
-        self.top_bar(ui, &look, narrow);
-        let simple = self.is_simple();
-        if simple {
-            self.paint_dock(ui, &look, narrow);
-            if !narrow {
-                self.tool_strip(ui, &look);
-            }
-        }
+        // Paper under everything, so wobbly panel edges show paper rather than a gap.
+        ctx.layer_painter(egui::LayerId::background()).rect_filled(ctx.content_rect(), 0.0, self.theme.paper);
+        self.colour_strip(ui, &look);
         self.app.ui(ui, frame);
-        if simple {
-            self.sheet(ui, &look);
-            if self.show_tools {
-                self.tool_drawer(&ctx, &look);
-            }
-            if self.show_mixer {
-                self.mixer(&ctx, &look);
-            }
+        self.track_recent();
+        self.sheet(ui, &look);
+        if self.show_mixer {
+            self.mixer(&ctx, &look);
+        }
+        if self.hand_drawn {
+            handdrawn::apply(&ctx, self.app.last_canvas_rect, look.frame);
         }
     }
 }

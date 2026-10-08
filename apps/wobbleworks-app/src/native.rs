@@ -30,6 +30,7 @@ pub fn run() -> eframe::Result {
         Box::new(move |cc| {
             PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
             let mut w = WobbleApp::new(services());
+            w.restore(cc.storage);
             w.app.background_jobs = true;
             if let Some(rs) = cc.wgpu_render_state.clone() {
                 w.app.set_wgpu(rs);

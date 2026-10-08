@@ -133,3 +133,22 @@ deliverable. Mine it, then delete it once the new app replaces it:
   - Still open: WigglyPaint-style brush strip (wiggle brushes are stage 2), mascot and sound (stage
     4), theme picker and dark mode in settings, a restyle of PhotoCraft's own panel widgets beyond
     colours (stage 5), the logo's ink letters read a bit jumbled while boiling.
+- **UI rework 2 (2026-10-08), user feedback on stage 3:** liked the wobbliness and the colour strip;
+  disliked the "All the tools" drawer, the header and the loud pink icons; picked the full editor
+  (the old "advanced" screen) as the one and only screen, hand-drawn, with medium pixel text.
+  - Simple mode, header and drawer removed. The window is PhotoCraft's editor plus a bottom colour
+    strip (current colour + mixer, recent colours tracked when the picture changes, user palette:
+    "+" adds, right-click removes; saved through eframe persistence).
+  - `ttf.rs`: the pixel font as an in-memory TrueType font (`FONT_SCALE` 1.0 at PhotoCraft's
+    12.5 pt; 1.2 overflowed the options bar). `handdrawn.rs`: post-pass over every egui layer
+    (`Context::graphics_mut`) turning Rect/LineSegment/Circle shapes into wobbly boiling ones,
+    skipping the canvas area, textured and blurred rects. `svgicon.rs`: Lucide SVG subset parser
+    (paths with arcs, circles, rects, lines, polylines) drawing icons as wobbly lines with pastel
+    washes via a new `photocraft_ui_egui::icons::set_painter` hook (+ `svg`, `names`).
+  - Accents calmed (sun wash + ink outline for the current tool, teal toggles); tooltips at 0.12 s
+    show tool names beside the pointer, in a hand-drawn bubble.
+  - Lesson: egui mitres sharp corners, so a folded or zero-length polygon edge draws a long spike.
+    Tiny icon parts are drawn as plain dots, near-duplicate points are dropped, and closed outlines
+    don't repeat their first point.
+  - Still open: PhotoCraft's title bar still shows its kitsune icon and "Discord"; the colour
+    picker inside the mixer is egui's; performance of the post-pass not measured yet (stage 6).

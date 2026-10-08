@@ -146,6 +146,20 @@ pub fn line(painter: &Painter, pts: &[Pos2], ink: Stroke, seed: u64, frame: u64,
     painter.add(Shape::line(out, ink));
 }
 
+/// `pts` nudged by smooth noise along their length (a hand-drawn version of a precise line).
+pub fn jitter_line(pts: &[Pos2], seed: u64, frame: u64, amp: f32) -> Vec<Pos2> {
+    let mut s = 0.0;
+    let mut prev = pts.first().copied().unwrap_or(Pos2::ZERO);
+    let boil = seed ^ (frame + 1).wrapping_mul(0xA24B_AED4_963E_E407);
+    pts.iter()
+        .map(|&p| {
+            s += (p - prev).length();
+            prev = p;
+            p + vec2(smooth(seed, s, 7.0) * 0.7 + smooth(boil, s, 4.0) * 0.4, smooth(seed ^ 0x77, s, 7.0) * 0.7 + smooth(boil ^ 0x77, s, 4.0) * 0.4) * amp
+        })
+        .collect()
+}
+
 /// `a` to `b` in `n` even steps (for wobbly straight lines).
 pub fn segment(a: Pos2, b: Pos2, n: usize) -> Vec<Pos2> {
     let n = n.max(1);

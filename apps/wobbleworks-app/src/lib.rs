@@ -8,12 +8,14 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
-pub mod icons;
+pub mod handdrawn;
 pub mod io;
 pub mod pixfont;
 pub mod rough;
 pub mod shell;
+pub mod svgicon;
 pub mod theme;
+pub mod ttf;
 pub mod widgets;
 
 pub use shell::WobbleApp;

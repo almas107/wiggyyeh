@@ -6,7 +6,7 @@
 use egui::{Color32, Painter, Pos2, Rect, Vec2, pos2, vec2};
 
 /// Rows from the top of the cap height down; rows 7 and 8 are descenders. `#` is ink.
-type Glyph = &'static [&'static str];
+pub type Glyph = &'static [&'static str];
 
 /// Rows above the baseline.
 pub const CAP: f32 = 7.0;
@@ -16,7 +16,7 @@ pub const ROWS: f32 = 9.0;
 const GAP: f32 = 1.0;
 
 /// The glyph for `c`, `None` for characters the font doesn't have.
-fn glyph(c: char) -> Option<Glyph> {
+pub fn glyph(c: char) -> Option<Glyph> {
     Some(match c {
         ' ' => &["..."],
         '!' => &["#", "#", "#", "#", "#", ".", "#"],
@@ -119,6 +119,11 @@ fn glyph(c: char) -> Option<Glyph> {
         '→' => &[".....", "...#.", "....#", "#####", "....#", "...#.", "....."],
         _ => return None,
     })
+}
+
+/// Every character the font draws.
+pub fn chars() -> impl Iterator<Item = char> {
+    (32u8..127).map(char::from).chain(['’', '‘', '–', '—', '…', '•', '×', '→'])
 }
 
 /// Shown for characters the font doesn't have: a hollow box.

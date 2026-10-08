@@ -36,9 +36,43 @@ pub fn image(name: &str, size: f32, tint: Color32) -> egui::Image<'static> {
     egui::Image::from_bytes(format!("bytes://icons/{name}.svg"), egui::load::Bytes::Shared(bytes)).fit_to_exact_size(Vec2::splat(size)).tint(tint)
 }
 
+/// The original SVG source of an icon (Lucide's 24 × 24 line art), for apps that draw icons their
+/// own way through [`set_painter`].
+pub fn svg(name: &str) -> Option<&'static [u8]> {
+    ICONS.iter().find(|(n, _)| *n == name).map(|(_, b)| *b)
+}
+
+/// Every icon name.
+pub fn names() -> impl Iterator<Item = &'static str> {
+    ICONS.iter().map(|(n, _)| *n)
+}
+
+/// An app-provided icon painter: draws icon `name` in the rect with the tint and returns `true`,
+/// or returns `false` to leave it to the built-in SVG.
+pub type IconPainter = Arc<dyn Fn(&egui::Painter, Rect, &str, Color32) -> bool + Send + Sync>;
+
+fn painter_id() -> egui::Id {
+    egui::Id::new("photocraft-icon-painter")
+}
+
+/// Draw icons with `painter` from now on (`None` restores the SVGs). Canvas cursors keep the SVGs.
+pub fn set_painter(ctx: &egui::Context, painter: Option<IconPainter>) {
+    ctx.data_mut(|d| match painter {
+        Some(p) => {
+            d.insert_temp(painter_id(), p);
+        }
+        None => d.remove::<IconPainter>(painter_id()),
+    });
+}
+
 /// Paint an icon centred in `rect`.
 pub fn paint(ui: &egui::Ui, rect: Rect, name: &str, size: f32, tint: Color32) {
     let r = Rect::from_center_size(rect.center(), Vec2::splat(size));
+    if let Some(custom) = ui.ctx().data(|d| d.get_temp::<IconPainter>(painter_id()))
+        && custom(ui.painter(), r, name, tint)
+    {
+        return;
+    }
     image(name, size, tint).paint_at(ui, r);
 }
 
@@ -159,6 +193,32 @@ mod tests {
         for t in Tool::ALL {
             assert!(exists(tool_icon(t)), "{t:?}");
         }
+    }
+
+    #[test]
+    fn an_app_icon_painter_replaces_the_svgs_and_can_decline() {
+        let ctx = egui::Context::default();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        set_painter(
+            &ctx,
+            Some(Arc::new(move |_: &egui::Painter, _: Rect, name: &str, _: Color32| {
+                log.lock().unwrap().push(name.to_string());
+                name == "brush"
+            })),
+        );
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            let r = Rect::from_min_size(egui::Pos2::ZERO, Vec2::splat(24.0));
+            paint(ui, r, "brush", 16.0, Color32::WHITE);
+            paint(ui, r, "eraser", 16.0, Color32::WHITE);
+        })
+        .textures_delta
+        .clear();
+        assert_eq!(*seen.lock().unwrap(), ["brush", "eraser"]);
+        assert!(svg("brush").is_some_and(|b| b.starts_with(b"<svg")) && svg("nope").is_none());
+        assert!(names().count() >= 60);
+        set_painter(&ctx, None);
+        assert!(ctx.data(|d| d.get_temp::<IconPainter>(painter_id())).is_none());
     }
 
     #[test]

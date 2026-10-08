@@ -41,9 +41,8 @@ fn is(px: &[f64], rgb: [f64; 3]) -> bool {
 }
 
 #[test]
-fn starts_simple_with_a_blank_picture_and_the_brush() {
+fn starts_with_a_blank_picture_and_the_brush() {
     let (w, _) = app();
-    assert!(w.is_simple());
     let st = w.app.session.active().unwrap();
     assert_eq!((st.doc.size.width, st.doc.size.height), wobbleworks_app::shell::NEW_SIZE);
     assert_eq!(w.app.ui.tool, Tool::Brush);
@@ -83,7 +82,7 @@ fn draw_save_psd_and_reopen() {
 fn palette_sets_the_foreground_and_new_starts_over() {
     let (mut w, _) = app();
     w.pick_colour(1).unwrap();
-    assert_eq!(w.colour, Some(1));
+    assert_eq!(w.foreground(), egui::Color32::from_rgb(0xff, 0x2e, 0x88));
     w.new_picture().unwrap();
     assert_eq!(w.app.session.documents().len(), 2);
     // The brush paints the palette colour when the stroke names none.
@@ -116,14 +115,45 @@ fn bad_input_is_an_error_not_a_panic() {
 }
 
 #[test]
-fn the_advanced_editor_switch_keeps_the_picture() {
+fn recent_colours_follow_painting_and_the_palette_is_editable() {
     let (mut w, _) = app();
-    w.stroke(&[(10.0, 10.0), (60.0, 10.0)], "#000000", 8.0).unwrap();
-    let rev = w.app.session.active().unwrap().revision;
-    w.set_simple(false);
-    assert!(!w.is_simple());
-    w.set_simple(true);
-    assert_eq!(w.app.session.active().unwrap().revision, rev);
+    w.track_recent();
+    assert!(w.recent.is_empty(), "nothing painted yet");
+    w.pick_colour(2).unwrap();
+    w.track_recent();
+    assert!(w.recent.is_empty(), "picking a colour isn't painting");
+    w.run("paint.stroke", json!({"points": [[10, 10], [60, 10]], "size": 8})).unwrap();
+    w.track_recent();
+    assert_eq!(w.recent.first(), Some(&w.foreground()));
+    w.run("paint.stroke", json!({"points": [[10, 30], [60, 30]], "size": 8})).unwrap();
+    w.track_recent();
+    assert_eq!(w.recent.len(), 1, "no duplicates");
+
+    let before = w.palette.len();
+    assert!(!w.add_to_palette(), "already in the palette");
+    w.set_foreground(egui::Color32::from_rgb(1, 2, 3)).unwrap();
+    assert!(w.add_to_palette());
+    assert_eq!(w.palette.len(), before + 1);
+
+    // Saved and restored between sessions; junk is ignored.
+    let saved = w.colours_json();
+    let (mut w2, _) = app();
+    w2.restore_colours(&saved);
+    assert_eq!(w2.palette, w.palette);
+    assert_eq!(w2.recent, w.recent);
+    w2.restore_colours("not json");
+    w2.restore_colours(r##"{"palette": [], "recent": [42, "#zz", "#010203"]}"##);
+    assert_eq!(w2.palette, w.palette, "an empty palette is not restored");
+    assert_eq!(w2.recent, vec![egui::Color32::from_rgb(1, 2, 3)]);
+}
+
+#[test]
+fn save_export_and_new_go_through_photocraft() {
+    let (mut w, written) = app();
+    let png = w.export_png(Some("out/pic".into())).unwrap();
+    assert_eq!(png, "out/pic.png");
+    assert_eq!(&written.borrow().last().unwrap().1[1..4], b"PNG");
+    assert!(w.app.session.active().unwrap().path.is_none(), "export leaves the picture's own file alone");
 }
 
 mod ui {
@@ -163,23 +193,23 @@ mod ui {
         assert!(h.state().app.session.is_enabled("edit.undo"));
     }
 
-    /// Both modes run headless, at desktop and phone widths, without panicking.
+    /// The editor runs headless at desktop and phone widths, with the mixer open, without
+    /// panicking; the pixel font gets installed.
     #[test]
-    fn both_modes_render_at_desktop_and_phone_width() {
+    fn renders_at_desktop_and_phone_width() {
         for size in [egui::vec2(1280.0, 820.0), egui::vec2(390.0, 760.0)] {
             let mut h = harness(size);
-            h.run_steps(3);
-            h.state_mut().set_simple(false);
-            h.run_steps(3);
-            h.state_mut().set_simple(true);
-            h.run_steps(3);
-            assert!(h.state().is_simple());
+            h.run_steps(4);
+            h.state_mut().show_mixer = true;
+            h.run_steps(4);
+            let has_font = h.ctx.fonts(|f| f.definitions().font_data.contains_key(wobbleworks_app::ttf::FONT_NAME));
+            assert!(has_font);
         }
     }
 
     /// Offscreen screenshot through wgpu, for looking at the UI:
-    /// `WOBBLE_SNAPSHOT=shot.png WOBBLE_ADVANCED=1 cargo test` (or `WOBBLE_DRAWER=1`, `WOBBLE_MIXER=1`,
-    /// `WOBBLE_WIDTH=390`): `cargo test -p wobbleworks-app snapshot -- --ignored`.
+    /// `WOBBLE_SNAPSHOT=shot.png` (and `WOBBLE_MIXER=1`, `WOBBLE_WIDTH=390`, `WOBBLE_HOVER=x,y`):
+    /// `cargo test -p wobbleworks-app snapshot -- --ignored`.
     #[test]
     #[ignore = "needs a GPU or software renderer; run on demand"]
     fn snapshot() {
@@ -188,6 +218,9 @@ mod ui {
         let mut h = Harness::builder().with_size(egui::vec2(w, 820.0)).with_pixels_per_point(1.0).with_max_steps(32).wgpu().build_eframe(|cc| {
             photocraft_ui_egui::PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
             let mut a = app().0;
+            a.hand_drawn = std::env::var("WOBBLE_FLAT").is_err();
+            a.pixel_font = std::env::var("WOBBLE_PLAIN_FONT").is_err();
+            a.custom_icons = std::env::var("WOBBLE_SVG_ICONS").is_err();
             if let Some(rs) = cc.wgpu_render_state.clone() {
                 a.app.set_wgpu(rs);
             }
@@ -196,12 +229,15 @@ mod ui {
         h.run_steps(3);
         h.state_mut().stroke(&[(150.0, 200.0), (400.0, 300.0), (700.0, 220.0), (1000.0, 380.0)], "#ff2e88", 28.0).unwrap();
         h.state_mut().stroke(&[(200.0, 600.0), (600.0, 520.0), (900.0, 640.0)], "#2f7bff", 18.0).unwrap();
-        if std::env::var("WOBBLE_ADVANCED").is_ok() {
-            h.state_mut().set_simple(false);
-        }
-        h.state_mut().show_tools = std::env::var("WOBBLE_DRAWER").is_ok();
         h.state_mut().show_mixer = std::env::var("WOBBLE_MIXER").is_ok();
+        h.state_mut().track_recent();
         h.run_steps(6);
+        if let Some((x, y)) = std::env::var("WOBBLE_HOVER").ok().and_then(|s| s.split_once(',').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)))) {
+            h.input_mut().events.push(egui::Event::PointerMoved(egui::pos2(x, y)));
+            for _ in 0..40 {
+                h.step();
+            }
+        }
         h.render().unwrap().save(&out).unwrap();
     }
 }

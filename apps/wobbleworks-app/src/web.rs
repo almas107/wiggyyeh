@@ -32,6 +32,7 @@ pub fn start() {
                     PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
                     let inbox: Inbox = Arc::default();
                     let mut w = WobbleApp::new(services(inbox.clone(), cc.egui_ctx.clone()));
+                    w.restore(cc.storage);
                     if let Some(rs) = cc.wgpu_render_state.clone() {
                         w.app.set_wgpu(rs);
                     }
@@ -81,6 +82,10 @@ impl eframe::App for WebShell {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         eframe::App::ui(&mut self.w, ui, frame);
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::App::save(&mut self.w, storage);
     }
 }
 
