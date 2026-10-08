@@ -95,4 +95,21 @@ deliverable. Mine it, then delete it once the new app replaces it:
 
 ## Progress log
 
-- (empty: the next session starts at stage 1)
+- **Stage 1 (2026-10-08): done.** Plan agreed with the user: wrap PhotoCraft's editor
+  (`PhotocraftApp`, which owns the engine `Session`) instead of a separate canvas; the new crate is
+  `apps/wobbleworks-app` (renamed to `wobbleworks` when the old app is deleted).
+  - `src/shell.rs` `WobbleApp`: its own bar (New, Open, Save PSD, Brush/Eraser, palette, Undo/Redo,
+    "Advanced editor") over PhotoCraft's editor. Simple mode = PhotoCraft's `fullScreen` screen mode
+    (canvas only); Advanced = `standard` (every menu and panel). Everything dispatches commands by
+    id (`file.new`, `paint.stroke`, `tools.setColors`, `edit.undo`, …); saving goes through
+    `PhotocraftApp::save_as` with a `.psd` name.
+  - `src/io.rs`: `photocraft-io` import/export as `Services`; `src/native.rs` (rfd, atomic writes,
+    opens a path argument) and `src/web.rs` (file picker + drops via the inbox, downloads).
+  - Registered in `xtask/src/layers.rs` (exempt, like `photocraft`).
+  - Tests (`tests/stage1.rs`): draw → save PSD → reimport pixels, open PSD → draw → save, palette,
+    bad input → `Err`, a real pointer drag paints through PhotoCraft's Brush tool, both modes at
+    desktop and phone width. Screenshot: `WOBBLE_SNAPSHOT=… cargo test -p wobbleworks-app snapshot -- --ignored`.
+  - Still open for later stages: simple mode's backdrop is PhotoCraft's full-screen black (stage 3
+    restyles it, probably via a backdrop hook in `ui-egui`); Esc in simple mode drops to the
+    advanced editor (PhotoCraft's full-screen exit); no preferences persistence yet; the bar is
+    plain egui (stage 3).
