@@ -99,6 +99,8 @@ pub struct WobbleApp {
     pub reduce_motion: bool,
     /// The settings card.
     pub show_settings: bool,
+    /// Index into [`crate::brushes::BRUSHES`] of the brush picked on the strip.
+    pub brush: usize,
     /// Journal entries already looked at for sounds and effects.
     fx_seen: usize,
     last_tool: Option<Tool>,
@@ -151,6 +153,7 @@ impl WobbleApp {
             mascot: Mascot::default(),
             reduce_motion: false,
             show_settings: false,
+            brush: 0,
             fx_seen: 0,
             last_tool: None,
             last_status: String::new(),
@@ -530,6 +533,40 @@ impl WobbleApp {
         theme::PRESETS.iter().find(|(_, t)| *t == self.theme).map_or("Bubblegum", |(n, _)| n)
     }
 
+    /// Pick wiggle brush `i` from the strip: PhotoCraft's brush is set up for it (keeping the
+    /// size), its wiggle amount applies, and the Brush tool is chosen.
+    pub fn pick_brush(&mut self, i: usize) -> Result<(), String> {
+        let b = crate::brushes::BRUSHES.get(i).ok_or_else(|| format!("no brush {i}"))?;
+        let size = self.app.session.tools.brush.size;
+        self.run("tools.setBrush", crate::brushes::params(b, size))?;
+        self.wiggle_amount = b.wiggle;
+        self.brush = i;
+        self.app.ui.tool = Tool::Brush;
+        Ok(())
+    }
+
+    /// The brush strip down the left edge: one boiling sample per wiggle brush.
+    fn brush_strip(&mut self, ui: &mut Ui, look: &Look) {
+        let frame = egui::Frame::NONE.fill(self.theme.paper).inner_margin(egui::Margin { left: 8, right: 2, top: 6, bottom: 6 });
+        egui::Panel::left("wobble_brushes").show_separator_line(false).resizable(false).exact_size(70.0).frame(frame).show(ui, |ui| {
+            egui::ScrollArea::vertical().scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
+                widgets::card(ui, look, "wobble-brush-strip", 6.0, |ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    for (i, b) in crate::brushes::BRUSHES.iter().enumerate() {
+                        let on = self.brush == i && self.app.ui.tool == Tool::Brush;
+                        let seed = 0xb2u64 ^ i as u64;
+                        let r = widgets::sample_tile(ui, look, on, 40.0, |p, rect| crate::brushes::paint_sample(p, rect, b, look, seed))
+                            .on_hover_text(format!("{}: {}", b.name, b.tip));
+                        if r.clicked() {
+                            let res = self.pick_brush(i);
+                            self.report_result(res);
+                        }
+                    }
+                });
+            });
+        });
+    }
+
     /// Reduce motion everywhere (the UI holds still; no pops, shake, particles or hops).
     pub fn set_reduce_motion(&mut self, on: bool) {
         self.reduce_motion = on;
@@ -809,6 +846,9 @@ impl eframe::App for WobbleApp {
         // Paper under everything, so wobbly panel edges show paper rather than a gap.
         ctx.layer_painter(egui::LayerId::background()).rect_filled(ctx.content_rect(), 0.0, self.theme.paper);
         self.colour_strip(ui, &look);
+        if ui.available_width() >= NARROW {
+            self.brush_strip(ui, &look);
+        }
         // Hold the boil still while the pointer is down, so a stroke being drawn stays on screen.
         if !ctx.input(|i| i.pointer.any_down()) {
             self.play_boil(ctx.input(|i| i.time));

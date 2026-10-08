@@ -129,3 +129,18 @@ fn old_wobbleworks_projects_open_through_photocrafts_open() {
     assert_eq!(wiggle_cmds::frame_count(&st.doc), 4);
     assert!(w.app.open_bytes("bad.wob", b"{").is_err());
 }
+
+#[test]
+fn the_brush_strip_sets_photocrafts_brush_and_the_wiggle() {
+    let (mut w, _) = app();
+    let rowdy = wobbleworks::brushes::BRUSHES.iter().position(|b| b.name == "Rowdy").unwrap();
+    let pixel = wobbleworks::brushes::BRUSHES.iter().position(|b| b.name == "Pixel").unwrap();
+    w.run("tools.setBrush", json!({"size": 33})).unwrap();
+    w.pick_brush(rowdy).unwrap();
+    assert_eq!(w.wiggle_amount, 9.0);
+    assert_eq!(w.app.session.tools.brush.size, 33.0, "the size is kept");
+    w.pick_brush(pixel).unwrap();
+    assert!(w.app.session.tools.brush.aliased);
+    assert!(w.pick_brush(99).is_err());
+    w.stroke(&[(10.0, 10.0), (200.0, 40.0)], "#000000", 8.0).unwrap();
+}

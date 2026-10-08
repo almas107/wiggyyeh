@@ -10,6 +10,7 @@
 
 pub mod anim;
 pub mod audio;
+pub mod brushes;
 pub mod colour;
 pub mod handdrawn;
 pub mod io;

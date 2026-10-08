@@ -249,3 +249,8 @@ deliverable. Mine it, then delete it once the new app replaces it:
   warnings); pixel font, hand-drawn UI, dots, Wob and the dock all render. Fixed on the way:
   PhotoCraft's background-layer marks are clipped to the area above the colour strip (its tool
   column's edge line ran down across the strip on phones).
+- **Stage 6, part 3:** theme picker in Settings (Bubblegum, Mint Choc, Lemonade, Midnight Snack
+  dark; restyles PhotoCraft too; saved). WigglyPaint-style brush strip down the left edge
+  (`brushes.rs`): Marker, Shaky, Rowdy, Steady, Chalk, Nib, Spray, Pixel, each a
+  `tools.setBrush` setup (reset + size kept) plus a wiggle amount, with boiling sample tiles;
+  hidden below 700 px wide.

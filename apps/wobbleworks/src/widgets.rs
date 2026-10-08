@@ -77,6 +77,17 @@ pub fn button(ui: &mut Ui, look: &Look, text: &str, on: bool, enabled: bool) -> 
     cursor(resp, enabled)
 }
 
+/// A square tile with custom content drawn by `draw` (brush samples). `on` marks the current one.
+pub fn sample_tile(ui: &mut Ui, look: &Look, on: bool, side: f32, draw: impl FnOnce(&egui::Painter, Rect)) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(side) + Vec2::splat(DEPTH), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let inner = Rect::from_min_size(rect.min, Vec2::splat(side));
+        let r = body(ui, look, inner, &resp, if on { look.t.sun } else { look.t.card }, true, side * 0.28);
+        draw(ui.painter(), r.shrink(side * 0.18));
+    }
+    cursor(resp, true)
+}
+
 /// A paint-blob colour swatch. `on` marks the current colour.
 pub fn swatch(ui: &mut Ui, look: &Look, colour: Color32, on: bool, radius: f32) -> Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(radius * 2.0 + 6.0), Sense::click());
