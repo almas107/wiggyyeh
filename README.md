@@ -297,6 +297,10 @@ Maintainers: [`docs/releasing.md`](docs/releasing.md) explains how releases are 
 > [!IMPORTANT]
 > **Status:** PhotoCraft is in early alpha, and we want to be straight about where it stands: much of Photoshop's feature surface exists in some form, but **it is not yet a Photoshop replacement for daily professional work**. The biggest gaps are AI/generative features, about twenty missing tools, depth in typography and pro workflows, and plug-in compatibility. Every Photoshop menu item is wired to a command ([`docs/parity.md`](docs/parity.md)), but that measures wiring, not behaviour. The honest, dimension-by-dimension picture and where we're going next are in the [roadmap's parity assessment](docs/roadmap.md#honest-parity-assessment-2026-10-05). Expect rough edges, and please file issues (include your OS, document size, layer count and a screenshot). You can also tell us what broke on [Discord](https://discord.gg/artcraft).
 
+## WobbleWorks (in this fork)
+
+[`apps/wobbleworks`](apps/wobbleworks/README.md) is a separate, self-contained app in this repository: a cute drawing app where every line boils, rebuilt in Rust from the original Wobbleworks web page. It has 13 wobbly brushes, shapes, symmetry, layers with blend modes, per-frame fills, lasso transforms, crash-safe autosave and PNG/GIF/sprite-sheet export, and a cartoon UI you can theme down to the outline width. It opens the old `.wob` files unchanged. Run it with `cargo run --release -p wobbleworks`, or in the browser with `trunk serve --release` from `apps/wobbleworks`.
+
 ## Documentation
 
 Developer, architecture, automation, format, and security documentation is maintained in the [PhotoCraft documentation book](book/).
