@@ -24,7 +24,7 @@ use crate::mascot::{self, Mascot};
 use crate::rough::{self, Paint};
 use crate::svgicon::{self, IconInk};
 use crate::theme::{self, Theme, mix};
-use crate::widgets::{self, Look};
+use crate::widgets::{self, Look, TEXT};
 use crate::{handdrawn, ttf};
 
 /// The canvas a new picture gets.
@@ -514,6 +514,22 @@ impl WobbleApp {
         });
     }
 
+    /// Switch the look (one of [`theme::PRESETS`]): WobbleWorks' widgets, PhotoCraft's panels and
+    /// canvas surround, and the icons all follow on the next frame.
+    pub fn set_theme(&mut self, t: Theme) {
+        self.theme = t;
+        self.app.ui.theme = theme::base_kind(&t);
+        self.style_canvas();
+        if let Ok(mut s) = self.icons.lock() {
+            s.1 = IconInk { ink: t.ink, wash: mix(t.cool, t.card, 0.7), card: t.card };
+        }
+    }
+
+    /// The name of the current look.
+    pub fn theme_name(&self) -> &'static str {
+        theme::PRESETS.iter().find(|(_, t)| *t == self.theme).map_or("Bubblegum", |(n, _)| n)
+    }
+
     /// Reduce motion everywhere (the UI holds still; no pops, shake, particles or hops).
     pub fn set_reduce_motion(&mut self, on: bool) {
         self.reduce_motion = on;
@@ -531,6 +547,7 @@ impl WobbleApp {
             "mascot": self.mascot.enabled,
             "handDrawn": self.hand_drawn,
             "wiggle": self.wiggle_amount,
+            "theme": self.theme_name(),
         })
         .to_string()
     }
@@ -554,6 +571,9 @@ impl WobbleApp {
         }
         if let Some(b) = flag("handDrawn") {
             self.hand_drawn = b;
+        }
+        if let Some(t) = v.get("theme").and_then(Value::as_str).and_then(|n| theme::PRESETS.iter().find(|(name, _)| *name == n)) {
+            self.set_theme(t.1);
         }
         if let Some(x) = num("wiggle") {
             self.wiggle_amount = (x as f32).clamp(0.0, 10.0).round();
@@ -590,6 +610,15 @@ impl WobbleApp {
                         }
                         if toggle(ui, "Hand-drawn UI", self.hand_drawn) {
                             self.hand_drawn = !self.hand_drawn;
+                        }
+                    });
+                    ui.add_space(6.0);
+                    widgets::label(ui, look, "Look", TEXT, look.t.dim);
+                    ui.horizontal_wrapped(|ui| {
+                        for (name, t) in theme::PRESETS {
+                            if widgets::button(ui, look, name, self.theme == *t, true).clicked() {
+                                self.set_theme(*t);
+                            }
                         }
                     });
                     ui.add_space(4.0);

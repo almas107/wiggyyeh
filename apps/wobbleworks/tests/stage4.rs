@@ -70,6 +70,15 @@ fn reduce_motion_and_settings_round_trip() {
     h2.state_mut().restore_settings("{\"volume\": 99, \"muted\": \"yes\"}");
     assert_eq!(h2.state().audio.volume, 1.0, "clamped");
     h2.state_mut().restore_settings("garbage");
+    // Themes, the dark one included, switch live and are remembered.
+    let dark = wobbleworks::theme::PRESETS.iter().find(|(_, t)| t.dark).unwrap();
+    h2.state_mut().set_theme(dark.1);
+    h2.run_steps(3);
+    assert!(wobbleworks::theme::is_applied(&h2.ctx, &dark.1), "PhotoCraft restyled dark");
+    let saved = h2.state().settings_json();
+    let mut h3 = harness();
+    h3.state_mut().restore_settings(&saved);
+    assert_eq!(h3.state().theme_name(), dark.0);
     // The settings card and a sleepy Wob render.
     h2.state_mut().show_settings = true;
     h2.state_mut().mascot.enabled = true;

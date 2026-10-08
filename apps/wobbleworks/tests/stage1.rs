@@ -228,6 +228,9 @@ mod ui {
             a.hand_drawn = std::env::var("WOBBLE_FLAT").is_err();
             a.pixel_font = std::env::var("WOBBLE_PLAIN_FONT").is_err();
             a.custom_icons = std::env::var("WOBBLE_SVG_ICONS").is_err();
+            if let Some(t) = std::env::var("WOBBLE_THEME").ok().and_then(|n| wobbleworks::theme::PRESETS.iter().find(|(name, _)| *name == n)) {
+                a.set_theme(t.1);
+            }
             if let Some(rs) = cc.wgpu_render_state.clone() {
                 a.app.set_wgpu(rs);
             }
