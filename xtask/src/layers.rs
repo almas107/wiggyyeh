@@ -68,10 +68,8 @@ pub const TABLE: &[(&str, Class)] = &[
     ("photocraft", Class::Exempt),
     ("cli", Class::Exempt),
     ("web", Class::Exempt),
-    // WobbleWorks: the standalone wiggly drawing app (apps/wobbleworks), no workspace deps.
+    // WobbleWorks (apps/wobbleworks): PhotoCraft's editor, hand-drawn; an app like photocraft.
     ("wobbleworks", Class::Exempt),
-    // WobbleWorks on PhotoCraft (apps/wobbleworks-app): wraps the editor, an app like photocraft.
-    ("wobbleworks-app", Class::Exempt),
     ("xtask", Class::Exempt),
 ];
 
@@ -375,7 +373,7 @@ mod tests {
 
     #[test]
     fn apps_and_xtask_exempt() {
-        for app in ["photocraft", "photocraft-cli", "photocraft-web", "wobbleworks", "wobbleworks-app", "xtask"] {
+        for app in ["photocraft", "photocraft-cli", "photocraft-web", "wobbleworks", "xtask"] {
             assert!(check(&[c(app, &[("egui", Normal, false), ("photocraft-ui-egui", Normal, true)])]).is_empty());
         }
     }

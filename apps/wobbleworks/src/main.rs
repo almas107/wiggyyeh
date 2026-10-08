@@ -28,6 +28,6 @@ mod tests {
         assert!(!html.contains("<script"));
         assert!(html.contains("id=\"wobbleworks_canvas\"") && html.contains("id=\"wobbleworks_loading\""));
         assert!(html.contains("<a href=\"\">Reload</a>"));
-        assert!(html.contains("data-bin=\"wobbleworks-app\""));
+        assert!(html.contains("data-bin=\"wobbleworks\""));
     }
 }

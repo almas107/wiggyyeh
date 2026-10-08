@@ -1,5 +1,5 @@
 [package]
-name = "wobbleworks-app"
+name = "wobbleworks"
 description = "WobbleWorks: a cute, wiggly drawing app built on PhotoCraft (native and web)"
 version = "0.1.0"
 edition.workspace = true
@@ -14,7 +14,7 @@ workspace = true
 path = "src/lib.rs"
 
 [[bin]]
-name = "wobbleworks-app"
+name = "wobbleworks"
 path = "src/main.rs"
 
 [dependencies]

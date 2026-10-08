@@ -1,8 +1,8 @@
-# Build the web version with:  trunk build --release   (from apps/wobbleworks-app)
+# Build the web version with:  trunk build --release   (from apps/wobbleworks)
 # Serve it locally with:       trunk serve --release
 [build]
 target = "index.html"
-dist = "../../dist/wobbleworks-app"
+dist = "../../dist/wobbleworks"
 public_url = "./"
 filehash = true
 

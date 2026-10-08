@@ -8,8 +8,8 @@ use std::rc::Rc;
 use photocraft_engine::wiggle_cmds;
 use photocraft_ui_egui::Services;
 use serde_json::json;
-use wobbleworks_app::WobbleApp;
-use wobbleworks_app::io::codec_services;
+use wobbleworks::WobbleApp;
+use wobbleworks::io::codec_services;
 
 type Written = Rc<RefCell<Vec<(String, Vec<u8>)>>>;
 
@@ -112,7 +112,7 @@ fn the_boil_exports_as_gif_png_frames_and_a_layered_psd() {
     assert_eq!(pngs, ["boil_1.png", "boil_2.png", "boil_3.png"]);
     let psd = w.save_psd(Some("boil".into())).unwrap();
     let bytes = written.borrow().iter().rev().find(|(p, _)| *p == psd).unwrap().1.clone();
-    let (doc, _) = wobbleworks_app::io::import(&psd, &bytes).unwrap();
+    let (doc, _) = wobbleworks::io::import(&psd, &bytes).unwrap();
     let wigs = wiggle_cmds::all(&doc);
     assert_eq!(wigs.len(), 1, "the wiggle layer survives a PSD round trip");
     assert_eq!(wiggle_cmds::frames(wigs[0]).len(), 3);

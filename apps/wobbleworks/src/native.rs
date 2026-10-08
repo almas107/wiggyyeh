@@ -4,8 +4,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 
 use photocraft_ui_egui::{PhotocraftApp, Services};
-use wobbleworks_app::WobbleApp;
-use wobbleworks_app::io::{OPEN_EXTS, codec_services};
+use wobbleworks::WobbleApp;
+use wobbleworks::io::{OPEN_EXTS, codec_services};
 
 pub fn run() -> eframe::Result {
     let default_hook = std::panic::take_hook();
@@ -31,7 +31,7 @@ pub fn run() -> eframe::Result {
             PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
             let mut w = WobbleApp::new(services());
             w.restore(cc.storage);
-            w.audio.out = CpalOut::open().map(|o| Box::new(o) as Box<dyn wobbleworks_app::audio::AudioOut>);
+            w.audio.out = CpalOut::open().map(|o| Box::new(o) as Box<dyn wobbleworks::audio::AudioOut>);
             w.picker.pick_reference = Some(Box::new(|inbox| {
                 let Some(path) = rfd::FileDialog::new().add_filter("Images", OPEN_EXTS).pick_file() else { return };
                 match photocraft_format::read_file(&path) {
@@ -130,7 +130,7 @@ impl CpalOut {
     }
 }
 
-impl wobbleworks_app::audio::AudioOut for CpalOut {
+impl wobbleworks::audio::AudioOut for CpalOut {
     fn rate(&self) -> u32 {
         self.rate
     }

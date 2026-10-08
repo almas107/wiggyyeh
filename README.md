@@ -299,7 +299,15 @@ Maintainers: [`docs/releasing.md`](docs/releasing.md) explains how releases are 
 
 ## WobbleWorks (in this fork)
 
-[`apps/wobbleworks`](apps/wobbleworks/README.md) is a separate, self-contained app in this repository: a cute drawing app where every line boils, rebuilt in Rust from the original Wobbleworks web page. It has 13 wobbly brushes, shapes, symmetry, layers with blend modes, per-frame fills, lasso transforms, crash-safe autosave and PNG/GIF/sprite-sheet export, and a cartoon UI you can theme down to the outline width. It opens the old `.wob` files unchanged. Run it with `cargo run --release -p wobbleworks`, or in the browser with `trunk serve --release` from `apps/wobbleworks`.
+[`apps/wobbleworks`](apps/wobbleworks/README.md) is PhotoCraft's full editor redrawn as a cute,
+WigglyPaint-style drawing app: a chunky pixel font, wobbly hand-drawn panels, buttons and icons,
+dotted paper, and lines that boil. Everything is drawn on wiggle layers (groups of boil frames,
+`wiggle.*` engine commands), plays back as it would in WigglyPaint, and exports to an animated
+GIF, a PNG sequence or a layered PSD. It has a colour card (wheel, palette, reference image),
+synthesized sound, game-style juice, and Wob the mascot, and it opens old Wobbleworks `.wob`
+projects. Every PhotoCraft menu, tool and panel is still there. Run it with
+`cargo run --release -p wobbleworks`, or in the browser with `trunk serve --release` from
+`apps/wobbleworks`. Plan and progress: [`docs/wobbleworks-spec.md`](docs/wobbleworks-spec.md).
 
 ## Documentation
 

@@ -3,10 +3,10 @@
 use egui_kittest::Harness;
 use photocraft_ui_egui::Services;
 use serde_json::json;
-use wobbleworks_app::WobbleApp;
-use wobbleworks_app::audio::Sound;
-use wobbleworks_app::io::codec_services;
-use wobbleworks_app::mascot::Mood;
+use wobbleworks::WobbleApp;
+use wobbleworks::audio::Sound;
+use wobbleworks::io::codec_services;
+use wobbleworks::mascot::Mood;
 
 fn harness() -> Harness<'static, WobbleApp> {
     let mut h = Harness::builder().with_size(egui::vec2(1280.0, 820.0)).with_max_steps(16).build_eframe(|cc| {

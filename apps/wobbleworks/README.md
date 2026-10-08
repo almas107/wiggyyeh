@@ -20,13 +20,13 @@ Plan and progress: `docs/wobbleworks-spec.md`.
 Linux builds need ALSA's headers for sound (`libasound2-dev` on Debian/Ubuntu).
 
 ```sh
-cargo run -p wobbleworks-app [-- picture.psd]     # desktop
-cd apps/wobbleworks-app && trunk serve --release  # web
-cargo test -p wobbleworks-app
+cargo run -p wobbleworks [-- picture.psd]     # desktop
+cd apps/wobbleworks && trunk serve --release  # web
+cargo test -p wobbleworks
 # Offscreen screenshot (WOBBLE_MIXER=1, WOBBLE_WIDTH=390, WOBBLE_HOVER=x,y, WOBBLE_FLAT=1,
 # WOBBLE_PLAIN_FONT=1, WOBBLE_SVG_ICONS=1 to compare against PhotoCraft's own look):
-WOBBLE_SNAPSHOT=/tmp/shot.png cargo test -p wobbleworks-app snapshot -- --ignored
+WOBBLE_SNAPSHOT=/tmp/shot.png cargo test -p wobbleworks snapshot -- --ignored
 ```
 
-`apps/wobbleworks` is the earlier standalone attempt (no PhotoCraft); it is mined for its wobble
-brush and `.wob` import, then deleted when this app replaces it.
+It replaced an earlier standalone WobbleWorks (no PhotoCraft); that app's `.wob` projects open
+here (`wob.rs`), and its wobble noise lives on in `photocraft_engine::wiggle_cmds`.

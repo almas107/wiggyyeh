@@ -231,3 +231,13 @@ deliverable. Mine it, then delete it once the new app replaces it:
     where there are no extra OS windows: web, tests) no longer trips egui's "widget changed
     layer" debug assertion. Regression test: `stage5.rs::a_second_window_on_the_document_renders`
     (fails without the fix; a plain-PhotoCraft version of it did not reproduce).
+- **Stage 6 (2026-10-08), part 1:**
+  - The old standalone `apps/wobbleworks` is deleted and `apps/wobbleworks-app` took its place:
+    package, library and binary are now `wobbleworks` (earlier log entries say
+    `wobbleworks-app`). Its `.wob` projects open through `wob.rs` (each layer → a wiggle layer,
+    strokes redrawn on every frame with their seeds, raster frames copied), wired into the import
+    service so PhotoCraft's File › Open and drag-and-drop take `.wob`.
+  - `wiggle.new` while a boil frame is active now inserts above that wiggle layer (it nested
+    inside it, breaking "+ Layer" and imports); engine test added.
+  - Frame cost (`stage5.rs::frame_cost`, dev profile, no GPU): PhotoCraft's own look 25.4 ms,
+    WobbleWorks' look 27.0 ms per frame, so the hand-drawn pass, juice, icons and Wob add ~1.6 ms.

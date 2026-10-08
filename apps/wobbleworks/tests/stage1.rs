@@ -8,8 +8,8 @@ use photocraft_engine::Session;
 use photocraft_ui_egui::Services;
 use photocraft_ui_egui::state::Tool;
 use serde_json::{Value, json};
-use wobbleworks_app::WobbleApp;
-use wobbleworks_app::io::codec_services;
+use wobbleworks::WobbleApp;
+use wobbleworks::io::codec_services;
 
 type Written = Rc<RefCell<Vec<(String, Vec<u8>)>>>;
 
@@ -44,7 +44,7 @@ fn is(px: &[f64], rgb: [f64; 3]) -> bool {
 fn starts_with_a_blank_picture_and_the_brush() {
     let (w, _) = app();
     let st = w.app.session.active().unwrap();
-    assert_eq!((st.doc.size.width, st.doc.size.height), wobbleworks_app::shell::NEW_SIZE);
+    assert_eq!((st.doc.size.width, st.doc.size.height), wobbleworks::shell::NEW_SIZE);
     assert_eq!(w.app.ui.tool, Tool::Brush);
     assert!(!w.app.ui.status_error, "{}", w.app.ui.status);
 }
@@ -61,7 +61,7 @@ fn draw_save_psd_and_reopen() {
     assert_eq!(&bytes[..4], b"8BPS", "a Photoshop document");
     assert!(!w.app.session.active().unwrap().is_dirty(), "saved");
 
-    let (doc, _) = wobbleworks_app::io::import(&name, &bytes).unwrap();
+    let (doc, _) = wobbleworks::io::import(&name, &bytes).unwrap();
     assert_eq!((doc.size.width, doc.size.height), (1200, 800));
     assert!(is(&pixel(doc.clone(), 300, 120), [1.0, 0.0, 0.0]), "the stroke survived the round trip");
     assert!(is(&pixel(doc, 1100, 700), [1.0, 1.0, 1.0]), "the paper stays white");
@@ -73,7 +73,7 @@ fn draw_save_psd_and_reopen() {
     let path = w.save_psd(None).unwrap();
     assert_eq!(path, "picked/wobble.psd");
     let (_, bytes) = written.borrow().last().cloned().unwrap();
-    let (doc, _) = wobbleworks_app::io::import(&path, &bytes).unwrap();
+    let (doc, _) = wobbleworks::io::import(&path, &bytes).unwrap();
     assert!(is(&pixel(doc.clone(), 250, 600), [0.0, 0.0, 1.0]));
     assert!(is(&pixel(doc, 300, 120), [1.0, 0.0, 0.0]));
 }
@@ -209,18 +209,18 @@ mod ui {
             h.run_steps(4);
             h.state_mut().picker.open = true;
             h.run_steps(4);
-            let has_font = h.ctx.fonts(|f| f.definitions().font_data.contains_key(wobbleworks_app::ttf::FONT_NAME));
+            let has_font = h.ctx.fonts(|f| f.definitions().font_data.contains_key(wobbleworks::ttf::FONT_NAME));
             assert!(has_font);
         }
     }
 
     /// Offscreen screenshot through wgpu, for looking at the UI:
     /// `WOBBLE_SNAPSHOT=shot.png` (and `WOBBLE_MIXER=1`, `WOBBLE_WIDTH=390`, `WOBBLE_HOVER=x,y`):
-    /// `cargo test -p wobbleworks-app snapshot -- --ignored`.
+    /// `cargo test -p wobbleworks snapshot -- --ignored`.
     #[test]
     #[ignore = "needs a GPU or software renderer; run on demand"]
     fn snapshot() {
-        let out = std::env::var("WOBBLE_SNAPSHOT").unwrap_or_else(|_| "wobbleworks-app.png".into());
+        let out = std::env::var("WOBBLE_SNAPSHOT").unwrap_or_else(|_| "wobbleworks.png".into());
         let w: f32 = std::env::var("WOBBLE_WIDTH").ok().and_then(|s| s.parse().ok()).unwrap_or(1280.0);
         let mut h = Harness::builder().with_size(egui::vec2(w, 820.0)).with_pixels_per_point(1.0).with_max_steps(32).wgpu().build_eframe(|cc| {
             photocraft_ui_egui::PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
@@ -239,9 +239,9 @@ mod ui {
         h.state_mut().picker.open = std::env::var("WOBBLE_MIXER").is_ok();
         if let Ok(tab) = std::env::var("WOBBLE_TAB") {
             h.state_mut().picker.tab = match tab.as_str() {
-                "palette" => wobbleworks_app::colour::Tab::Palette,
-                "reference" => wobbleworks_app::colour::Tab::Reference,
-                _ => wobbleworks_app::colour::Tab::Colour,
+                "palette" => wobbleworks::colour::Tab::Palette,
+                "reference" => wobbleworks::colour::Tab::Reference,
+                _ => wobbleworks::colour::Tab::Colour,
             };
         }
         h.state_mut().track_recent();
@@ -294,7 +294,7 @@ mod ui {
         h.render().unwrap().save(&out).unwrap();
         if let Ok(path) = std::env::var("WOBBLE_GIF") {
             let doc = h.state().app.session.active().unwrap().doc.clone();
-            std::fs::write(path, wobbleworks_app::anim::gif(&doc, h.state().boil_fps).unwrap()).unwrap();
+            std::fs::write(path, wobbleworks::anim::gif(&doc, h.state().boil_fps).unwrap()).unwrap();
         }
     }
 }

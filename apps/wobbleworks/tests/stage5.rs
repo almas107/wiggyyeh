@@ -6,8 +6,8 @@ use egui_kittest::Harness;
 use photocraft_ui_egui::menu_catalog::CATALOG;
 use photocraft_ui_egui::{Services, parity};
 use serde_json::json;
-use wobbleworks_app::WobbleApp;
-use wobbleworks_app::io::codec_services;
+use wobbleworks::WobbleApp;
+use wobbleworks::io::codec_services;
 
 fn harness() -> Harness<'static, WobbleApp> {
     let mut h = Harness::builder().with_size(egui::vec2(1280.0, 820.0)).with_max_steps(8).build_eframe(|cc| {
@@ -78,7 +78,7 @@ fn a_second_window_on_the_document_renders() {
 }
 
 /// Frame cost of WobbleWorks' layers on top of PhotoCraft (hand-drawn pass, juice, Wob, icons):
-/// `cargo test -p wobbleworks-app --release --test stage5 frame_cost -- --ignored --nocapture`.
+/// `cargo test -p wobbleworks --release --test stage5 frame_cost -- --ignored --nocapture`.
 #[test]
 #[ignore = "timing; run on demand"]
 fn frame_cost() {

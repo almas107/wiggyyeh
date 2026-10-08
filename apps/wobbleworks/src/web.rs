@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 
 use photocraft_ui_egui::{PhotocraftApp, Services};
 use wasm_bindgen::JsCast as _;
-use wobbleworks_app::WobbleApp;
-use wobbleworks_app::io::{OPEN_EXTS, codec_services};
+use wobbleworks::WobbleApp;
+use wobbleworks::io::{OPEN_EXTS, codec_services};
 
 type Inbox = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
 
@@ -181,7 +181,7 @@ impl WebAudioOut {
     }
 }
 
-impl wobbleworks_app::audio::AudioOut for WebAudioOut {
+impl wobbleworks::audio::AudioOut for WebAudioOut {
     fn rate(&self) -> u32 {
         self.ctx.as_ref().map_or(44_100, |c| c.sample_rate() as u32)
     }
