@@ -241,3 +241,11 @@ deliverable. Mine it, then delete it once the new app replaces it:
     inside it, breaking "+ Layer" and imports); engine test added.
   - Frame cost (`stage5.rs::frame_cost`, dev profile, no GPU): PhotoCraft's own look 25.4 ms,
     WobbleWorks' look 27.0 ms per frame, so the hand-drawn pass, juice, icons and Wob add ~1.6 ms.
+- **Stage 6, part 2: web smoke test.** `cargo build -p wobbleworks --target wasm32-unknown-unknown`
+  + `wasm-bindgen 0.2.129 --target web` + a page with the trunk loader replaced by
+  `import init from "./wobbleworks.js"`, served locally and opened in Playwright's Chromium
+  (`/opt/pw-browsers/chromium-1194`, WebGL2 through SwiftShader): starts in ~8 s at 1280 × 820
+  and 390 × 760, no errors (only "no WebGPU, using WebGL2" and "SetTheme not implemented"
+  warnings); pixel font, hand-drawn UI, dots, Wob and the dock all render. Fixed on the way:
+  PhotoCraft's background-layer marks are clipped to the area above the colour strip (its tool
+  column's edge line ran down across the strip on phones).

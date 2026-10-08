@@ -784,7 +784,19 @@ impl eframe::App for WobbleApp {
         if !ctx.input(|i| i.pointer.any_down()) {
             self.play_boil(ctx.input(|i| i.time));
         }
+        // PhotoCraft draws the editor in what's left above the colour strip; keep its marks there
+        // (an edge line of its tool column ran down across the strip on narrow windows).
+        let editor_area = ui.available_rect_before_wrap();
+        let bg = egui::LayerId::background();
+        let first = ctx.graphics(|g| g.get(bg).map_or(0, |l| l.next_idx().0));
         self.app.ui(ui, frame);
+        ctx.graphics_mut(|g| {
+            if let Some(list) = g.get_mut(bg) {
+                for i in first..list.next_idx().0 {
+                    list.mutate_shape(egui::layers::ShapeIdx(i), |cs| cs.clip_rect = cs.clip_rect.intersect(editor_area));
+                }
+            }
+        });
         self.spread_to_frames();
         self.track_recent();
         self.sheet(ui, &look);
