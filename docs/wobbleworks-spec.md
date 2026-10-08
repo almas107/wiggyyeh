@@ -254,3 +254,16 @@ deliverable. Mine it, then delete it once the new app replaces it:
   (`brushes.rs`): Marker, Shaky, Rowdy, Steady, Chalk, Nib, Spray, Pixel, each a
   `tools.setBrush` setup (reset + size kept) plus a wiggle amount, with boiling sample tiles;
   hidden below 700 px wide.
+- **Stage 6 checks (2026-10-08):** `cargo xtask wasm` ok (every L0–L6 crate), `panic_hunt` ok
+  (with the `wiggle.*` commands), `photocraft-ui-egui` lib tests 828 passed, `photocraft-engine`
+  all tests passed earlier, `cargo xtask layers` ok, `cargo xtask parity` unchanged,
+  `wobbleworks` 54 tests (+5 ignored on-demand ones: snapshot, menu sweep, frame cost).
+- **Performance (release build, `stage5.rs::frame_cost`, headless harness, no GPU, this 4-core
+  container):** PhotoCraft's own look 24.3 ms per frame, WobbleWorks' look 24.6 ms: the
+  hand-drawn pass, juice, icon redraw and Wob cost ~0.3 ms. The 24 ms base is PhotoCraft's own
+  editor layout in this harness (pre-existing; worth a look in PhotoCraft's perf work, since it is
+  over the 16 ms budget here).
+- **Where things stand:** stages 1–6 done. Open, nice-to-have: onion skin (WigglyPaint has none),
+  per-layer boil speed, more brush styles, a WobbleWorks logo/brand in PhotoCraft's title bar (it
+  still shows PhotoCraft's kitsune icon and "Discord" link), a hex/HSV readout in the colour card's
+  header row (egui's picker header is plain), sound for the boil playback itself.
