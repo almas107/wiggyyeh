@@ -6555,6 +6555,7 @@ dependencies = [
 name = "wobbleworks-app"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "cpal",
  "eframe",
  "egui",
@@ -6563,11 +6564,13 @@ dependencies = [
  "js-sys",
  "log",
  "photocraft-codecs",
+ "photocraft-color",
  "photocraft-doc",
  "photocraft-engine",
  "photocraft-format",
  "photocraft-geom",
  "photocraft-io",
+ "photocraft-raster",
  "photocraft-ui-egui",
  "rfd",
  "serde_json",

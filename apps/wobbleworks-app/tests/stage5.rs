@@ -76,3 +76,29 @@ fn a_second_window_on_the_document_renders() {
     }
     h.run_steps(3);
 }
+
+/// Frame cost of WobbleWorks' layers on top of PhotoCraft (hand-drawn pass, juice, Wob, icons):
+/// `cargo test -p wobbleworks-app --release --test stage5 frame_cost -- --ignored --nocapture`.
+#[test]
+#[ignore = "timing; run on demand"]
+fn frame_cost() {
+    let time = |hand_drawn: bool, extras: bool| {
+        let mut h = harness();
+        h.state_mut().hand_drawn = hand_drawn;
+        h.state_mut().custom_icons = extras;
+        h.state_mut().mascot.enabled = extras;
+        h.state_mut().stroke(&[(100.0, 100.0), (900.0, 500.0)], "#ff2e88", 30.0).unwrap();
+        h.run_steps(5);
+        let n = 60;
+        let t0 = std::time::Instant::now();
+        for i in 0..n {
+            // Move the pointer so hover effects and repaints happen as in use.
+            h.input_mut().events.push(egui::Event::PointerMoved(egui::pos2(200.0 + i as f32 * 5.0, 300.0)));
+            h.step();
+        }
+        t0.elapsed().as_secs_f64() * 1000.0 / f64::from(n)
+    };
+    let plain = time(false, false);
+    let full = time(true, true);
+    eprintln!("frame (layout + shapes, no GPU): PhotoCraft look {plain:.2} ms, WobbleWorks look {full:.2} ms");
+}

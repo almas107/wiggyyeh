@@ -22,5 +22,6 @@ pub mod svgicon;
 pub mod theme;
 pub mod ttf;
 pub mod widgets;
+pub mod wob;
 
 pub use shell::WobbleApp;

@@ -117,3 +117,15 @@ fn the_boil_exports_as_gif_png_frames_and_a_layered_psd() {
     assert_eq!(wigs.len(), 1, "the wiggle layer survives a PSD round trip");
     assert_eq!(wiggle_cmds::frames(wigs[0]).len(), 3);
 }
+
+#[test]
+fn old_wobbleworks_projects_open_through_photocrafts_open() {
+    let (mut w, _) = app();
+    let wob = json!({"format": "wobbleworks", "version": 2, "w": 80, "h": 60, "settings": {"frames": 4},
+        "layers": [{"name": "Lines", "strokes": [{"t": "marker", "c": "#2f5bff", "z": 5, "s": 9, "p": [5, 30, 75, 30]}]}]});
+    w.app.open_bytes("old.wob", wob.to_string().as_bytes()).unwrap();
+    let st = w.app.session.active().unwrap();
+    assert_eq!((st.doc.size.width, st.doc.size.height), (80, 60));
+    assert_eq!(wiggle_cmds::frame_count(&st.doc), 4);
+    assert!(w.app.open_bytes("bad.wob", b"{").is_err());
+}

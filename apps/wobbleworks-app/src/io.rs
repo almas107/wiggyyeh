@@ -6,12 +6,16 @@ use photocraft_ui_egui::{ExportSettings, Services};
 
 /// Everything Open reads: PhotoCraft and Photoshop documents and flat images.
 pub const OPEN_EXTS: &[&str] = &[
-    "pcraft", "psd", "psb", "psdt", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "ico", "qoi", "exr", "hdr", "pbm", "pgm", "ppm", "pam",
-    "pfm", "dng", "cr2", "cr3", "nef", "nrw", "arw", "pef", "orf", "rw2", "raf", "abr", "grd",
+    "wob", "pcraft", "psd", "psb", "psdt", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "ico", "qoi", "exr", "hdr", "pbm", "pgm", "ppm",
+    "pam", "pfm", "dng", "cr2", "cr3", "nef", "nrw", "arw", "pef", "orf", "rw2", "raf", "abr", "grd",
 ];
 
-/// Decode a file into a document (PSD, PNG, JPEG, …) through `photocraft-io`.
+/// Decode a file into a document: Wobbleworks projects (`.wob`), and PSD, PNG, JPEG, … through
+/// `photocraft-io`.
 pub fn import(name: &str, bytes: &[u8]) -> Result<(Document, Vec<String>), String> {
+    if crate::wob::is_wob(name) {
+        return crate::wob::import(name, bytes);
+    }
     photocraft_io::import(name, bytes).map(|r| (r.document, r.warnings)).map_err(|e| e.to_string())
 }
 

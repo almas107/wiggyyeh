@@ -132,7 +132,9 @@ fn new_wiggle(s: &mut Session, p: &Value) -> Result<Value> {
             })
             .collect();
         let ids: Vec<LayerId> = children.iter().map(|c| c.id).collect();
-        let group = doc.insert_above(*active, Layer::group(name, children));
+        // On a boil frame, the new wiggle layer goes above that wiggle layer, not inside it.
+        let anchor = active.and_then(|a| wiggle_of(doc, a).map(|w| w.id)).or(*active);
+        let group = doc.insert_above(anchor, Layer::group(name, children));
         *active = ids.first().copied();
         Ok((group, ids))
     })?;
@@ -473,6 +475,10 @@ mod tests {
         assert!(s.execute("wiggle.new", json!({"frames": 1})).is_err());
         assert!(s.execute("wiggle.new", json!({"frames": 13})).is_err());
         assert!(s.execute("wiggle.new", json!({"frames": 5})).is_ok());
+        // Made while a boil frame was active, it sits beside the other wiggle layers, not inside.
+        let d = s.active().unwrap();
+        assert_eq!(all(&d.doc).len(), 2);
+        assert!(all(&d.doc).iter().all(|w| super::frames(w).len() >= 3));
     }
 
     #[test]

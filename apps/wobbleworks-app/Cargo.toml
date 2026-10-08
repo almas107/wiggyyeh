@@ -28,6 +28,10 @@ photocraft-ui-egui = { workspace = true }
 egui = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
+# .wob projects store raster frames as base64 PNG data URLs.
+base64 = "0.22"
+photocraft-raster = { workspace = true }
+photocraft-color = { workspace = true }
 # Animated GIF export of the boil frames.
 image = { workspace = true, features = ["gif", "png"] }
 
