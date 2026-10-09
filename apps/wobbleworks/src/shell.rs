@@ -61,6 +61,7 @@ pub const FONT_SCALE: f32 = 1.0;
 
 const STORE_KEY: &str = "wobbleworks.colours";
 const SETTINGS_KEY: &str = "wobbleworks.settings";
+const NOTE_KEY: &str = "wobbleworks.3d.note";
 
 pub struct WobbleApp {
     /// PhotoCraft's editor, which owns the engine session.
@@ -428,6 +429,9 @@ impl WobbleApp {
         }
         if let Some(text) = storage.and_then(|s| s.get_string(SETTINGS_KEY)) {
             self.restore_settings(&text);
+        }
+        if let Some(text) = storage.and_then(|s| s.get_string(NOTE_KEY)) {
+            self.space.restore_autosave(&text);
         }
     }
 
@@ -991,6 +995,11 @@ impl eframe::App for WobbleApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         storage.set_string(STORE_KEY, self.colours_json());
         storage.set_string(SETTINGS_KEY, self.settings_json());
+        // The 3D note is kept too (crash-safe: eframe saves every 30 s and on exit), when it
+        // changed since the last time.
+        if let Some(text) = self.space.autosave_text() {
+            storage.set_string(NOTE_KEY, text);
+        }
     }
 
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {

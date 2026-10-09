@@ -129,6 +129,8 @@ pub struct Space3d {
     /// Find Group: the group of the curve under the pointer (Select tool), and when it was looked up.
     pub hover_group: Option<String>,
     hover_checked: (f64, [f32; 2]),
+    /// The editor revision last autosaved.
+    autosaved: Option<u64>,
     frame_index: u32,
 }
 
@@ -259,6 +261,7 @@ impl Space3d {
             show_camera_info: false,
             hover_group: None,
             hover_checked: (0.0, [0.0, 0.0]),
+            autosaved: None,
             frame_index: 0,
         }
     }
@@ -266,6 +269,28 @@ impl Space3d {
     /// Draw the view on the GPU with a depth buffer (the app runs on wgpu).
     pub fn set_gpu(&mut self, rs: &eframe::egui_wgpu::RenderState) {
         self.view.gpu = Some(gpu::Gpu::new(rs));
+    }
+
+    /// The note as autosave text (base64 of the .wob3d bytes), when it changed since the last
+    /// autosave; `None` when nothing changed.
+    pub fn autosave_text(&mut self) -> Option<String> {
+        use base64::Engine as _;
+        if self.autosaved == Some(self.ed.revision) {
+            return None;
+        }
+        let bytes = wobbleworks_3d::io::save(&self.ed.scene, &self.ed.camera).ok()?;
+        self.autosaved = Some(self.ed.revision);
+        Some(base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+
+    /// Bring back an autosaved note (anything unreadable is ignored).
+    pub fn restore_autosave(&mut self, text: &str) {
+        use base64::Engine as _;
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(text.trim()) else { return };
+        if let Ok((scene, cam)) = wobbleworks_3d::io::load(&bytes) {
+            self.ed.open(scene, cam);
+            self.autosaved = Some(self.ed.revision);
+        }
     }
 
     /// Preferences kept between sessions: layout, the keymap and the drawing aids.
@@ -751,6 +776,19 @@ mod tests {
         assert_eq!(chord(Key::Z, egui::Modifiers::COMMAND | egui::Modifiers::SHIFT).as_deref(), Some("Ctrl+Shift+Z"));
         assert_eq!(chord(Key::Num1, egui::Modifiers::CTRL).as_deref(), Some("Ctrl+1"));
         assert_eq!(key_name(Key::F12).as_deref(), Some("F12"));
+    }
+
+    #[test]
+    fn the_note_autosaves_and_comes_back() {
+        let mut s = Space3d::new();
+        s.ed.run("stroke.add", &json!({"points": [[0,0,0],[1,1,1]]})).expect("add");
+        let text = s.autosave_text().expect("changed");
+        assert!(s.autosave_text().is_none(), "nothing new to save");
+        let mut t = Space3d::new();
+        t.restore_autosave(&text);
+        assert_eq!(t.ed.scene.strokes.len(), 1);
+        t.restore_autosave("not base64 !!");
+        assert_eq!(t.ed.scene.strokes.len(), 1, "garbage leaves the note alone");
     }
 
     #[test]

@@ -102,6 +102,8 @@ The screenshot needs a GPU or `mesa-vulkan-drivers`; Linux builds need `libasoun
   3000 curves × 150 points from ~430 ms to ~70 ms a frame on 4 cores; a still boiling view
   costs nothing), depth-buffered GPU view with drawing order on shared surfaces, background
   image, depth of field, Stamp, Find Group, Lighten, import note, brush previews, Shots overlays.
+- **2026-10-09, autosave:** the 3D note is autosaved with the app settings (eframe storage, every
+  30 s and on exit, only when it changed) and comes back on the next start.
 - **Still open:** DOF / grain / pixelation / bloom in the live view (exports have them); MP4;
   Cutout showing the background *image* (it shows the background colour); 3D commands over
   the control channel / MCP (they run in-process through `Editor::run` today); Feather's
