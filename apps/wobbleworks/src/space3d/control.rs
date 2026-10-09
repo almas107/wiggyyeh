@@ -7,7 +7,7 @@
 //! | `w3d.commands` | | `[{id, params}]`: every editor command |
 //! | `w3d.execute` | `{command, params?}` | the command's result |
 //! | `w3d.state` | | revision, tool, counts, selection, camera, environment flags |
-//! | `w3d.render` | `{kind?: png / boilGif / turntableGif, scale?, frame?, transparent?, width?, height?}` | `{mime, base64, bytes}` |
+//! | `w3d.render` | `{kind?: png / boilGif / turntableGif / shotsGif / boilMp4 / turntableMp4 / shotsMp4, scale?, frame?, transparent?, width?, height?}` | `{mime, base64, bytes}` |
 //!
 //! `w3d.show` (switch the 3D mode on or off) lives in the shell, which owns the mode.
 
@@ -82,11 +82,23 @@ fn render(ed: &mut Editor, p: &Value) -> Result<Value, String> {
     if w.is_some() || h.is_some() {
         ed.camera.viewport = Viewport { width: w.unwrap_or(saved.width), height: h.unwrap_or(saved.height) };
     }
-    let out = match kind {
-        "png" => super::export::png(ed, frame, scale, transparent).map(|b| ("image/png", b)),
-        "boilGif" => super::export::boil_gif(ed, scale).map(|b| ("image/gif", b)),
-        "turntableGif" => super::export::turntable_gif(ed, scale).map(|b| ("image/gif", b)),
-        _ => Err(format!("unknown render kind `{kind}` (png, boilGif, turntableGif)")),
+    use super::export::{Anim, Video, animation};
+    let anim = match kind {
+        "png" => None,
+        "boilGif" => Some((Anim::Boil, Video::Gif)),
+        "turntableGif" => Some((Anim::Turntable, Video::Gif)),
+        "shotsGif" => Some((Anim::Shots, Video::Gif)),
+        "boilMp4" => Some((Anim::Boil, Video::Mp4)),
+        "turntableMp4" => Some((Anim::Turntable, Video::Mp4)),
+        "shotsMp4" => Some((Anim::Shots, Video::Mp4)),
+        _ => {
+            ed.camera.viewport = saved;
+            return Err(format!("unknown render kind `{kind}` (png, boilGif, turntableGif, shotsGif, boilMp4, turntableMp4, shotsMp4)"));
+        }
+    };
+    let out = match anim {
+        None => super::export::png(ed, frame, scale, transparent).map(|b| ("image/png", b)),
+        Some((a, v)) => animation(ed, a, v, scale).map(|b| (if v == Video::Gif { "image/gif" } else { "video/mp4" }, b)),
     };
     ed.camera.viewport = saved;
     let (mime, bytes) = out?;

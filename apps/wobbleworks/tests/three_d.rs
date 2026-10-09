@@ -194,11 +194,21 @@ fn save_open_and_exports_go_through_the_platform() {
     w.space.ed.run("stroke.add", &json!({"points": [[0,0,0],[1,1,0]]})).unwrap();
     w.space.save(false);
     w.space.export_png();
-    w.space.export_gif(false);
+    w.space.export_anim(wobbleworks::space3d::export::Anim::Boil, wobbleworks::space3d::export::Video::Gif);
+    w.space.export_anim(wobbleworks::space3d::export::Anim::Turntable, wobbleworks::space3d::export::Video::Mp4);
+    // The video is made on another thread and saved when it's ready.
+    let t0 = std::time::Instant::now();
+    while w.space.encoding() && t0.elapsed() < std::time::Duration::from_secs(120) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        w.space.poll_encoding();
+    }
     w.space.export_obj();
     w.space.export_glb();
     let names: Vec<String> = saved.borrow().iter().map(|(n, _)| n.clone()).collect();
-    assert_eq!(names, vec!["Note.wob3d", "WobbleWorks 3D.png", "WobbleWorks 3D.gif", "WobbleWorks 3D.obj", "WobbleWorks 3D.glb"]);
+    assert_eq!(
+        names,
+        vec!["Note.wob3d", "WobbleWorks 3D.png", "WobbleWorks 3D.gif", "WobbleWorks 3D turntable.mp4", "WobbleWorks 3D.obj", "WobbleWorks 3D.glb"]
+    );
     let note = saved.borrow()[0].1.clone();
     let mut w2 = app().0;
     w2.space.receive("open", "n.wob3d", &note).unwrap();
@@ -291,7 +301,7 @@ fn control_requests_drive_the_3d_mode_and_photocraft() {
     let mut h = harness();
     let (tx, rx) = std::sync::mpsc::channel();
     h.state_mut().set_control(rx);
-    let mut ask = |h: &mut Harness<'static, WobbleApp>, method: &str, params: serde_json::Value| {
+    let ask = |h: &mut Harness<'static, WobbleApp>, method: &str, params: serde_json::Value| {
         let (req, reply) = ControlRequest::new(method, params);
         tx.send(req).unwrap();
         h.run_steps(2);

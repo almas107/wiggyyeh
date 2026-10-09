@@ -12,6 +12,7 @@
 pub mod control;
 pub mod export;
 pub mod gpu;
+pub mod mp4;
 mod panels;
 pub mod previews;
 pub mod view;
@@ -88,6 +89,9 @@ pub enum Feedback {
     Exported,
 }
 
+/// Where a background video export's bytes (or its error) arrive.
+type Encoded = std::sync::mpsc::Receiver<Result<Vec<u8>, String>>;
+
 pub struct Space3d {
     pub ed: Editor,
     pub view: view::Viewport,
@@ -109,6 +113,8 @@ pub struct Space3d {
     pub rebinding: Option<String>,
     /// Playing the camera shots: (start time).
     pub playing: Option<f64>,
+    /// A video being encoded off the UI thread: its file name and where the result arrives.
+    encoding: Option<(String, Encoded)>,
     /// Groups picked in the Groups tab (for merge, duplicate, delete).
     pub picked_groups: Vec<u64>,
     /// Export size multiplier (1–4).
@@ -249,6 +255,7 @@ impl Space3d {
             menu: None,
             rebinding: None,
             playing: None,
+            encoding: None,
             picked_groups: Vec::new(),
             export_scale: 2,
             export_transparent: false,
@@ -489,7 +496,7 @@ impl Space3d {
             "ui.saveAs" => self.save(true),
             "ui.open" => self.pick("open", NOTE_EXTS),
             "ui.renderImage" => self.export_png(),
-            "ui.renderAnimation" => self.export_gif(false),
+            "ui.renderAnimation" => self.export_anim(crate::space3d::export::Anim::Boil, crate::space3d::export::Video::Gif),
             _ => {
                 self.run(command, params);
             }
@@ -551,11 +558,56 @@ impl Space3d {
         }
     }
 
-    pub fn export_gif(&mut self, turntable: bool) {
-        let r = if turntable { export::turntable_gif(&mut self.ed, 1) } else { export::boil_gif(&mut self.ed, 1) };
-        match r {
+    /// Export an animation (the boil, a turntable or the shots) as a GIF or an MP4. On the
+    /// desktop an MP4 is encoded on another thread (it takes seconds) and saved when it's done.
+    pub fn export_anim(&mut self, anim: export::Anim, video: export::Video) {
+        let name = format!("WobbleWorks 3D{}.{}", anim.suffix(), video.ext());
+        #[cfg(not(target_arch = "wasm32"))]
+        if video == export::Video::Mp4 {
+            if self.encoding.is_some() {
+                self.ed.status = "A video is still being made".into();
+                return;
+            }
+            match export::frames(&mut self.ed, anim, video, 1) {
+                Ok((frames, fps)) => {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let spawned = std::thread::Builder::new().name("w3d-video".into()).spawn(move || {
+                        let _ = tx.send(mp4::encode(&frames, fps));
+                    });
+                    match spawned {
+                        Ok(_) => {
+                            self.encoding = Some((name, rx));
+                            self.ed.status = "Making the video…".into();
+                        }
+                        Err(e) => self.ed.status = format!("couldn't start the video encoder: {e}"),
+                    }
+                }
+                Err(e) => self.ed.status = e,
+            }
+            return;
+        }
+        let result = export::animation(&mut self.ed, anim, video, 1);
+        self.finish_export(&name, result);
+    }
+
+    /// Whether a video is being made in the background.
+    pub fn encoding(&self) -> bool {
+        self.encoding.is_some()
+    }
+
+    /// Save a finished background video (call every frame; returns at once while it encodes).
+    pub fn poll_encoding(&mut self) {
+        let Some((name, rx)) = self.encoding.take() else { return };
+        match rx.try_recv() {
+            Ok(result) => self.finish_export(&name, result),
+            Err(std::sync::mpsc::TryRecvError::Empty) => self.encoding = Some((name, rx)),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.ed.status = "the video encoder stopped".into(),
+        }
+    }
+
+    fn finish_export(&mut self, name: &str, result: Result<Vec<u8>, String>) {
+        match result {
             Ok(bytes) => {
-                let name = if turntable { "WobbleWorks 3D turntable.gif" } else { "WobbleWorks 3D.gif" };
                 if let Some(n) = self.save_bytes(name, &bytes) {
                     self.ed.status = format!("Exported {}", crate::shell::file_name(&n));
                     self.feedback.push(Feedback::Exported);
@@ -675,28 +727,9 @@ impl Space3d {
                 t = if c > legs { 2.0 * legs - c } else { c };
             }
         }
-        let i = (t.floor() as usize).min(n - 2);
-        let f = (t - i as f64).clamp(0.0, 1.0) as f32;
-        let e = f * f * (3.0 - 2.0 * f);
-        let (Some(a), Some(b)) = (seq.shots.get(i).map(|s| s.camera), seq.shots.get(i + 1).map(|s| s.camera)) else { return };
-        let lerp = |x: f32, y: f32| x + (y - x) * e;
-        let mut dyaw = b.yaw - a.yaw;
-        if dyaw > 180.0 {
-            dyaw -= 360.0;
-        } else if dyaw < -180.0 {
-            dyaw += 360.0;
-        }
         let vp = self.ed.camera.viewport;
-        self.ed.camera = wobbleworks_3d::camera::Camera {
-            target: a.target.lerp(b.target, e),
-            yaw: a.yaw + dyaw * e,
-            pitch: lerp(a.pitch, b.pitch),
-            distance: lerp(a.distance, b.distance),
-            focal_mm: lerp(a.focal_mm, b.focal_mm),
-            orthographic: if e < 0.5 { a.orthographic } else { b.orthographic },
-            snapped_from_perspective: false,
-            viewport: vp,
-        };
+        let Some(cam) = export::shot_camera(seq, t, vp) else { return };
+        self.ed.camera = cam;
         self.run("camera.set", Value::Null);
     }
 
@@ -705,6 +738,10 @@ impl Space3d {
         let ctx = ui.ctx().clone();
         let now = ctx.input(|i| i.time);
         self.drain_inbox();
+        self.poll_encoding();
+        if self.encoding.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         self.keys(&ctx);
         self.play_shots(now);
         if self.playing.is_some() {

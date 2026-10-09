@@ -36,6 +36,8 @@ photocraft-raster = { workspace = true }
 photocraft-color = { workspace = true }
 # Animated GIF export of the boil frames.
 image = { workspace = true, features = ["gif", "png"] }
+# MP4 export: AV1 in pure Rust (no assembler; threads are added on native below).
+rav1e = { version = "0.8.1", default-features = false }
 
 [dev-dependencies]
 photocraft-geom = { workspace = true }
@@ -46,6 +48,7 @@ naga = { version = "30.0.1", features = ["wgsl-in", "glsl-out"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "persistence"] }
 photocraft-format = { workspace = true }
+rav1e = { version = "0.8.1", default-features = false, features = ["threading"] }
 # The control server's authentication, limits and automation workspace (as PhotoCraft's).
 photocraft-automation = { workspace = true }
 rfd = { workspace = true }

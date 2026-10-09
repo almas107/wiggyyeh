@@ -225,7 +225,7 @@ WobbleWorks answers the 3D mode's methods itself:
 | `w3d.commands` | | `[{id, params}]`: every 3D editor command |
 | `w3d.execute` | `{command, params?}` | the command's result (draw, guides, brushes, transforms, camera, files…) |
 | `w3d.state` | | revision, tool, counts, selection, camera, render mode, status |
-| `w3d.render` | `{kind?: png / boilGif / turntableGif, scale?, frame?, transparent?, width?, height?}` | `{mime, bytes, base64}` |
+| `w3d.render` | `{kind?: png, boilGif, turntableGif, shotsGif, boilMp4, turntableMp4, shotsMp4; scale?, frame?, transparent?, width?, height?}` | `{mime, bytes, base64}` (MP4s are AV1) |
 
 Pictures come back as base64, so `w3d.*` never touches the file system. In MCP bridge mode
 (`photocraft-cli mcp --bridge 127.0.0.1:<port>`) agents reach them through `control_call`.

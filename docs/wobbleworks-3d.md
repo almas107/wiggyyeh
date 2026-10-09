@@ -46,7 +46,7 @@ Status: **done**, **partial** (works, details differ), **open**.
 | Stage: groups (add above active, rename, visibility, isolate, select, duplicate, merge, reorder, move curves in), resources (three-state cube, rename, delete, opacity), environment (axes, grid, background colour and image, fog, lighting dir/colour/strength/from view, ground shadow, toon; glow, DOF, grain, pixelation, bloom) | done | DOF, grain, pixelation and bloom show live (GPU post pass) and in exports |
 | Sequence: shots, play (0.5/1/2×; once / loop / swing), thirds grid, camera info | done | |
 | Stamp, Find Group, Lighten, import a note as groups | done | |
-| Export: PNG (1–4×, transparent), GIF (boil, 360° turntable), OBJ, glTF (.glb, vertex colours) | done | MP4 open (needs an encoder) |
+| Export: PNG (1–4×, transparent), GIF and MP4 (boil, 360° turntable, shots fly-through), OBJ, glTF (.glb, vertex colours) | done | MP4 is AV1 (rav1e, pure Rust; own ISO BMFF muxer), encoded off the UI thread on desktop |
 | Clipboard (reference board) | done (WobbleWorks) | The colour card's Reference tab: load an image, pick colours from it |
 | AR, Publish to Gallery | open | Platform services, out of scope for a desktop/web app |
 | Keyboard shortcuts | done (Blender) | Rebindable in the Keys tab |
@@ -114,4 +114,9 @@ The screenshot needs a GPU or `mesa-vulkan-drivers`; Linux builds need `libasoun
   workspace rules) with the 3D mode's `w3d.show / commands / execute / state / render`
   (`space3d/control.rs`); other methods go to PhotoCraft unchanged. MCP reaches them through
   `control_call` in bridge mode (`docs/control-protocol.md`).
-- **Still open:** MP4; Feather's undocumented brush type names.
+- **2026-10-09, video:** MP4 export (AV1 via rav1e, muxer in `space3d/mp4.rs`, moov first,
+  full-range BT.709): boil (looped to 4 s), 120-step turntable at 30 fps, and the shots
+  fly-through Feather plays (also as GIF). Checked with ffprobe/ffmpeg: 480 × 320, 120 frames,
+  exactly 30 fps, decodes clean. Tiles cut encoding from 9.1 s to 4.6 s on 4 cores (dev build).
+- **Still open:** Feather's undocumented brush type names; stroke feel tuned against
+  Grease Pencil's documented behaviour (next).

@@ -141,13 +141,26 @@ fn file_menu(s: &mut Space3d, ui: &mut Ui) {
         s.export_png();
         ui.close();
     }
-    if ui.button(s.tip("Export boil GIF", "file.renderAnim")).clicked() {
-        s.export_gif(false);
-        ui.close();
-    }
-    if ui.button("Export 360° turntable GIF").clicked() {
-        s.export_gif(true);
-        ui.close();
+    use super::export::{Anim, Video};
+    for (label, tip, anim, video) in [
+        ("Export boil GIF", Some("file.renderAnim"), Anim::Boil, Video::Gif),
+        ("Export boil MP4", None, Anim::Boil, Video::Mp4),
+        ("Export 360° turntable GIF", None, Anim::Turntable, Video::Gif),
+        ("Export 360° turntable MP4", None, Anim::Turntable, Video::Mp4),
+        ("Export shots GIF", None, Anim::Shots, Video::Gif),
+        ("Export shots MP4", None, Anim::Shots, Video::Mp4),
+    ] {
+        let enabled = anim != Anim::Shots || s.ed.scene.sequence.shots.len() >= 2;
+        let text = match tip {
+            Some(cmd) => s.tip(label, cmd),
+            None => label.to_string(),
+        };
+        let r = ui.add_enabled(enabled, egui::Button::new(text)).on_disabled_hover_text("Add two shots or more in the Shots tab");
+        let r = if video == Video::Mp4 { r.on_hover_text("AV1 video in an MP4 (plays in browsers, VLC and current OSes)") } else { r };
+        if r.clicked() {
+            s.export_anim(anim, video);
+            ui.close();
+        }
     }
     if ui.button("Export OBJ (tubes, vertex colours)").clicked() {
         s.export_obj();

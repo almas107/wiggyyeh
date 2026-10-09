@@ -642,7 +642,7 @@ impl WobbleApp {
             self.space.run("group.new", Value::Null);
         }
         if widgets::button(ui, look, "GIF", false, true).on_hover_text("Export the boil as an animated GIF").clicked() {
-            self.space.export_gif(false);
+            self.space.export_anim(crate::space3d::export::Anim::Boil, crate::space3d::export::Video::Gif);
         }
         if widgets::button(ui, look, "PNG", false, true).on_hover_text("Export the view as a PNG (F12)").clicked() {
             self.space.export_png();
