@@ -1,7 +1,8 @@
 //! A CPU rasteriser for [`crate::render::Frame`]s: exports (PNG, GIF, turntables) and tests.
-//! It draws exactly what the interactive view draws (same triangles, same order, premultiplied
-//! "over" blending, texels times vertex colours), then applies the render-mode effects that need
-//! the whole picture (bloom, grain, pixelation).
+//! It draws what the GPU view draws, the same way: first the solid paint with a depth buffer
+//! (so on a shared surface the later curve wins), then soft edges and see-through paint blended
+//! back to front over it with the depth test. Then the render-mode effects that need the whole
+//! picture (bloom, grain, pixelation).
 
 use std::collections::HashMap;
 
@@ -32,6 +33,17 @@ struct Canvas {
     h: usize,
     /// Premultiplied RGBA floats.
     px: Vec<[f32; 4]>,
+    /// Reverse depth of the solid paint at each pixel (0 = nothing; larger is nearer).
+    zbuf: Vec<f32>,
+}
+
+/// Paint at least this opaque counts as solid (depth-tested and written).
+pub const SOLID_ALPHA: f32 = 0.5;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    Solid,
+    Blend,
 }
 
 fn sample(tex: &(u32, u32, &[u8]), u: f32, v: f32) -> [f32; 4] {
@@ -65,7 +77,8 @@ fn sample(tex: &(u32, u32, &[u8]), u: f32, v: f32) -> [f32; 4] {
 }
 
 impl Canvas {
-    fn tri(&mut self, p: [[f32; 2]; 3], uv: [[f32; 2]; 3], col: [[f32; 4]; 3], tex: Option<&(u32, u32, &[u8])>) {
+    #[allow(clippy::too_many_arguments)]
+    fn tri(&mut self, pass: Pass, p: [[f32; 2]; 3], z: [f32; 3], solid: bool, uv: [[f32; 2]; 3], col: [[f32; 4]; 3], tex: Option<&(u32, u32, &[u8])>) {
         let area = (p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[2][0] - p[0][0]) * (p[1][1] - p[0][1]);
         if area.abs() < 1e-9 || !area.is_finite() {
             return;
@@ -95,10 +108,27 @@ impl Canvas {
                         c[k] *= s[k];
                     }
                 }
-                let Some(d) = self.px.get_mut(y * self.w + x) else { continue };
-                let inv = 1.0 - c[3].clamp(0.0, 1.0);
-                for k in 0..4 {
-                    d[k] = (c[k] + d[k] * inv).clamp(0.0, 1.0);
+                let zz = z[0] * w0 + z[1] * w1 + z[2] * w2;
+                let i = y * self.w + x;
+                let (Some(d), Some(zb)) = (self.px.get_mut(i), self.zbuf.get_mut(i)) else { continue };
+                let strong = solid && c[3] >= SOLID_ALPHA;
+                match pass {
+                    Pass::Solid => {
+                        if strong && zz > *zb {
+                            let a = c[3].max(1e-6);
+                            *d = [(c[0] / a).clamp(0.0, 1.0), (c[1] / a).clamp(0.0, 1.0), (c[2] / a).clamp(0.0, 1.0), 1.0];
+                            *zb = zz;
+                        }
+                    }
+                    Pass::Blend => {
+                        if strong || zz < *zb * (1.0 - 1e-6) {
+                            continue;
+                        }
+                        let inv = 1.0 - c[3].clamp(0.0, 1.0);
+                        for k in 0..4 {
+                            d[k] = (c[k] + d[k] * inv).clamp(0.0, 1.0);
+                        }
+                    }
                 }
             }
         }
@@ -115,17 +145,23 @@ pub fn rasterize(frame: &Frame, textures: &Textures<'_>, width: u32, height: u32
         let f = c.to_f32();
         [f[0] * f[3], f[1] * f[3], f[2] * f[3], f[3]]
     });
-    let mut cv = Canvas { w, h, px: vec![bg; w * h] };
+    let mut cv = Canvas { w, h, px: vec![bg; w * h], zbuf: vec![0.0; w * h] };
     let atlas = (textures.atlas.width() as u32, textures.atlas.height() as u32, textures.atlas.pixels.as_slice());
-    for b in &frame.batches {
-        let tex = match b.tex {
-            Tex::Atlas => Some(&atlas),
-            Tex::Image(id) => textures.images.get(&id),
-        };
-        for t in b.indices.chunks_exact(3) {
-            let (Some(a), Some(bb), Some(c)) = (b.vertices.get(t[0] as usize), b.vertices.get(t[1] as usize), b.vertices.get(t[2] as usize)) else { continue };
-            let f = |v: [u8; 4]| [v[0] as f32 / 255.0, v[1] as f32 / 255.0, v[2] as f32 / 255.0, v[3] as f32 / 255.0];
-            cv.tri([a.pos, bb.pos, c.pos], [a.uv, bb.uv, c.uv], [f(a.color), f(bb.color), f(c.color)], tex);
+    for pass in [Pass::Solid, Pass::Blend] {
+        for b in &frame.batches {
+            let tex = match b.tex {
+                Tex::Atlas => Some(&atlas),
+                Tex::Image(id) => textures.images.get(&id),
+            };
+            for t in b.indices.chunks_exact(3) {
+                let (Some(a), Some(bb), Some(c)) = (b.vertices.get(t[0] as usize), b.vertices.get(t[1] as usize), b.vertices.get(t[2] as usize)) else { continue };
+                let solid = a.solid && bb.solid && c.solid;
+                if pass == Pass::Solid && !solid {
+                    continue;
+                }
+                let f = |v: [u8; 4]| [v[0] as f32 / 255.0, v[1] as f32 / 255.0, v[2] as f32 / 255.0, v[3] as f32 / 255.0];
+                cv.tri(pass, [a.pos, bb.pos, c.pos], [a.z, bb.z, c.z], solid, [a.uv, bb.uv, c.uv], [f(a.color), f(bb.color), f(c.color)], tex);
+            }
         }
     }
     if let Some(e) = effects {
@@ -235,7 +271,7 @@ mod tests {
     fn a_triangle_fills_with_premultiplied_over() {
         let atlas = Atlas::default();
         let uv = atlas.solid_uv();
-        let v = |x: f32, y: f32| Vtx { pos: [x, y], uv, color: [128, 0, 0, 128] };
+        let v = |x: f32, y: f32| Vtx { pos: [x, y], uv, color: [128, 0, 0, 128], z: 0.5, solid: false };
         let frame = Frame { batches: vec![Batch { tex: Tex::Atlas, vertices: vec![v(0.0, 0.0), v(10.0, 0.0), v(0.0, 10.0)], indices: vec![0, 1, 2] }], triangles: 1 };
         let tex = Textures { atlas: &atlas, images: HashMap::new() };
         let pic = rasterize(&frame, &tex, 10, 10, Some(Rgba::WHITE), None).expect("raster");
@@ -254,5 +290,42 @@ mod tests {
         let frame = Frame { batches: vec![Batch { tex: Tex::Image(77), vertices: vec![], indices: vec![0, 5, 9] }], triangles: 1 };
         let pic = rasterize(&frame, &tex, 4, 4, None, Some(&Effects { grain: 1.0, pixelate: 2.0, bloom: 1.0, ..Effects::default() })).expect("raster");
         assert_eq!(pic.rgba.len(), 64);
+    }
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+    use crate::camera::Camera;
+    use crate::editor::Editor;
+    use serde_json::json;
+
+    /// Two crossing curves on the same plane: the one drawn later covers the earlier one, for
+    /// every brush kind and from a tilted view.
+    #[test]
+    fn later_curves_cover_earlier_ones_on_a_shared_surface() {
+        for kind in crate::model::BrushKind::ALL {
+            let mut e = Editor::new();
+            e.set_viewport(200.0, 200.0);
+            e.run("env.set", &json!({"grid": false})).expect("env");
+            e.run("boil.set", &json!({"enabled": false})).expect("boil");
+            e.run("camera.view", &json!({"view": "front"})).expect("view");
+            e.run("brush.set", &json!({"kind": kind.name(), "color": "#ff0000", "size": 60, "pressure": false})).expect("red");
+            e.run("stroke.draw", &json!({"points": (0..30).map(|i| [20.0 + i as f32 * 5.5, 100.0, 1.0]).collect::<Vec<_>>()})).expect("red");
+            e.run("brush.set", &json!({"color": "#0000ff"})).expect("blue");
+            e.run("stroke.draw", &json!({"points": (0..30).map(|i| [100.0, 20.0 + i as f32 * 5.5, 1.0]).collect::<Vec<_>>()})).expect("blue");
+            e.camera = Camera { yaw: 25.0, pitch: 15.0, viewport: e.camera.viewport, ..e.camera };
+            e.camera.orthographic = false;
+            let f = e.render(0, false);
+            let tex = Textures { atlas: &e.atlas, images: HashMap::new() };
+            let pic = rasterize(&f, &tex, 200, 200, Some(crate::model::Rgba::WHITE), None).expect("raster");
+            // Where they cross (the target point, at the centre).
+            let i = (100 * 200 + 100) * 4;
+            let p = &pic.rgba[i..i + 4];
+            let red = p[0] > 150 && p[2] < 100;
+            let blue = p[2] > 150 && p[0] < 100;
+            assert!(!red, "{kind:?}: the earlier red curve shows through ({p:?})");
+            assert!(blue || kind.painterly(), "{kind:?}: the later blue curve is on top ({p:?})");
+        }
     }
 }

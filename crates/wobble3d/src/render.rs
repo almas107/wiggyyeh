@@ -16,13 +16,32 @@ use crate::model::{Boil, BrushKind, Environment, ImageResource, Material, ModelR
 use crate::noise::{Track, hash2, signed, unit};
 use crate::texture::{Atlas, RowKey, TILE_WIDTHS};
 
-/// A vertex: screen pixels, atlas or image texture coordinates, premultiplied RGBA.
+/// A vertex: screen pixels, atlas or image texture coordinates, premultiplied RGBA, its depth
+/// in the depth buffer's terms ([`Frame::z`]), and whether its paint is solid (drawn with the
+/// depth test and depth writes; soft edges and see-through paint are blended over after).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Vtx {
     pub pos: [f32; 2],
     pub uv: [f32; 2],
     pub color: [u8; 4],
+    /// Reverse depth: larger is nearer (near / depth), so float precision holds at every
+    /// distance; nudged by drawing order so later curves win on a shared surface.
+    pub z: f32,
+    pub solid: bool,
 }
+
+/// How far behind a curve its echo and extra layered passes sit (relative depth). They are the
+/// curve shifted on screen, so on a tilted surface their depth is off by a few thousandths: this
+/// keeps them behind every curve on the same surface (a painted panel's shadow stays under all
+/// of its paint).
+const ECHO_BEHIND: f32 = 1.2e-2;
+const LAYER_BEHIND: f32 = 4e-3;
+/// How far in front of their curve scattered dabs sit.
+const DABS_FRONT: f32 = 6e-3;
+
+/// Depth nudge per curve in drawing order: on a shared surface (a guide), later curves cover
+/// earlier ones; curves more than about a percent apart in depth are ordered by depth alone.
+pub const ORDER_BIAS: f32 = 1.5e-6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tex {
@@ -39,9 +58,24 @@ pub struct Batch {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Frame {
-    /// Draw in order: each over the ones before.
+    /// Back to front: for a painter (each over the ones before), or for the blended pass after
+    /// the solid pass of a depth-buffered renderer.
     pub batches: Vec<Batch>,
     pub triangles: usize,
+}
+
+/// View depth → reverse depth-buffer value in 0..1 (larger is nearer). Perspective uses
+/// near / depth: interpolating it across a triangle on screen is exact, and floats keep their
+/// relative precision at any distance (a drawing-order nudge of a millionth still counts).
+/// Orthographic views see behind the eye too, so their depth is shifted to stay positive.
+pub fn depth_to_z(depth: f32, orthographic: bool, near: f32, far: f32) -> f32 {
+    let z = if orthographic {
+        let shift = far * 0.5;
+        near / (depth + shift).max(near) * (shift / near).min(1e6) * 1e-6
+    } else {
+        near / depth.max(near)
+    };
+    if z.is_finite() { z.clamp(0.0, 1.0) } else { 0.0 }
 }
 
 /// The selection highlight (Feather shows selected curves in green).
@@ -91,8 +125,12 @@ struct Builder<'a> {
     open: Option<(Tex, usize, usize)>,
     /// Lighting direction (world) used for shading.
     light: Vec3,
-    /// Curves whose scattered dabs are still to be drawn: (curve, colour, alpha).
-    pending_dabs: Vec<(Stroke, [f32; 3], f32)>,
+    /// Curves whose scattered dabs are still to be drawn: (curve, colour, alpha, order).
+    pending_dabs: Vec<(Stroke, [f32; 3], f32, u32)>,
+    /// The drawing order of the curve being built (0 for everything else).
+    order: u32,
+    /// The far end of the depth range.
+    far: f32,
 }
 
 fn premul(c: [f32; 4]) -> [u8; 4] {
@@ -185,7 +223,8 @@ enum Paint {
 
 impl<'a> Builder<'a> {
     fn new(view: View, atlas: &'a Atlas, env: &'a Environment, boil: Boil, frame: u32, light: Vec3) -> Builder<'a> {
-        Builder { view, atlas, env, boil, frame, verts: Vec::new(), idx: Vec::new(), items: Vec::new(), open: None, light, pending_dabs: Vec::new() }
+        let far = (view.half_height * view.f * 400.0).max(view.near * 10.0);
+        Builder { view, atlas, env, boil, frame, verts: Vec::new(), idx: Vec::new(), items: Vec::new(), open: None, light, pending_dabs: Vec::new(), order: 0, far }
     }
 
     /// A texture row made before the frame (see [`stroke_rows`]); the solid row if missing.
@@ -194,9 +233,11 @@ impl<'a> Builder<'a> {
     }
 
     fn flush_dabs(&mut self) {
-        for (s, base, alpha) in std::mem::take(&mut self.pending_dabs) {
+        for (s, base, alpha, order) in std::mem::take(&mut self.pending_dabs) {
+            self.order = order;
             self.dabs(&s, base, alpha);
         }
+        self.order = 0;
     }
 
     /// Take another builder's geometry (built in parallel) into this one.
@@ -211,17 +252,50 @@ impl<'a> Builder<'a> {
         self.open = Some((tex, self.verts.len(), self.idx.len()));
     }
 
-    fn end(&mut self, depth: f32) {
-        if let Some((tex, v0, i0)) = self.open.take()
-            && self.idx.len() > i0
-        {
-            self.items.push(Item { depth: if depth.is_finite() { depth } else { 0.0 }, tex, v0, i0, i1: self.idx.len() });
+    /// Close the open item: its sort key is `depth` nudged by `bias` (relative) and by the
+    /// current curve's drawing order; its vertices' depths get the same nudge.
+    fn end(&mut self, depth: f32, bias: f32) {
+        let Some((tex, v0, i0)) = self.open.take() else { return };
+        if self.idx.len() <= i0 {
+            self.verts.truncate(v0);
+            return;
+        }
+        let factor = (1.0 + bias) * (1.0 - self.order as f32 * ORDER_BIAS);
+        let depth = if depth.is_finite() { depth * factor } else { 0.0 };
+        let mut max_alpha = 0u8;
+        let (ortho, near, far) = (self.view.orthographic, self.view.near, self.far);
+        if let Some(vs) = self.verts.get_mut(v0..) {
+            for v in vs.iter_mut() {
+                max_alpha = max_alpha.max(v.color[3]);
+                v.z = depth_to_z(v.z * factor, ortho, near, far);
+            }
+            // Solid when fully opaque somewhere and not added light.
+            let solid = max_alpha == 255;
+            for v in vs.iter_mut() {
+                v.solid = solid;
+            }
+        }
+        self.items.push(Item { depth, tex, v0, i0, i1: self.idx.len() });
+    }
+
+    /// An item drawn over everything (the orbit point).
+    fn end_on_top(&mut self) {
+        let Some((tex, v0, i0)) = self.open.take() else { return };
+        if let Some(vs) = self.verts.get_mut(v0..) {
+            for v in vs.iter_mut() {
+                v.z = 1.0;
+                v.solid = false;
+            }
+        }
+        if self.idx.len() > i0 {
+            self.items.push(Item { depth: -1.0, tex, v0, i0, i1: self.idx.len() });
         }
     }
 
-    fn vtx(&mut self, x: f32, y: f32, uv: [f32; 2], color: [u8; 4]) -> u32 {
+    /// A vertex at view depth `depth` (turned into a depth-buffer value when the item closes).
+    fn vtx(&mut self, x: f32, y: f32, depth: f32, uv: [f32; 2], color: [u8; 4]) -> u32 {
         let base = self.open.map_or(0, |(_, v0, _)| v0);
-        self.verts.push(Vtx { pos: [x, y], uv, color });
+        self.verts.push(Vtx { pos: [x, y], uv, color, z: depth, solid: false });
         (self.verts.len() - 1 - base) as u32
     }
 
@@ -282,6 +356,40 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// The depth of the surface a sample was drawn on, at screen point (x, y): strokes on the
+    /// same surface get the same depth at every pixel (so drawing order can decide between
+    /// them), however their ribbons are laid out on screen. Samples without a surface keep
+    /// their own depth.
+    fn surface_depth(&self, s: &Sample, x: f32, y: f32) -> f32 {
+        if s.n == Vec3::ZERO {
+            return s.depth;
+        }
+        let v = &self.view;
+        let nc = (s.n.dot(v.right), s.n.dot(v.up), s.n.dot(v.back));
+        let rel = s.w - v.eye;
+        let p0 = (rel.dot(v.right), rel.dot(v.up), rel.dot(v.back));
+        let k = nc.0 * p0.0 + nc.1 * p0.1 + nc.2 * p0.2;
+        let (hw, hh) = (v.viewport.width * 0.5, v.viewport.height * 0.5);
+        let d = if v.orthographic {
+            if nc.2.abs() < 1e-3 {
+                return s.depth;
+            }
+            let sx = (x - hw) / hh * v.half_height;
+            let sy = (hh - y) / hh * v.half_height;
+            (nc.0 * sx + nc.1 * sy - k) / nc.2
+        } else {
+            let sx = (x - hw) / hh / v.f;
+            let sy = (hh - y) / hh / v.f;
+            let den = nc.0 * sx + nc.1 * sy - nc.2;
+            if den.abs() < 1e-6 {
+                return s.depth;
+            }
+            k / den
+        };
+        // Grazing surfaces: stay near the sample.
+        if d.is_finite() { d.clamp(s.depth - s.whw * 4.0 - 1e-4, s.depth + s.whw * 4.0 + 1e-4) } else { s.depth }
+    }
+
     fn colour(&self, paint: &Paint, n: Vec3, alpha: f32, depth: f32, distance: f32) -> [u8; 4] {
         match *paint {
             Paint::Shade { base, alpha: a, material, lit } => {
@@ -334,7 +442,8 @@ impl<'a> Builder<'a> {
                         let normal = back * a.theta.cos() + across_w * a.theta.sin();
                         let col = self.colour(&paint, normal, s.alpha * a.alpha, s.depth, distance);
                         let uv = self.atlas.uv(row, s.u, a.v);
-                        let id = self.vtx(x, y, uv, col);
+                        let d = self.surface_depth(s, x, y);
+                        let id = self.vtx(x, y, d, uv, col);
                         first.get_or_insert(id);
                     }
                 }
@@ -355,7 +464,7 @@ impl<'a> Builder<'a> {
                 depth += s.depth;
             }
             let d = depth / (end + 1 - start) as f32;
-            self.end(d * (1.0 + bias));
+            self.end(d, bias);
             start = end;
         }
     }
@@ -372,7 +481,7 @@ impl<'a> Builder<'a> {
         let uv = self.atlas.solid_uv();
         let (cx, cy) = (s.x + offset[0], s.y + offset[1]);
         let centre = self.colour(&paint, back, s.alpha, s.depth, distance);
-        let c0 = self.vtx(cx, cy, uv, centre);
+        let c0 = self.vtx(cx, cy, self.surface_depth(s, cx, cy), uv, centre);
         let segs = ((r * 0.8) as usize).clamp(8, 28);
         let mut ring = Vec::with_capacity(segs);
         let mut fringe = Vec::with_capacity(segs);
@@ -381,8 +490,10 @@ impl<'a> Builder<'a> {
             let (ca, sa) = (a.cos(), a.sin());
             let nrm = (back * 0.35 + (right * ca - up * sa)).normalized();
             let col = self.colour(&paint, nrm, s.alpha, s.depth, distance);
-            ring.push(self.vtx(cx + ca * r, cy + sa * r, uv, col));
-            fringe.push(self.vtx(cx + ca * (r + 1.0), cy + sa * (r + 1.0), uv, [0, 0, 0, 0]));
+            let (rx, ry) = (cx + ca * r, cy + sa * r);
+            ring.push(self.vtx(rx, ry, self.surface_depth(s, rx, ry), uv, col));
+            let (fx, fy) = (cx + ca * (r + 1.0), cy + sa * (r + 1.0));
+            fringe.push(self.vtx(fx, fy, self.surface_depth(s, fx, fy), uv, [0, 0, 0, 0]));
         }
         for i in 0..segs {
             let j = (i + 1) % segs;
@@ -390,7 +501,7 @@ impl<'a> Builder<'a> {
             self.tri(ring[i], fringe[i], fringe[j]);
             self.tri(ring[i], fringe[j], ring[j]);
         }
-        self.end(s.depth * (1.0 + bias));
+        self.end(s.depth, bias);
     }
 
     /// A screen-space line through world points, split so each piece sorts on its own depth.
@@ -409,20 +520,20 @@ impl<'a> Builder<'a> {
             let c = premul(color);
             let z = [0, 0, 0, 0];
             let p = [
-                self.vtx(a.0 - nx - fx, a.1 - ny - fy, uv, z),
-                self.vtx(a.0 - nx, a.1 - ny, uv, c),
-                self.vtx(a.0 + nx, a.1 + ny, uv, c),
-                self.vtx(a.0 + nx + fx, a.1 + ny + fy, uv, z),
-                self.vtx(b.0 - nx - fx, b.1 - ny - fy, uv, z),
-                self.vtx(b.0 - nx, b.1 - ny, uv, c),
-                self.vtx(b.0 + nx, b.1 + ny, uv, c),
-                self.vtx(b.0 + nx + fx, b.1 + ny + fy, uv, z),
+                self.vtx(a.0 - nx - fx, a.1 - ny - fy, a.2, uv, z),
+                self.vtx(a.0 - nx, a.1 - ny, a.2, uv, c),
+                self.vtx(a.0 + nx, a.1 + ny, a.2, uv, c),
+                self.vtx(a.0 + nx + fx, a.1 + ny + fy, a.2, uv, z),
+                self.vtx(b.0 - nx - fx, b.1 - ny - fy, b.2, uv, z),
+                self.vtx(b.0 - nx, b.1 - ny, b.2, uv, c),
+                self.vtx(b.0 + nx, b.1 + ny, b.2, uv, c),
+                self.vtx(b.0 + nx + fx, b.1 + ny + fy, b.2, uv, z),
             ];
             for i in 0..3 {
                 self.tri(p[i], p[i + 1], p[i + 5]);
                 self.tri(p[i], p[i + 5], p[i + 4]);
             }
-            self.end((a.2 + b.2) * 0.5 * (1.0 + bias));
+            self.end((a.2 + b.2) * 0.5, bias);
         }
     }
 
@@ -445,11 +556,11 @@ impl<'a> Builder<'a> {
     fn triangle3(&mut self, tex: Tex, p: [Vec3; 3], uv: [[f32; 2]; 3], cols: [[u8; 4]; 3], bias: f32) {
         let (Some(a), Some(b), Some(c)) = (self.view.project(p[0]), self.view.project(p[1]), self.view.project(p[2])) else { return };
         self.begin(tex);
-        let ia = self.vtx(a.x, a.y, uv[0], cols[0]);
-        let ib = self.vtx(b.x, b.y, uv[1], cols[1]);
-        let ic = self.vtx(c.x, c.y, uv[2], cols[2]);
+        let ia = self.vtx(a.x, a.y, a.depth, uv[0], cols[0]);
+        let ib = self.vtx(b.x, b.y, b.depth, uv[1], cols[1]);
+        let ic = self.vtx(c.x, c.y, c.depth, uv[2], cols[2]);
         self.tri(ia, ib, ic);
-        self.end((a.depth + b.depth + c.depth) / 3.0 * (1.0 + bias));
+        self.end((a.depth + b.depth + c.depth) / 3.0, bias);
     }
 
     fn finish(mut self) -> Frame {
@@ -702,7 +813,7 @@ impl<'a> Builder<'a> {
 
         if br.paint.scatter > 0.0 {
             // Drawn after (in front of) the stroke itself; see `dabs`.
-            self.pending_dabs.push((s.clone(), base, alpha));
+            self.pending_dabs.push((s.clone(), base, alpha, self.order));
         }
         if kind == BrushKind::Flat {
             self.flat(s, shade, distance);
@@ -715,7 +826,7 @@ impl<'a> Builder<'a> {
             if let Some(e) = br.paint.echo {
                 let c = rgb(e.color);
                 for run in &runs {
-                    self.strips(run, &[&BAND], Paint::Flat([c[0], c[1], c[2], alpha * e.color.to_f32()[3]]), solid, e.offset, e.width, 2e-4, distance);
+                    self.strips(run, &[&BAND], Paint::Flat([c[0], c[1], c[2], alpha * e.color.to_f32()[3]]), solid, e.offset, e.width, ECHO_BEHIND, distance);
                 }
             }
             if render && material == Material::Glow {
@@ -800,7 +911,7 @@ impl<'a> Builder<'a> {
             let c = color(rgb(e.color));
             let paint = Paint::Flat([c[0], c[1], c[2], alpha * e.color.to_f32()[3]]);
             for run in &runs {
-                self.dry_ended(run, dry_ends, rows, paint, e.offset, e.width, 2e-4, distance);
+                self.dry_ended(run, dry_ends, rows, paint, e.offset, e.width, ECHO_BEHIND, distance);
             }
         }
         if render && material == Material::Glow {
@@ -828,7 +939,7 @@ impl<'a> Builder<'a> {
             let c = if render && material == Material::Glow { mix3(c, [1.0, 1.0, 1.0], 0.35) } else { c };
             let paint = Paint::Flat([c[0], c[1], c[2], alpha]);
             for run in &runs {
-                let bias = layer as f32 * 1e-4;
+                let bias = layer as f32 * LAYER_BEHIND;
                 self.dry_ended(run, dry_ends, [start_row, row, tail_row], paint, off, width, bias, distance);
             }
         }
@@ -885,13 +996,14 @@ impl<'a> Builder<'a> {
                     let p01 = corner(-1.0, 1.0);
                     let uv = |u: f32, v: f32| self.atlas.uv(row, u, v);
                     let (q00, q10, q11, q01) = (uv(u0, 0.0), uv(u1, 0.0), uv(u1, 1.0), uv(u0, 1.0));
-                    let i0 = self.vtx(p00.0, p00.1, q00, col);
-                    let i1 = self.vtx(p10.0, p10.1, q10, col);
-                    let i2 = self.vtx(p11.0, p11.1, q11, col);
-                    let i3 = self.vtx(p01.0, p01.1, q01, col);
+                    let at = Sample { x: cx, y: cy, depth, ..a };
+                    let i0 = self.vtx(p00.0, p00.1, self.surface_depth(&at, p00.0, p00.1), q00, col);
+                    let i1 = self.vtx(p10.0, p10.1, self.surface_depth(&at, p10.0, p10.1), q10, col);
+                    let i2 = self.vtx(p11.0, p11.1, self.surface_depth(&at, p11.0, p11.1), q11, col);
+                    let i3 = self.vtx(p01.0, p01.1, self.surface_depth(&at, p01.0, p01.1), q01, col);
                     self.tri(i0, i1, i2);
                     self.tri(i0, i2, i3);
-                    self.end(depth * (1.0 - 2e-4) - (k % 7) as f32 * 1e-6);
+                    self.end(depth, -DABS_FRONT - (k % 7) as f32 * 1e-6);
                     d += spacing * (0.8 + 0.4 * unit(h ^ 7));
                 }
                 carry = seg - (d - spacing).max(0.0);
@@ -975,8 +1087,8 @@ impl<'a> Builder<'a> {
                     let (ox, oy) = (sm.x - (p0.x + p1.x) * 0.5, sm.y - (p0.y + p1.y) * 0.5);
                     let nn = if normal.dot(back) < 0.0 { -normal } else { normal };
                     let col = self.colour(&paint, nn, sm.alpha, sm.depth, distance);
-                    let a = self.vtx(p0.x + ox, p0.y + oy, uv, col);
-                    let b = self.vtx(p1.x + ox, p1.y + oy, uv, col);
+                    let a = self.vtx(p0.x + ox, p0.y + oy, p0.depth, uv, col);
+                    let b = self.vtx(p1.x + ox, p1.y + oy, p1.depth, uv, col);
                     ids.push(Some((a, b)));
                     depth += sm.depth;
                 }
@@ -986,7 +1098,7 @@ impl<'a> Builder<'a> {
                         self.tri(a0, b1, a1);
                     }
                 }
-                self.end(depth / (end + 1 - start) as f32);
+                self.end(depth / (end + 1 - start) as f32, 0.0);
                 start = end;
             }
         }
@@ -1078,7 +1190,9 @@ impl<'a> Builder<'a> {
         }
         let uv = self.atlas.solid_uv();
         let base = if selected { mix3(rgb(m.color), rgb(SELECT_GREEN), 0.6) } else { rgb(m.color) };
-        let alpha = if m.state == ResourceState::Active { 0.9 } else { 0.6 };
+        // Models are solid (they hide what's behind them), a little lighter when not drawn on.
+        let alpha = 1.0;
+        let base = if m.state == ResourceState::Active { base } else { mix3(base, [1.0, 1.0, 1.0], 0.25) };
         let back = self.view.back;
         let world: Vec<Vec3> = m.positions.iter().map(|p| m.xform.apply(*p)).collect();
         for t in m.triangles.iter().take(MODEL_TRIS_MAX) {
@@ -1134,7 +1248,7 @@ impl<'a> Builder<'a> {
             .map(|i| {
                 let a = std::f32::consts::TAU * i as f32 / segs as f32;
                 let (c, sn) = (a.cos(), a.sin());
-                (self.vtx(s.x + c * 4.0, s.y + sn * 4.0, uv, col), self.vtx(s.x + c * 6.0, s.y + sn * 6.0, uv, col))
+                (self.vtx(s.x + c * 4.0, s.y + sn * 4.0, 0.0, uv, col), self.vtx(s.x + c * 6.0, s.y + sn * 6.0, 0.0, uv, col))
             })
             .collect();
         for i in 0..segs {
@@ -1143,7 +1257,7 @@ impl<'a> Builder<'a> {
             self.tri(ring[i].0, ring[j].1, ring[j].0);
         }
         // Always on top.
-        self.end(-1.0);
+        self.end_on_top();
     }
 }
 
@@ -1320,11 +1434,14 @@ fn build_strokes(b: &mut Builder<'_>, strokes: &[(&Stroke, bool)], view: View, a
         use rayon::prelude::*;
         let parts: Vec<(Vec<Vtx>, Vec<u32>, Vec<Item>)> = strokes
             .par_chunks(32)
-            .map(|chunk| {
+            .enumerate()
+            .map(|(c, chunk)| {
                 let mut part = Builder::new(view, atlas, env, boil, frame, light);
-                for (s, sel) in chunk {
+                for (i, (s, sel)) in chunk.iter().enumerate() {
+                    part.order = (c * 32 + i + 1) as u32;
                     part.stroke(s, *sel);
                 }
+                part.order = 0;
                 part.flush_dabs();
                 (part.verts, part.idx, part.items)
             })
@@ -1335,9 +1452,11 @@ fn build_strokes(b: &mut Builder<'_>, strokes: &[(&Stroke, bool)], view: View, a
         return;
     }
     let _ = (view, atlas, env, boil, frame, light);
-    for (s, sel) in strokes {
+    for (i, (s, sel)) in strokes.iter().enumerate() {
+        b.order = (i + 1) as u32;
         b.stroke(s, *sel);
     }
+    b.flush_dabs();
 }
 
 #[cfg(test)]

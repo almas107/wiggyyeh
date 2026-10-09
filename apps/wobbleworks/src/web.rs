@@ -59,6 +59,7 @@ pub fn start() {
                         save: Some(Box::new(|suggested: &str, bytes: &[u8]| download(suggested, bytes).map(|()| Some(suggested.to_string())))),
                     };
                     if let Some(rs) = cc.wgpu_render_state.clone() {
+                        w.space.set_gpu(&rs);
                         w.app.set_wgpu(rs);
                     }
                     Ok(Box::new(WebShell { w, inbox }))

@@ -176,6 +176,19 @@ fn edit_menu(s: &mut Space3d, ui: &mut Ui) {
             ui.close();
         }
     }
+    ui.menu_button("Fill selected loops", |ui| {
+        for (label, params) in [
+            ("Hatch", json!({})),
+            ("Hatch, slanted", json!({"angle": 35})),
+            ("Zig-zag scribble", json!({"zigzag": true, "jitter": 0.5})),
+            ("Tidy hatch", json!({"jitter": 0.0})),
+        ] {
+            if ui.add_enabled(!s.ed.selection.is_empty(), egui::Button::new(label)).clicked() {
+                s.run("edit.fill", params);
+                ui.close();
+            }
+        }
+    });
     ui.menu_button("Mirror selection", |ui| {
         for a in ["x", "y", "z"] {
             if ui.button(a.to_uppercase()).clicked() {
@@ -687,6 +700,9 @@ pub fn context_bar(s: &mut Space3d, ui: &mut Ui, look: &Look) {
                 if !s.ed.selection.is_empty() {
                     if ui.button("Liquify").on_hover_text(s.tip("Liquify", "tool.liquify")).clicked() {
                         s.run("tool.set", json!({"tool": "liquify"}));
+                    }
+                    if ui.button("Fill").on_hover_text("Fill the selected closed curves with strokes in the current brush (a painterly brush paints a panel)").clicked() {
+                        s.run("edit.fill", json!({}));
                     }
                     if ui.button("Duplicate").on_hover_text(s.tip("Duplicate", "edit.duplicate")).clicked() {
                         s.run("edit.duplicate", json!({"mode": "inplace"}));

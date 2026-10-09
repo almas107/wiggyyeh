@@ -16,6 +16,9 @@ fn main() -> Result<(), String> {
     if std::env::args().nth(2).as_deref() == Some("metaphor") {
         return metaphor(&out);
     }
+    if std::env::args().nth(2).as_deref() == Some("panel") {
+        return panel(&out);
+    }
     let mut e = Editor::new();
     e.set_viewport(960.0, 640.0);
     e.run("env.set", &json!({"render": render_mode, "lighting": {"groundShadow": true}}))?;
@@ -119,6 +122,46 @@ fn metaphor(out: &str) -> Result<(), String> {
         let tex = Textures { atlas: &e.atlas, images: HashMap::new() };
         let pic = rasterize(&f, &tex, 1000, 420, Some(e.scene.environment.background), None)?;
         let path = format!("{out}/metaphor_{frame}.png");
+        image::save_buffer(&path, &pic.rgba, pic.width, pic.height, image::ColorType::Rgba8).map_err(|e| e.to_string())?;
+        println!("{path}");
+    }
+    Ok(())
+}
+
+/// A painted text-box panel: a rough loop filled with ragged black gouache (white echo), a red
+/// dry-brush slash behind, slightly turned in 3D.
+fn panel(out: &str) -> Result<(), String> {
+    let mut e = Editor::new();
+    e.set_viewport(1000.0, 500.0);
+    e.run("env.set", &json!({"grid": false, "background": "#e9e2d4"}))?;
+    e.run("camera.view", &json!({"view": "front"}))?;
+    e.run("camera.set", &json!({"distance": 3.0}))?;
+    e.run("brush.set", &json!({"kind": "drybrush", "color": "#d81e3c", "size": 260, "pressure": false, "paint": {"taper": 0.4}}))?;
+    let slash: Vec<[f32; 3]> = (0..30).map(|j| [160.0 + j as f32 * 24.0, 380.0 - j as f32 * 9.0, 1.0]).collect();
+    e.run("stroke.draw", &json!({"points": slash}))?;
+    // The loop (any brush; it is filled, then deleted).
+    let lp: Vec<[f32; 3]> = (0..=48).map(|i| {
+        let t = i as f32 / 48.0 * std::f32::consts::TAU;
+        let (c, s) = (t.cos(), t.sin());
+        // A squarish blob.
+        let r = 1.0 / (c.abs().powf(4.0) + s.abs().powf(4.0)).powf(0.25);
+        [500.0 + 330.0 * r * c + (i % 5) as f32 * 3.0, 250.0 + 120.0 * r * s, 1.0]
+    }).collect();
+    e.run("stroke.draw", &json!({"points": lp}))?;
+    let loop_id = e.scene.strokes.last().map(|s| s.id).ok_or("no loop")?;
+    e.run("select.set", &json!({"ids": [loop_id]}))?;
+    e.run("brush.set", &json!({"kind": "gouache", "color": "#141218", "size": 90, "pressure": false, "applyToSelection": false,
+        "paint": {"roughness": 0.85, "bristles": 0.45, "dryness": 0.1, "layers": 2, "taper": 0.0, "boil": 1.5,
+                  "echo": {"color": "#fbf8f1", "offset": [-7, -6], "width": 1.08}}}))?;
+    e.run("edit.fill", &json!({"angle": -8, "jitter": 0.4}))?;
+    e.run("select.set", &json!({"ids": [loop_id]}))?;
+    e.run("edit.delete", &json!(null))?;
+    e.run("camera.set", &json!({"yaw": 12, "pitch": 6, "orthographic": false}))?;
+    for frame in 0..2u32 {
+        let f = e.render(frame, false);
+        let tex = Textures { atlas: &e.atlas, images: HashMap::new() };
+        let pic = rasterize(&f, &tex, 1000, 500, Some(e.scene.environment.background), None)?;
+        let path = format!("{out}/panel_{frame}.png");
         image::save_buffer(&path, &pic.rgba, pic.width, pic.height, image::ColorType::Rgba8).map_err(|e| e.to_string())?;
         println!("{path}");
     }

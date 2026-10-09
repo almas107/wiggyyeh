@@ -10,6 +10,7 @@
 //! Help) on the right.
 
 pub mod export;
+pub mod gpu;
 mod panels;
 pub mod view;
 
@@ -245,6 +246,11 @@ impl Space3d {
             leave: false,
             frame_index: 0,
         }
+    }
+
+    /// Draw the view on the GPU with a depth buffer (the app runs on wgpu).
+    pub fn set_gpu(&mut self, rs: &eframe::egui_wgpu::RenderState) {
+        self.view.gpu = Some(gpu::Gpu::new(rs));
     }
 
     /// Preferences kept between sessions: layout, the keymap and the drawing aids.

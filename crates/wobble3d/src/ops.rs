@@ -334,6 +334,113 @@ pub fn view_mirror(view: &View, centre: Vec3) -> (impl Fn(Vec3) -> Vec3 + use<>,
     (f, nf)
 }
 
+/// How a closed curve is filled.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Fill {
+    /// Distance between strokes (world units).
+    pub spacing: f32,
+    /// Degrees, measured on the curve's plane from the view's horizontal.
+    pub angle: f32,
+    /// One back-and-forth stroke instead of separate hatches.
+    pub zigzag: bool,
+    /// Random wander of each stroke, as a fraction of the spacing, 0..1.
+    pub jitter: f32,
+}
+
+/// Most strokes one fill makes.
+pub const FILL_STROKES_MAX: usize = 4000;
+
+/// Fill the inside of a closed curve with strokes lying on its best-fit plane. Returns the
+/// curves as point lists (with the plane's normal on every point).
+pub fn fill_curve(points: &[Vec3], view: &View, f: &Fill, seed: u32) -> Result<Vec<Vec<crate::model::Point>>, String> {
+    let pts: Vec<Vec3> = points.iter().copied().filter(|p| p.is_finite()).collect();
+    if pts.len() < 3 {
+        return Err("fill needs a closed curve (draw a loop)".into());
+    }
+    let len: f32 = pts.windows(2).map(|w| w[0].distance(w[1])).sum();
+    let (first, last) = (pts[0], pts[pts.len() - 1]);
+    if first.distance(last) > len * 0.2 {
+        return Err("the curve is not closed: draw a loop that ends near where it started".into());
+    }
+    // Newell's normal and the centroid.
+    let mut n = Vec3::ZERO;
+    let mut c = Vec3::ZERO;
+    for i in 0..pts.len() {
+        let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+        n += v3((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y));
+        c += a;
+    }
+    let n = n.normalized();
+    if n == Vec3::ZERO {
+        return Err("the curve is too flat to fill (it encloses no area)".into());
+    }
+    let c = c / pts.len() as f32;
+    // In-plane axes: the view's horizontal laid on the plane, turned by the angle.
+    let mut u = (view.right - n * view.right.dot(n)).normalized();
+    if u == Vec3::ZERO {
+        u = n.any_perpendicular();
+    }
+    let rot = crate::math::Quat::from_axis_angle(n, if f.angle.is_finite() { f.angle.to_radians() } else { 0.0 });
+    let u = rot.rotate(u).normalized();
+    let v = n.cross(u).normalized();
+    let poly: Vec<(f32, f32)> = pts.iter().map(|p| ((*p - c).dot(u), (*p - c).dot(v))).collect();
+    let spacing = if f.spacing.is_finite() && f.spacing > 0.0 { f.spacing } else { return Err("spacing must be above zero".into()) };
+    let (ymin, ymax) = poly.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| (lo.min(p.1), hi.max(p.1)));
+    let rows = ((ymax - ymin) / spacing).ceil();
+    if !rows.is_finite() || rows as usize > FILL_STROKES_MAX {
+        return Err("that would be too many strokes: make the brush bigger".into());
+    }
+    let jitter = if f.jitter.is_finite() { f.jitter.clamp(0.0, 1.0) } else { 0.0 };
+    let mut segments: Vec<Vec<(f32, f32)>> = Vec::new();
+    let mut k = 0u32;
+    let mut y = ymin + spacing * 0.5;
+    while y < ymax {
+        let mut xs: Vec<f32> = Vec::new();
+        for i in 0..poly.len() {
+            let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+            if (a.1 > y) != (b.1 > y) {
+                let t = (y - a.1) / (b.1 - a.1);
+                xs.push(a.0 + (b.0 - a.0) * t);
+            }
+        }
+        xs.sort_by(f32::total_cmp);
+        for pair in xs.chunks_exact(2) {
+            let (x0, x1) = (pair[0], pair[1]);
+            if x1 - x0 < spacing * 0.2 {
+                continue;
+            }
+            let steps = (((x1 - x0) / (spacing * 0.35)).ceil() as usize).clamp(2, 400);
+            let line: Vec<(f32, f32)> = (0..=steps)
+                .map(|i| {
+                    let t = i as f32 / steps as f32;
+                    k = k.wrapping_add(1);
+                    let wob = crate::noise::value1(seed ^ 0x51f1, k as f32 * 0.37) * jitter * spacing * 0.6;
+                    (x0 + (x1 - x0) * t, y + wob)
+                })
+                .collect();
+            segments.push(line);
+        }
+        y += spacing;
+    }
+    if segments.is_empty() {
+        return Err("nothing inside the curve to fill".into());
+    }
+    let to3 = |(x, y): (f32, f32)| crate::model::Point { p: c + u * x + v * y, pressure: 1.0, n };
+    if f.zigzag {
+        // One stroke, back and forth.
+        let mut all: Vec<crate::model::Point> = Vec::new();
+        for (i, seg) in segments.iter().enumerate() {
+            if i % 2 == 0 {
+                all.extend(seg.iter().map(|p| to3(*p)));
+            } else {
+                all.extend(seg.iter().rev().map(|p| to3(*p)));
+            }
+        }
+        return Ok(vec![all]);
+    }
+    Ok(segments.into_iter().map(|seg| seg.into_iter().map(to3).collect()).collect())
+}
+
 /// Draw-on targets other than guides: the first active image (a bounded flat guide) or model.
 pub fn raycast_resources(scene: &Scene, origin: Vec3, dir: Vec3, only_active: bool) -> Option<(f32, Vec3, Vec3, u64)> {
     let mut best: Option<(f32, Vec3, Vec3, u64)> = None;
@@ -488,6 +595,30 @@ mod tests {
         let copy = s.stroke(new[0]).expect("copy");
         assert!(copy.points.iter().all(|p| p.p.x < 0.0), "mirrored to the other side");
         assert_eq!(delete_strokes(&mut s, &ids), 1);
+    }
+
+    #[test]
+    fn closed_curves_fill_with_strokes_on_their_plane() {
+        let v = front();
+        let square: Vec<Vec3> = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0)]
+            .iter()
+            .flat_map(|(x, y)| std::iter::once(v3(*x, *y, 0.5)))
+            .collect();
+        let f = Fill { spacing: 0.2, angle: 0.0, zigzag: false, jitter: 0.0 };
+        let made = fill_curve(&square, &v, &f, 1).expect("fill");
+        assert_eq!(made.len(), 10);
+        for c in &made {
+            for p in c {
+                assert!((p.p.z - 0.5).abs() < 1e-4 && p.p.x.abs() <= 1.0 + 1e-4 && p.n.z.abs() > 0.99);
+            }
+        }
+        let zig = fill_curve(&square, &v, &Fill { zigzag: true, ..f }, 1).expect("zigzag");
+        assert_eq!(zig.len(), 1);
+        assert!(fill_curve(&square[..2], &v, &f, 1).is_err());
+        let open: Vec<Vec3> = (0..10).map(|i| v3(i as f32, 0.0, 0.0)).collect();
+        assert!(fill_curve(&open, &v, &f, 1).is_err());
+        assert!(fill_curve(&square, &v, &Fill { spacing: 1e-9, ..f }, 1).is_err());
+        assert!(fill_curve(&square, &v, &Fill { spacing: f32::NAN, ..f }, 1).is_err());
     }
 
     #[test]

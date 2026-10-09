@@ -42,6 +42,7 @@ pub fn run() -> eframe::Result {
             w.space.files = space_files();
             w.app.background_jobs = true;
             if let Some(rs) = cc.wgpu_render_state.clone() {
+                w.space.set_gpu(&rs);
                 w.app.set_wgpu(rs);
             }
             if let Some(path) = open {

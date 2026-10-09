@@ -617,7 +617,9 @@ impl Editor {
             return Some((p, n));
         }
         if self.draw_in_air {
-            return Some((view.unproject_at(x, y, self.camera.target), Vec3::ZERO));
+            // The plane through the orbit point facing the view: its normal is kept with the
+            // point (flat tape lies on it, and strokes on it layer in drawing order).
+            return Some((view.unproject_at(x, y, self.camera.target), view.back));
         }
         None
     }
@@ -2210,6 +2212,42 @@ impl Editor {
                 }
                 Ok(json!(made))
             }
+            "edit.fill" => {
+                if self.selection.is_empty() {
+                    return Err("select a closed curve to fill".into());
+                }
+                let view = self.view();
+                let spacing = f(p, "spacing").unwrap_or(self.brush.radius() * 1.4);
+                let fill = ops::Fill {
+                    spacing,
+                    angle: f(p, "angle").unwrap_or(0.0),
+                    zigzag: b(p, "zigzag").unwrap_or(false),
+                    jitter: f(p, "jitter").unwrap_or(0.3),
+                };
+                let sel: Vec<Arc<Stroke>> = self.scene.strokes.iter().filter(|s| self.selection.contains(&s.id)).cloned().collect();
+                let mut made_curves: Vec<(u64, Vec<Point>)> = Vec::new();
+                for st in &sel {
+                    let pts: Vec<Vec3> = st.points.iter().map(|q| q.p).collect();
+                    for c in ops::fill_curve(&pts, &view, &fill, st.seed)? {
+                        made_curves.push((st.group, c));
+                    }
+                }
+                if made_curves.len() > ops::FILL_STROKES_MAX {
+                    return Err("that would be too many strokes: make the brush bigger".into());
+                }
+                self.checkpoint("Fill");
+                let mut made = Vec::new();
+                for (group, pts) in made_curves {
+                    let mut st = self.new_stroke(pts);
+                    st.group = group;
+                    made.push(st.id);
+                    self.scene.strokes.push(Arc::new(st));
+                }
+                self.selection = made.iter().copied().collect();
+                self.events.push(Event::Stroke);
+                self.changed();
+                Ok(json!(made))
+            }
             "edit.flip" => {
                 let axis = id(p, "axis").map(|a| a as usize).or_else(|| s(p, "axis").and_then(|a| "xyz".find(a.to_ascii_lowercase().as_str()))).ok_or("axis is x, y or z")?;
                 let pivot = self.pivot_point().ok_or("select something to mirror")?;
@@ -3063,6 +3101,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("edit.delete", "delete the selection"),
     ("edit.duplicate", "{mode: inplace|move|view|mirror}"),
     ("edit.flip", "{axis: x|y|z} mirror the selection about the pivot"),
+    ("edit.fill", "{spacing?, angle?, zigzag?, jitter?} fill the selected closed curves with strokes in the current brush"),
     ("transform.start", "{mode: grab|rotate|scale, x?, y?} start a Blender-style modal transform"),
     ("transform.axis", "{axis: x|y|z, plane?} constrain (again: local, again: free)"),
     ("transform.type", "{text} type an exact amount"),

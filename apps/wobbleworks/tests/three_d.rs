@@ -222,6 +222,9 @@ fn snapshot() {
         photocraft_ui_egui::PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
         let mut a = app().0;
         if let Some(rs) = cc.wgpu_render_state.clone() {
+            if std::env::var("WOBBLE3D_MESHES").is_err() {
+                a.space.set_gpu(&rs);
+            }
             a.app.set_wgpu(rs);
         }
         a

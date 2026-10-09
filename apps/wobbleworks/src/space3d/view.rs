@@ -94,8 +94,17 @@ pub fn shapes(frame: &Frame, textures: &Textures, origin: Pos2) -> Vec<Shape> {
 
 /// (editor revision, viewport size): while it holds, each boil frame's picture is reused.
 type CacheKey = (u64, [u32; 2]);
-/// Each boil frame's shapes and triangle count.
-type Pictures = HashMap<u32, (Vec<Shape>, usize)>;
+/// (atlas key, image ids): the GPU textures were made for these.
+type TexturesKey = (u64, Vec<u64>);
+
+/// Each boil frame's picture and triangle count.
+type Pictures = HashMap<u32, (Picture, usize)>;
+
+/// A picture ready to draw: GPU data (depth-buffered) or egui meshes (painter's order).
+enum Picture {
+    Gpu(std::sync::Arc<super::gpu::Prepared>),
+    Meshes(Vec<Shape>),
+}
 
 /// What the viewport keeps between frames.
 pub struct Viewport {
@@ -112,6 +121,10 @@ pub struct Viewport {
     /// Emulate a three-button mouse: Alt+left drag orbits (Blender preference).
     pub emulate_mmb: bool,
     pub rect: Rect,
+    /// The depth-buffered GPU renderer, when the app runs on wgpu.
+    pub gpu: Option<super::gpu::Gpu>,
+    /// Textures for the GPU path: (atlas key, image ids) they were made for.
+    gpu_textures: Option<(TexturesKey, std::sync::Arc<super::gpu::TextureData>)>,
     /// Where the cached pictures were laid out.
     cache_origin: Pos2,
     /// Triangles drawn last frame (for the stats line).
@@ -120,7 +133,7 @@ pub struct Viewport {
 
 impl Default for Viewport {
     fn default() -> Self {
-        Viewport { textures: Textures::default(), cache: None, nav: None, drawing: false, alt_click: None, emulate_mmb: false, rect: Rect::NOTHING, cache_origin: Pos2::ZERO, triangles: 0 }
+        Viewport { textures: Textures::default(), cache: None, nav: None, drawing: false, alt_click: None, emulate_mmb: false, rect: Rect::NOTHING, gpu: None, gpu_textures: None, cache_origin: Pos2::ZERO, triangles: 0 }
     }
 }
 
@@ -271,15 +284,25 @@ impl Viewport {
         let cached = self.cache.as_ref().and_then(|(_, m)| m.get(&frame_index)).is_some();
         if !cached {
             let f = ed.render(frame_index, true);
-            self.textures.sync(&ctx, ed);
-            let s = shapes(&f, &self.textures, rect.min);
+            let picture = if self.gpu.is_some() {
+                let id = ed.revision.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ (u64::from(frame_index) << 56) ^ (u64::from(key.1[0]) << 24) ^ u64::from(key.1[1]);
+                Picture::Gpu(std::sync::Arc::new(super::gpu::prepare(&f, rect.width(), rect.height(), id, ed.revision)))
+            } else {
+                self.textures.sync(&ctx, ed);
+                Picture::Meshes(shapes(&f, &self.textures, rect.min))
+            };
             if let Some((_, m)) = &mut self.cache {
-                m.insert(frame_index, (s, f.triangles));
+                m.insert(frame_index, (picture, f.triangles));
             }
         }
-        if let Some((s, tris)) = self.cache.as_ref().and_then(|(_, m)| m.get(&frame_index)) {
+        let textures = self.gpu.is_some().then(|| self.gpu_textures(ed));
+        if let Some((picture, tris)) = self.cache.as_ref().and_then(|(_, m)| m.get(&frame_index)) {
             self.triangles = *tris;
-            painter.extend(s.iter().cloned());
+            match (picture, &self.gpu, textures) {
+                (Picture::Gpu(p), Some(gpu), Some(t)) => gpu.show(&painter, rect, ctx.pixels_per_point(), p.clone(), t),
+                (Picture::Meshes(s), _, _) => painter.extend(s.iter().cloned()),
+                _ => {}
+            }
         }
         let overlay = ed.overlay();
         self.overlay(&painter, &overlay, look, rect, ed);
@@ -292,6 +315,22 @@ impl Viewport {
             ctx.set_cursor_icon(icon);
         }
         context_menu
+    }
+
+    /// The atlas and images for the GPU path, remade only when they change.
+    fn gpu_textures(&mut self, ed: &Editor) -> std::sync::Arc<super::gpu::TextureData> {
+        let a = &ed.atlas;
+        let key = (a.revision ^ (a.generation << 40), ed.scene.images.iter().map(|i| i.id).collect::<Vec<u64>>());
+        if let Some((k, t)) = &self.gpu_textures
+            && *k == key
+        {
+            return t.clone();
+        }
+        let atlas = (key.0, a.width() as u32, a.height() as u32, std::sync::Arc::new(super::gpu::premultiply(&a.pixels)));
+        let images = ed.scene.images.iter().map(|i| (i.id, i.width, i.height, std::sync::Arc::new(super::gpu::premultiply(&i.rgba)))).collect();
+        let t = std::sync::Arc::new(super::gpu::TextureData { atlas, images });
+        self.gpu_textures = Some((key, t.clone()));
+        t
     }
 
     fn overlay(&self, painter: &egui::Painter, o: &Overlay, look: &Look, rect: Rect, ed: &Editor) {
