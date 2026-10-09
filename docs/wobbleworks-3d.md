@@ -50,6 +50,7 @@ Status: **done**, **partial** (works, details differ), **open**.
 | Clipboard (reference board) | done (WobbleWorks) | The colour card's Reference tab: load an image, pick colours from it |
 | AR, Publish to Gallery | open | Platform services, out of scope for a desktop/web app |
 | Keyboard shortcuts | done (Blender) | Rebindable in the Keys tab |
+| (WobbleWorks) Agents | done | `w3d.*` control methods, MCP via `control_call` |
 
 ## Better than Feather (from its App Store reviews)
 
@@ -109,6 +110,8 @@ The screenshot needs a GPU or `mesa-vulkan-drivers`; Linux builds need `libasoun
   depth buffer: DOF, bloom, block-averaged pixelation, grain), sized like the exports; Cutout
   paint shows the background image (`Tex::Cutout`, CPU and GPU). The WGSL is validated with
   naga, including its WebGL2 GLSL translation (it caught a depth-texture read WebGL2 can't do).
-- **Still open:** MP4; 3D commands over
-  the control channel / MCP (they run in-process through `Editor::run` today); Feather's
-  undocumented brush type names.
+- **2026-10-09, control:** `wobbleworks --control <port>` (PhotoCraft's protocol, token and
+  workspace rules) with the 3D mode's `w3d.show / commands / execute / state / render`
+  (`space3d/control.rs`); other methods go to PhotoCraft unchanged. MCP reaches them through
+  `control_call` in bridge mode (`docs/control-protocol.md`).
+- **Still open:** MP4; Feather's undocumented brush type names.

@@ -212,6 +212,24 @@ a new output file must already exist. Engine commands that still use ambient fil
 disabled for automation until they are migrated to the same capability interface. Interactive
 desktop file pickers retain normal user-selected access.
 
+## WobbleWorks and its 3D mode
+
+`wobbleworks --control <port>` (or `WOBBLEWORKS_CONTROL_PORT`) starts the same loopback server,
+with the same token flags (`--control-token`, `--control-token-file`) and automation folders
+(`--automation-read-root`, `--automation-write-root`). Every method above works unchanged.
+WobbleWorks answers the 3D mode's methods itself:
+
+| Method | Params | Result |
+|---|---|---|
+| `w3d.show` | `{on}` | `{threeD}`: switch the 3D mode on or off |
+| `w3d.commands` | | `[{id, params}]`: every 3D editor command |
+| `w3d.execute` | `{command, params?}` | the command's result (draw, guides, brushes, transforms, camera, files…) |
+| `w3d.state` | | revision, tool, counts, selection, camera, render mode, status |
+| `w3d.render` | `{kind?: png / boilGif / turntableGif, scale?, frame?, transparent?, width?, height?}` | `{mime, bytes, base64}` |
+
+Pictures come back as base64, so `w3d.*` never touches the file system. In MCP bridge mode
+(`photocraft-cli mcp --bridge 127.0.0.1:<port>`) agents reach them through `control_call`.
+
 ## Headless server
 
 `photocraft-cli serve` keeps one headless engine session (no window, no GPU) and answers the same

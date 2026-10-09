@@ -6544,6 +6544,7 @@ dependencies = [
  "js-sys",
  "log",
  "naga",
+ "photocraft-automation",
  "photocraft-codecs",
  "photocraft-color",
  "photocraft-doc",

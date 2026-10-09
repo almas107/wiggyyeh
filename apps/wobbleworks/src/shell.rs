@@ -8,13 +8,14 @@
 //! and the user's own palette (kept between sessions), opening into a card with a colour wheel,
 //! the palette and a reference image.
 
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
 use egui::{Color32, Pos2, Rect, Ui, pos2, vec2};
 use photocraft_engine::prefs::{CanvasBorder, CanvasColor, Theme as PrefTheme};
 use photocraft_engine::{Session, wiggle_cmds};
 use photocraft_ui_egui::state::Tool;
-use photocraft_ui_egui::{ExportSettings, PhotocraftApp, Services};
+use photocraft_ui_egui::{ControlRequest, ExportSettings, PhotocraftApp, Services};
 use serde_json::{Value, json};
 
 use crate::audio::{Audio, Sound};
@@ -119,6 +120,9 @@ pub struct WobbleApp {
     pub space: Space3d,
     /// The 3D mode is showing instead of the 2D editor.
     pub three_d: bool,
+    /// The control channel: requests from the transport, and where the ones PhotoCraft
+    /// answers go (the 3D mode's `w3d.*` methods are answered here).
+    control: Option<(Receiver<ControlRequest>, Sender<ControlRequest>)>,
 }
 
 /// Below this window width the side panels start closed, so the picture gets the room.
@@ -170,6 +174,7 @@ impl WobbleApp {
             frames: 0,
             space: Space3d::new(),
             three_d: false,
+            control: None,
         };
         w.app.ui.theme = theme::base_kind(&theme);
         w.style_canvas();
@@ -302,6 +307,45 @@ impl WobbleApp {
     }
 
     /// Show the 3D mode (or the 2D editor).
+    /// Attach a control channel (a transport thread sends requests). The 3D mode's methods
+    /// (`w3d.*`, see `space3d::control`) are answered by WobbleWorks; everything else is
+    /// PhotoCraft's control protocol, unchanged.
+    pub fn set_control(&mut self, rx: Receiver<ControlRequest>) {
+        let (tx, inner) = std::sync::mpsc::channel();
+        self.app.set_control(inner);
+        self.control = Some((rx, tx));
+    }
+
+    /// Answer the 3D requests waiting and pass the others on to PhotoCraft.
+    pub fn drain_control(&mut self) {
+        let Some((rx, tx)) = self.control.take() else { return };
+        while let Ok(req) = rx.try_recv() {
+            if !crate::space3d::control::handles(&req.method) {
+                if let Err(std::sync::mpsc::SendError(req)) = tx.send(req) {
+                    let _ = req.reply.send(json!({"ok": false, "error": "the editor is not taking requests"}));
+                }
+                continue;
+            }
+            let result = if req.method == "w3d.show" {
+                match req.params.get("on").and_then(Value::as_bool) {
+                    Some(on) => {
+                        self.set_three_d(on);
+                        Ok(json!({"threeD": self.three_d}))
+                    }
+                    None => Err("missing `on` (true or false)".to_string()),
+                }
+            } else {
+                crate::space3d::control::call(&mut self.space, &req.method, &req.params)
+            };
+            let reply = match result {
+                Ok(v) => json!({"ok": true, "result": v}),
+                Err(e) => json!({"ok": false, "error": e}),
+            };
+            let _ = req.reply.send(reply);
+        }
+        self.control = Some((rx, tx));
+    }
+
     pub fn set_three_d(&mut self, on: bool) {
         if on && !self.three_d {
             // The 3D brush starts in the colour being painted with.
@@ -976,6 +1020,7 @@ impl eframe::App for WobbleApp {
         if self.three_d {
             self.take_drops_3d(ctx);
         }
+        self.drain_control();
         self.app.logic(ctx, frame);
         if !held.is_empty() {
             ctx.input_mut(|i| i.events.extend(held));

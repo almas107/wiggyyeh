@@ -599,6 +599,12 @@ impl PhotocraftApp {
         self
     }
 
+    /// Attach a control channel to an app that already exists (a shell wrapping PhotoCraft
+    /// that answers some methods itself and forwards the rest here).
+    pub fn set_control(&mut self, rx: Receiver<ControlRequest>) {
+        self.control_rx = Some(rx);
+    }
+
     /// Run an engine command, reporting errors in the status bar.
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
         // Automation input also gates every step a command runs on its behalf (`actions.play`).

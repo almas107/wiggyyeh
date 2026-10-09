@@ -9,6 +9,7 @@
 //! Feather's context bar under it, and the sidebar (Stage, Boil, Shots, Item, History, Keys,
 //! Help) on the right.
 
+pub mod control;
 pub mod export;
 pub mod gpu;
 mod panels;

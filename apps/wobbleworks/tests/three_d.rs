@@ -282,3 +282,33 @@ fn snapshot() {
     h.run_steps(8);
     h.render().unwrap().save(&out).unwrap();
 }
+
+/// The control channel: the 3D mode's `w3d.*` methods are answered by WobbleWorks, everything
+/// else still reaches PhotoCraft's protocol (so MCP's `control_call` drives both).
+#[test]
+fn control_requests_drive_the_3d_mode_and_photocraft() {
+    use photocraft_ui_egui::ControlRequest;
+    let mut h = harness();
+    let (tx, rx) = std::sync::mpsc::channel();
+    h.state_mut().set_control(rx);
+    let mut ask = |h: &mut Harness<'static, WobbleApp>, method: &str, params: serde_json::Value| {
+        let (req, reply) = ControlRequest::new(method, params);
+        tx.send(req).unwrap();
+        h.run_steps(2);
+        reply.recv_timeout(std::time::Duration::from_secs(5)).unwrap()
+    };
+    let r = ask(&mut h, "w3d.show", json!({"on": true}));
+    assert_eq!(r["result"]["threeD"], true, "{r}");
+    assert!(h.state().three_d);
+    let r = ask(&mut h, "w3d.execute", json!({"command": "stroke.add", "params": {"points": [[0, 0, 0], [1, 1, 0]]}}));
+    assert_eq!(r["ok"], true, "{r}");
+    let r = ask(&mut h, "w3d.state", json!({}));
+    assert_eq!(r["result"]["strokes"], 1, "{r}");
+    let r = ask(&mut h, "w3d.execute", json!({"command": "no.such"}));
+    assert_eq!(r["ok"], false, "{r}");
+    // PhotoCraft's own methods pass through.
+    let r = ask(&mut h, "engine.commands", json!({}));
+    assert_eq!(r["ok"], true, "{r}");
+    let r = ask(&mut h, "w3d.show", json!({}));
+    assert_eq!(r["ok"], false, "{r}");
+}
