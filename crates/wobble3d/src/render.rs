@@ -62,6 +62,8 @@ pub struct Frame {
     /// the solid pass of a depth-buffered renderer.
     pub batches: Vec<Batch>,
     pub triangles: usize,
+    /// The depth-buffer value of the orbit point (depth of field focuses there).
+    pub focus_z: f32,
 }
 
 /// View depth → reverse depth-buffer value in 0..1 (larger is nearer). Perspective uses
@@ -1207,6 +1209,33 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// The background image, filling the view (cover) behind everything.
+    fn backdrop(&mut self, im: &ImageResource) {
+        let (w, h) = (self.view.viewport.width, self.view.viewport.height);
+        if im.width == 0 || im.height == 0 {
+            return;
+        }
+        let (ia, va) = (im.width as f32 / im.height as f32, w / h);
+        // Cover: crop the image's longer side.
+        let (u0, u1, v0, v1) = if ia > va {
+            let k = va / ia;
+            (0.5 - k * 0.5, 0.5 + k * 0.5, 0.0, 1.0)
+        } else {
+            let k = ia / va;
+            (0.0, 1.0, 0.5 - k * 0.5, 0.5 + k * 0.5)
+        };
+        self.begin(Tex::Image(im.id));
+        let c = [255, 255, 255, 255];
+        let far = self.far;
+        let a = self.vtx(0.0, 0.0, far, [u0, v0], c);
+        let b2 = self.vtx(w, 0.0, far, [u1, v0], c);
+        let c2 = self.vtx(w, h, far, [u1, v1], c);
+        let d = self.vtx(0.0, h, far, [u0, v1], c);
+        self.tri(a, b2, c2);
+        self.tri(a, c2, d);
+        self.end(far, 0.0);
+    }
+
     fn grid(&mut self) {
         let bg = rgb(self.env.background);
         let ink = if bg.iter().sum::<f32>() > 1.5 { [0.1, 0.1, 0.15] } else { [0.9, 0.9, 0.95] };
@@ -1400,6 +1429,9 @@ fn render_once(scene: &Scene, camera: &Camera, atlas: &mut Atlas, opts: &Options
     }
     let atlas: &Atlas = atlas;
     let mut b = Builder::new(view, atlas, env, boil, frame, light);
+    if let Some(bg) = &env.background_image {
+        b.backdrop(bg);
+    }
     if opts.overlays && env.show_grid {
         b.grid();
     }
@@ -1423,7 +1455,10 @@ fn render_once(scene: &Scene, camera: &Camera, atlas: &mut Atlas, opts: &Options
     {
         b.orbit_point(p);
     }
-    b.finish()
+    let focus = cam.distance;
+    let mut f = b.finish();
+    f.focus_z = depth_to_z(focus, view.orthographic, view.near, (view.half_height * view.f * 400.0).max(view.near * 10.0));
+    f
 }
 
 /// Curves, built on every core (native) in chunks, then gathered for sorting.

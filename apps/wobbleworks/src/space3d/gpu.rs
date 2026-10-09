@@ -499,6 +499,7 @@ mod tests {
                 Batch { tex: Tex::Image(4), vertices: vec![v(0.0), v(10.0), v(20.0)], indices: vec![2, 1, 0] },
             ],
             triangles: 3,
+            focus_z: 0.0,
         };
         let p = prepare(&frame, 20.0, 20.0, 1, 1);
         assert_eq!(p.vertices.len(), 9 * STRIDE as usize);

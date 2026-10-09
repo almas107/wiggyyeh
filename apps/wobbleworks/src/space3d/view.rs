@@ -49,9 +49,9 @@ impl Textures {
                 _ => self.atlas = Some((a.revision, a.generation, ctx.load_texture("wobble3d-atlas", img, egui::TextureOptions::LINEAR))),
             }
         }
-        let live: Vec<u64> = ed.scene.images.iter().map(|i| i.id).collect();
+        let live: Vec<u64> = ed.scene.images.iter().chain(ed.scene.environment.background_image.iter()).map(|i| i.id).collect();
         self.images.retain(|id, _| live.contains(id));
-        for im in &ed.scene.images {
+        for im in ed.scene.images.iter().chain(ed.scene.environment.background_image.iter()) {
             if self.images.contains_key(&im.id) {
                 continue;
             }
@@ -320,14 +320,15 @@ impl Viewport {
     /// The atlas and images for the GPU path, remade only when they change.
     fn gpu_textures(&mut self, ed: &Editor) -> std::sync::Arc<super::gpu::TextureData> {
         let a = &ed.atlas;
-        let key = (a.revision ^ (a.generation << 40), ed.scene.images.iter().map(|i| i.id).collect::<Vec<u64>>());
+        let all: Vec<&std::sync::Arc<wobbleworks_3d::model::ImageResource>> = ed.scene.images.iter().chain(ed.scene.environment.background_image.iter()).collect();
+        let key = (a.revision ^ (a.generation << 40), all.iter().map(|i| i.id).collect::<Vec<u64>>());
         if let Some((k, t)) = &self.gpu_textures
             && *k == key
         {
             return t.clone();
         }
         let atlas = (key.0, a.width() as u32, a.height() as u32, std::sync::Arc::new(super::gpu::premultiply(&a.pixels)));
-        let images = ed.scene.images.iter().map(|i| (i.id, i.width, i.height, std::sync::Arc::new(super::gpu::premultiply(&i.rgba)))).collect();
+        let images = all.iter().map(|i| (i.id, i.width, i.height, std::sync::Arc::new(super::gpu::premultiply(&i.rgba)))).collect();
         let t = std::sync::Arc::new(super::gpu::TextureData { atlas, images });
         self.gpu_textures = Some((key, t.clone()));
         t

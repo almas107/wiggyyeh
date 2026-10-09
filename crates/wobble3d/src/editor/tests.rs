@@ -320,3 +320,24 @@ fn pointer_sequences_with_garbage_do_not_panic() {
         let _ = e.render(0, true);
     }
 }
+
+#[test]
+fn stamp_drops_copies_where_you_click() {
+    let mut e = ed();
+    e.run("camera.view", &json!({"view": "front"})).expect("front");
+    e.run("stroke.add", &json!({"points": [[0,0,0],[0.2,0.1,0]]})).expect("add");
+    assert!(e.run("tool.set", &json!({"tool": "stamp"})).is_err(), "needs a selection");
+    e.run("select.all", &Value::Null).expect("all");
+    e.run("tool.set", &json!({"tool": "stamp"})).expect("stamp");
+    e.pointer_down(200.0, 200.0, 1.0, 0.0, Mods::default());
+    for i in 1..20 {
+        e.pointer_move(200.0 + i as f32 * 20.0, 200.0, 1.0, i as f64 * 0.01, Mods::default());
+    }
+    e.pointer_up(580.0, 200.0, 0.3, Mods::default());
+    assert!(e.scene.strokes.len() >= 4, "{}", e.scene.strokes.len());
+    assert_eq!(e.selection.len(), 1, "the original stays selected");
+    let v = e.view();
+    let first = e.scene.strokes[1].centre();
+    let s = v.project(first).expect("on screen");
+    assert!((s.x - 200.0).abs() < 2.0 && (s.y - 200.0).abs() < 2.0, "{s:?}");
+}

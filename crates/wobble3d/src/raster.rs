@@ -165,6 +165,9 @@ pub fn rasterize(frame: &Frame, textures: &Textures<'_>, width: u32, height: u32
         }
     }
     if let Some(e) = effects {
+        if e.dof > 0.0 {
+            depth_of_field(&mut cv, e.dof, frame.focus_z);
+        }
         post(&mut cv, e);
     }
     let mut rgba = Vec::with_capacity(w * h * 4);
@@ -207,6 +210,47 @@ fn box_blur(px: &[[f32; 4]], w: usize, h: usize, r: usize) -> Vec<[f32; 4]> {
         }
     }
     out
+}
+
+/// Depth of field: each pixel is blurred by its distance from the focus (the orbit point) in
+/// depth, more for a smaller f-stop. Variable box blur through a summed-area table.
+fn depth_of_field(cv: &mut Canvas, fstop: f32, focus_z: f32) {
+    let (w, h) = (cv.w, cv.h);
+    if focus_z <= 0.0 || !focus_z.is_finite() || w * h > 8192 * 8192 {
+        return;
+    }
+    let fstop = fstop.clamp(0.7, 22.0);
+    let max_r = (w.min(h) as f32 * 0.02 * (2.8 / fstop)).clamp(0.0, 40.0);
+    // Summed-area table of premultiplied colour.
+    let mut sat = vec![[0.0f64; 4]; (w + 1) * (h + 1)];
+    for y in 0..h {
+        let mut row = [0.0f64; 4];
+        for x in 0..w {
+            for k in 0..4 {
+                row[k] += f64::from(cv.px[y * w + x][k]);
+                sat[(y + 1) * (w + 1) + x + 1][k] = sat[y * (w + 1) + x + 1][k] + row[k];
+            }
+        }
+    }
+    for y in 0..h {
+        for x in 0..w {
+            let z = cv.zbuf[y * w + x];
+            // Empty pixels take the background's (far) blur.
+            let off = if z > 0.0 { (1.0 - z / focus_z).abs() } else { 1.0 };
+            let r = (max_r * off.min(1.0)).round() as usize;
+            if r == 0 {
+                continue;
+            }
+            let (x0, x1, y0, y1) = (x.saturating_sub(r), (x + r + 1).min(w), y.saturating_sub(r), (y + r + 1).min(h));
+            let n = ((x1 - x0) * (y1 - y0)) as f64;
+            let mut c = [0.0f32; 4];
+            for (k, ck) in c.iter_mut().enumerate() {
+                let s = sat[y1 * (w + 1) + x1][k] - sat[y0 * (w + 1) + x1][k] - sat[y1 * (w + 1) + x0][k] + sat[y0 * (w + 1) + x0][k];
+                *ck = (s / n) as f32;
+            }
+            cv.px[y * w + x] = c;
+        }
+    }
 }
 
 fn post(cv: &mut Canvas, e: &Effects) {
@@ -272,7 +316,7 @@ mod tests {
         let atlas = Atlas::default();
         let uv = atlas.solid_uv();
         let v = |x: f32, y: f32| Vtx { pos: [x, y], uv, color: [128, 0, 0, 128], z: 0.5, solid: false };
-        let frame = Frame { batches: vec![Batch { tex: Tex::Atlas, vertices: vec![v(0.0, 0.0), v(10.0, 0.0), v(0.0, 10.0)], indices: vec![0, 1, 2] }], triangles: 1 };
+        let frame = Frame { batches: vec![Batch { tex: Tex::Atlas, vertices: vec![v(0.0, 0.0), v(10.0, 0.0), v(0.0, 10.0)], indices: vec![0, 1, 2] }], triangles: 1, focus_z: 0.0 };
         let tex = Textures { atlas: &atlas, images: HashMap::new() };
         let pic = rasterize(&frame, &tex, 10, 10, Some(Rgba::WHITE), None).expect("raster");
         let px = &pic.rgba[(2 * 10 + 2) * 4..(2 * 10 + 2) * 4 + 4];
@@ -287,8 +331,8 @@ mod tests {
         let tex = Textures { atlas: &atlas, images: HashMap::new() };
         assert!(rasterize(&Frame::default(), &tex, 0, 10, None, None).is_err());
         assert!(rasterize(&Frame::default(), &tex, 10, MAX_SIDE + 1, None, None).is_err());
-        let frame = Frame { batches: vec![Batch { tex: Tex::Image(77), vertices: vec![], indices: vec![0, 5, 9] }], triangles: 1 };
-        let pic = rasterize(&frame, &tex, 4, 4, None, Some(&Effects { grain: 1.0, pixelate: 2.0, bloom: 1.0, ..Effects::default() })).expect("raster");
+        let frame = Frame { batches: vec![Batch { tex: Tex::Image(77), vertices: vec![], indices: vec![0, 5, 9] }], triangles: 1, focus_z: 0.0 };
+        let pic = rasterize(&frame, &tex, 4, 4, None, Some(&Effects { grain: 1.0, pixelate: 2.0, bloom: 1.0, dof: 2.0, ..Effects::default() })).expect("raster");
         assert_eq!(pic.rgba.len(), 64);
     }
 }

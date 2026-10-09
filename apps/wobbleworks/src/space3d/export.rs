@@ -25,7 +25,13 @@ pub fn picture(ed: &mut Editor, camera: &Camera, frame: u32, scale: u32, transpa
     ed.camera = cam;
     let f = ed.render(frame, false);
     ed.camera = saved;
-    let images: HashMap<u64, (u32, u32, &[u8])> = ed.scene.images.iter().map(|i| (i.id, (i.width, i.height, i.rgba.as_slice()))).collect();
+    let images: HashMap<u64, (u32, u32, &[u8])> = ed
+        .scene
+        .images
+        .iter()
+        .chain(ed.scene.environment.background_image.iter())
+        .map(|i| (i.id, (i.width, i.height, i.rgba.as_slice())))
+        .collect();
     let tex = Textures { atlas: &ed.atlas, images };
     let env = &ed.scene.environment;
     let effects = env.render_mode.then_some(&env.effects);

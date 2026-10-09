@@ -536,9 +536,9 @@ pub struct Environment {
     pub show_grid: bool,
     pub background: Rgba,
     /// A reference image filling the screen behind everything (index into `images` is not
-    /// used: the background image is separate and not counted towards the two images).
+    /// An image filling the screen behind everything (not one of the two reference images).
     #[serde(default)]
-    pub background_image: Option<u64>,
+    pub background_image: Option<Arc<ImageResource>>,
     pub fog: bool,
     pub lighting: Lighting,
     pub effects: Effects,
@@ -794,6 +794,9 @@ impl Scene {
         }
         self.images.retain(|i| i.rgba.len() as u64 == i.width as u64 * i.height as u64 * 4 && i.width > 0 && i.height > 0);
         self.images.truncate(IMAGES_MAX);
+        if self.environment.background_image.as_ref().is_some_and(|i| i.rgba.len() as u64 != i.width as u64 * i.height as u64 * 4 || i.width == 0 || i.height == 0) {
+            self.environment.background_image = None;
+        }
         self.models.truncate(MODELS_MAX);
         for m in &mut self.models {
             let n = m.positions.len() as u64;

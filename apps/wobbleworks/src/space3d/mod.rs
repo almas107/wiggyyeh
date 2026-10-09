@@ -12,6 +12,7 @@
 pub mod export;
 pub mod gpu;
 mod panels;
+pub mod previews;
 pub mod view;
 
 use std::sync::{Arc, Mutex};
@@ -119,6 +120,12 @@ pub struct Space3d {
     pub item_amount: f32,
     /// The header's "2D" button: the shell switches back.
     pub leave: bool,
+    /// Brush type sample tiles.
+    pub previews: previews::Previews,
+    /// Shots: a 3 × 3 framing grid over the view.
+    pub show_thirds: bool,
+    /// Shots: the camera's position, turn and lens over the view.
+    pub show_camera_info: bool,
     frame_index: u32,
 }
 
@@ -244,6 +251,9 @@ impl Space3d {
             item_axis: 0,
             item_amount: 0.0,
             leave: false,
+            previews: previews::Previews::default(),
+            show_thirds: false,
+            show_camera_info: false,
             frame_index: 0,
         }
     }
@@ -577,6 +587,11 @@ impl Space3d {
         let img = photocraft_codecs::decode(bytes).map_err(|e| e.to_string())?;
         let (w, h) = (img.width(), img.height());
         let rgba = img.to_rgba8();
+        if purpose == "background" {
+            self.ed.set_background_image(Some((crate::shell::file_name(name), w, h, rgba)))?;
+            self.ed.status = "Background image set".into();
+            return Ok(());
+        }
         self.ed.add_image(crate::shell::file_name(name).as_str(), w, h, rgba)?;
         self.ed.status = "Image added: set it to draw-on in Resources to draw on it".into();
         Ok(())
@@ -681,6 +696,7 @@ impl Space3d {
         if let Some(at) = menu {
             self.menu = Some((Menu::Context, at));
         }
+        panels::framing(self, ui, look, rect);
         if ui_shown {
             view::navigator(ui, &mut self.ed, look, rect);
             panels::status_line(self, ui, look, rect);

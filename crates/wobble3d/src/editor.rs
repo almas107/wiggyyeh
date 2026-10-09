@@ -44,10 +44,13 @@ pub enum Tool {
     Liquify,
     Injector,
     Eyedropper,
+    /// Feather's Stamp: each click (or step of a drag) drops a copy of the selection on the
+    /// guide under the pointer.
+    Stamp,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 13] = [
+    pub const ALL: [Tool; 14] = [
         Tool::Draw,
         Tool::DrawShape,
         Tool::Erase,
@@ -61,6 +64,7 @@ impl Tool {
         Tool::Liquify,
         Tool::Injector,
         Tool::Eyedropper,
+        Tool::Stamp,
     ];
 
     pub fn name(self) -> &'static str {
@@ -78,6 +82,7 @@ impl Tool {
             Tool::Liquify => "liquify",
             Tool::Injector => "injector",
             Tool::Eyedropper => "eyedropper",
+            Tool::Stamp => "stamp",
         }
     }
 
@@ -96,6 +101,7 @@ impl Tool {
             Tool::Liquify => "Liquify",
             Tool::Injector => "Injector",
             Tool::Eyedropper => "Eyedropper",
+            Tool::Stamp => "Stamp",
         }
     }
 
@@ -314,6 +320,8 @@ pub struct Editor {
     loft: Option<LoftState>,
     primitive: Option<PrimitiveState>,
     recent_guide: Option<Arc<Guide>>,
+    /// Where the last stamp went while dragging the Stamp tool.
+    stamp_from: Option<[f32; 2]>,
 }
 
 impl Default for Editor {
@@ -413,6 +421,7 @@ impl Editor {
             loft: None,
             primitive: None,
             recent_guide: None,
+            stamp_from: None,
         }
     }
 
@@ -560,6 +569,10 @@ impl Editor {
                 return;
             }
             self.liquify_before = Some(self.scene.clone());
+        }
+        if tool == Tool::Stamp && self.selection.is_empty() {
+            self.error("Select curves first, then Stamp");
+            return;
         }
         if tool == Tool::Bend && !self.scene.active_guide().is_some_and(|g| g.is_drawn()) {
             self.error("Bend needs an active drawn 3D Guide");
@@ -790,6 +803,14 @@ impl Editor {
                 self.sample_at(x, y, self.tool == Tool::Injector);
                 return;
             }
+            Tool::Stamp => {
+                self.checkpoint("Stamp");
+                if !self.stamp_at(x, y) {
+                    self.undo.pop();
+                }
+                self.stamp_from = Some([x, y]);
+                return;
+            }
         };
         let stab = Stabilizer::new(if kind == LiveKind::Draw || kind == LiveKind::Guide || kind == LiveKind::Bend { self.stable } else { 0.0 });
         self.live = Some(Live {
@@ -830,6 +851,17 @@ impl Editor {
     pub fn pointer_move(&mut self, x: f32, y: f32, pressure: f32, t: f64, mods: Mods) {
         if !(x.is_finite() && y.is_finite()) {
             return;
+        }
+        if let Some(from) = self.stamp_from {
+            // Dragging the stamp: a copy every selection-width along the drag.
+            let step = self.stamp_spacing();
+            if ((x - from[0]).powi(2) + (y - from[1]).powi(2)).sqrt() >= step {
+                self.checkpoint("Stamp");
+                if !self.stamp_at(x, y) {
+                    self.undo.pop();
+                }
+                self.stamp_from = Some([x, y]);
+            }
         }
         let prev = self.mouse;
         self.mouse = [x, y];
@@ -927,6 +959,7 @@ impl Editor {
 
     pub fn pointer_up(&mut self, x: f32, y: f32, t: f64, mods: Mods) {
         self.time = t;
+        self.stamp_from = None;
         let (x, y) = if x.is_finite() && y.is_finite() { (x, y) } else { (self.mouse[0], self.mouse[1]) };
         let Some(mut live) = self.live.take() else { return };
         match live.kind {
@@ -1136,6 +1169,38 @@ impl Editor {
         if changed {
             self.events.push(Event::Selected(self.selection.len() + self.selected_resources.len()));
         }
+    }
+
+    /// Screen distance between stamps while dragging: the selection's size on screen.
+    fn stamp_spacing(&self) -> f32 {
+        let view = self.view();
+        let mut lo = [f32::INFINITY; 2];
+        let mut hi = [f32::NEG_INFINITY; 2];
+        for st in self.scene.strokes.iter().filter(|s| self.selection.contains(&s.id)) {
+            for p in &st.points {
+                if let Some(q) = view.project(p.p) {
+                    lo = [lo[0].min(q.x), lo[1].min(q.y)];
+                    hi = [hi[0].max(q.x), hi[1].max(q.y)];
+                }
+            }
+        }
+        let size = (hi[0] - lo[0]).max(hi[1] - lo[1]);
+        if size.is_finite() { size.clamp(8.0, 2000.0) } else { 40.0 }
+    }
+
+    /// Drop a copy of the selection centred on what's under (x, y). Returns whether it did.
+    fn stamp_at(&mut self, x: f32, y: f32) -> bool {
+        let view = self.view();
+        let (Some(pivot), Some((hit, _))) = (self.pivot_point(), self.target_hit(&view, x, y)) else { return false };
+        let d = hit - pivot;
+        let sel = self.selection.clone();
+        let made = ops::duplicate(&mut self.scene, &sel, move |q| q + d, |n| n);
+        if made.is_empty() {
+            return false;
+        }
+        self.events.push(Event::Duplicated);
+        self.changed();
+        true
     }
 
     fn sample_at(&mut self, x: f32, y: f32, whole_brush: bool) {
@@ -2779,6 +2844,10 @@ impl Editor {
                 self.changed();
                 Ok(json!(self.scene.environment))
             }
+            "env.clearBackgroundImage" => {
+                self.set_background_image(None)?;
+                ok
+            }
             "env.toggleRender" => {
                 self.scene.environment.render_mode = !self.scene.environment.render_mode;
                 self.changed();
@@ -3015,6 +3084,24 @@ impl Editor {
         Ok(mid)
     }
 
+    /// The background image (filling the view behind everything); `None` removes it.
+    pub fn set_background_image(&mut self, image: Option<(String, u32, u32, Vec<u8>)>) -> Result<(), String> {
+        let im = match image {
+            Some((name, width, height, rgba)) => {
+                if width == 0 || height == 0 || width > 16384 || height > 16384 || rgba.len() as u64 != width as u64 * height as u64 * 4 {
+                    return Err("the image data does not match its size".into());
+                }
+                let id = self.scene.alloc_id();
+                Some(Arc::new(ImageResource { id, name, width, height, rgba: Arc::new(rgba), xform: Xform::default(), opacity: 1.0, state: ResourceState::Visible }))
+            }
+            None => None,
+        };
+        self.checkpoint("Background image");
+        self.scene.environment.background_image = im;
+        self.changed();
+        Ok(())
+    }
+
     /// Add a reference image facing the view at the orbit point (Feather: two per note).
     pub fn add_image(&mut self, name: &str, width: u32, height: u32, rgba: Vec<u8>) -> Result<u64, String> {
         if self.scene.images.len() >= crate::model::IMAGES_MAX {
@@ -3077,7 +3164,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("camera.setOrbitPoint", "{x, y} pin the orbit point on what is under the screen point (empty space unpins, then resets)"),
     ("camera.set", "{yaw, pitch, distance, focal, orthographic, target: [x,y,z]}"),
     ("camera.viewport", "{width, height} the 3D view's size in pixels"),
-    ("tool.set", "{tool: draw|shape|erase|vacuum|select|deselect|guide|bend|loft|primitive|liquify|injector|eyedropper, mode?: brush|box|circle|lasso, cycle?}"),
+    ("tool.set", "{tool: draw|shape|erase|vacuum|select|deselect|guide|bend|loft|primitive|liquify|injector|eyedropper|stamp, mode?: brush|box|circle|lasso, cycle?}"),
     ("tool.toggleMode", "Draw ↔ Select (Tab)"),
     ("brush.set", "{kind, color: #rrggbb, size: mm 1–300, opacity 0–1, pressure, material, glow, pattern: {kind,intensity,angle,contrast}|null, paint: {roughness,bristles,dryness,grain,taper,layers,boil,scatter,dabSize,jitter,colorJitter,echo:{color,offset:[x,y],width}|null}, applyToSelection}"),
     ("brush.nudge", "{size: ±1, opacity: ±1} step the size (10%) or opacity (10%)"),
@@ -3152,6 +3239,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("resource.addImage", "{width, height, rgbaHex, name?} add a reference image"),
     ("env.set", "{grid, axes, fog, render, background, lighting: {azimuth, altitude, strength, color, groundShadow, toon}, effects: {glow, dof, grain, pixelate, bloom}}"),
     ("env.toggleRender", "render mode on / off"),
+    ("env.clearBackgroundImage", "remove the background image"),
     ("env.lightFromView", "light from the view direction"),
     ("boil.set", "{enabled, amount, frames, fps, world, wavelength, thickness}"),
     ("boil.toggle", "boil on / off"),

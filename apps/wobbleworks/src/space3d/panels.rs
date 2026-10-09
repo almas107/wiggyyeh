@@ -409,7 +409,13 @@ pub fn brush_panel(s: &mut Space3d, ui: &mut Ui, look: &Look, right: bool) {
                             BrushKind::Chalk => "Painterly: chalk grain",
                             BrushKind::Ink => "Painterly: a pointed ink brush",
                         };
-                        if ui.selectable_label(b.kind == k, k.label()).on_hover_text(s.tip(tip, "brush.next")).clicked() {
+                        let tile = s.previews.tile(ui.ctx(), k, &b);
+                        let size = egui::vec2(super::previews::SIZE[0] as f32 * 0.8, super::previews::SIZE[1] as f32 * 0.8);
+                        let button = match tile {
+                            Some(id) => egui::Button::image_and_text(egui::Image::new((id, size)), k.label()),
+                            None => egui::Button::new(k.label()),
+                        };
+                        if ui.add(button.selected(b.kind == k)).on_hover_text(s.tip(tip, "brush.next")).clicked() {
                             s.run("brush.set", json!({"kind": k.name()}));
                         }
                     }
@@ -701,6 +707,10 @@ pub fn context_bar(s: &mut Space3d, ui: &mut Ui, look: &Look) {
                     if ui.button("Liquify").on_hover_text(s.tip("Liquify", "tool.liquify")).clicked() {
                         s.run("tool.set", json!({"tool": "liquify"}));
                     }
+                    if ui.selectable_label(s.ed.tool == Tool::Stamp, "Stamp").on_hover_text("Click (or drag) to drop copies of the selection on the guide").clicked() {
+                        let t = if s.ed.tool == Tool::Stamp { "select" } else { "stamp" };
+                        s.run("tool.set", json!({"tool": t}));
+                    }
                     if ui.button("Fill").on_hover_text("Fill the selected closed curves with strokes in the current brush (a painterly brush paints a panel)").clicked() {
                         s.run("edit.fill", json!({}));
                     }
@@ -958,6 +968,14 @@ fn environment(s: &mut Space3d, ui: &mut Ui) {
             changed.insert("fog".into(), json!(fog));
         }
     });
+    ui.horizontal(|ui| {
+        if ui.button(if env.background_image.is_some() { "Change background image…" } else { "Background image…" }).on_hover_text("An image filling the view behind everything").clicked() {
+            s.pick("background", IMAGE_EXTS);
+        }
+        if env.background_image.is_some() && ui.button("Remove").clicked() {
+            s.run("env.clearBackgroundImage", Value::Null);
+        }
+    });
     ui.separator();
     ui.label(RichText::new("Lighting").strong());
     let l = env.lighting;
@@ -1070,6 +1088,10 @@ fn shots(s: &mut Space3d, ui: &mut Ui, look: &Look) {
                 s.run("sequence.set", json!({"mode": m}));
             }
         }
+    });
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut s.show_thirds, "Thirds grid");
+        ui.checkbox(&mut s.show_camera_info, "Camera info");
     });
     let mut secs = seq.seconds_per_shot;
     if ui.add(egui::Slider::new(&mut secs, 0.2..=10.0).text("Seconds per shot")).changed() {
@@ -1227,6 +1249,38 @@ fn help(ui: &mut Ui, look: &Look) {
         } else {
             ui.label(body);
         }
+    }
+}
+
+/// Shots' framing aids: the thirds grid and the camera readout.
+pub fn framing(s: &Space3d, ui: &mut Ui, look: &Look, rect: Rect) {
+    let painter = ui.painter_at(rect);
+    if s.show_thirds {
+        let c = Color32::from_white_alpha(150);
+        for k in 1..3 {
+            let x = rect.min.x + rect.width() * k as f32 / 3.0;
+            let y = rect.min.y + rect.height() * k as f32 / 3.0;
+            painter.line_segment([pos2(x, rect.min.y), pos2(x, rect.max.y)], egui::Stroke::new(1.0, c));
+            painter.line_segment([pos2(rect.min.x, y), pos2(rect.max.x, y)], egui::Stroke::new(1.0, c));
+        }
+    }
+    if s.show_camera_info {
+        let cam = s.ed.camera;
+        let eye = s.ed.view().eye;
+        let text = format!(
+            "X {:.2}  Y {:.2}  Z {:.2}\nYaw {:.1}°  Pitch {:.1}°\nLens {:.0} mm{}",
+            eye.x,
+            eye.y,
+            eye.z,
+            cam.yaw,
+            cam.pitch,
+            cam.focal_mm,
+            if cam.orthographic { "  (ortho)" } else { "" }
+        );
+        let pos = pos2(rect.min.x + 12.0, rect.min.y + 12.0);
+        let galley = painter.layout_no_wrap(text, egui::FontId::monospace(12.0), look.t.ink);
+        painter.rect_filled(Rect::from_min_size(pos - vec2(6.0, 4.0), galley.size() + vec2(12.0, 8.0)), 6.0, crate::theme::mix(look.t.card, Color32::TRANSPARENT, 0.2));
+        painter.galley(pos, galley, look.t.ink);
     }
 }
 
