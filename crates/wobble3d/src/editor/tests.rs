@@ -10,11 +10,12 @@ fn ed() -> Editor {
 }
 
 fn circle(cx: f32, cy: f32, r: f32, n: usize) -> Vec<[f32; 2]> {
-    (0..=n).map(|i| {
-        let a = std::f32::consts::TAU * i as f32 / n as f32;
-        [cx + r * a.cos(), cy + r * a.sin()]
-    })
-    .collect()
+    (0..=n)
+        .map(|i| {
+            let a = std::f32::consts::TAU * i as f32 / n as f32;
+            [cx + r * a.cos(), cy + r * a.sin()]
+        })
+        .collect()
 }
 
 fn pts(p: &[[f32; 2]]) -> Value {

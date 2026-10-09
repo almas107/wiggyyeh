@@ -64,7 +64,9 @@ fn space_files() -> wobbleworks::space3d::Files {
         pick: Some(Box::new(|inbox, purpose, exts| {
             let Some(path) = rfd::FileDialog::new().add_filter("Files", exts).pick_file() else { return };
             match photocraft_format::read_file(&path) {
-                Ok(bytes) => inbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((purpose.to_string(), path.to_string_lossy().into_owned(), bytes)),
+                Ok(bytes) => {
+                    inbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((purpose.to_string(), path.to_string_lossy().into_owned(), bytes))
+                }
                 Err(e) => log::warn!("couldn't read {}: {e}", path.display()),
             }
         })),

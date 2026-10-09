@@ -15,10 +15,12 @@ fn main() -> Result<(), String> {
         let k = kinds[i % kinds.len()];
         e.run("brush.set", &json!({"kind": k, "size": 6 + (i % 5) * 3}))?;
         let a = i as f32 * 0.37;
-        let pts: Vec<[f32; 4]> = (0..150).map(|j| {
-            let t = j as f32 / 149.0;
-            [(a.cos() * (1.0 + t)) * 1.5, t * 2.0 - 1.0 + (i % 17) as f32 * 0.05, (a.sin() * (1.0 + t)) * 1.5, 0.5 + 0.5 * t]
-        }).collect();
+        let pts: Vec<[f32; 4]> = (0..150)
+            .map(|j| {
+                let t = j as f32 / 149.0;
+                [(a.cos() * (1.0 + t)) * 1.5, t * 2.0 - 1.0 + (i % 17) as f32 * 0.05, (a.sin() * (1.0 + t)) * 1.5, 0.5 + 0.5 * t]
+            })
+            .collect();
         e.run("stroke.add", &json!({"points": pts}))?;
     }
     println!("{n} curves × 150 points added in {:?}", t0.elapsed());

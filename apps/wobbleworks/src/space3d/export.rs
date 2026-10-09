@@ -25,13 +25,8 @@ pub fn picture(ed: &mut Editor, camera: &Camera, frame: u32, scale: u32, transpa
     ed.camera = cam;
     let f = ed.render(frame, false);
     ed.camera = saved;
-    let images: HashMap<u64, (u32, u32, &[u8])> = ed
-        .scene
-        .images
-        .iter()
-        .chain(ed.scene.environment.background_image.iter())
-        .map(|i| (i.id, (i.width, i.height, i.rgba.as_slice())))
-        .collect();
+    let images: HashMap<u64, (u32, u32, &[u8])> =
+        ed.scene.images.iter().chain(ed.scene.environment.background_image.iter()).map(|i| (i.id, (i.width, i.height, i.rgba.as_slice()))).collect();
     let tex = Textures { atlas: &ed.atlas, images };
     let env = &ed.scene.environment;
     let effects = env.render_mode.then_some(&env.effects);
@@ -54,7 +49,11 @@ fn gif(frames: Vec<Picture>, fps: f32) -> Result<Vec<u8>, String> {
         enc.set_repeat(Repeat::Infinite).map_err(|e| e.to_string())?;
         let frames: Result<Vec<image::Frame>, String> = frames
             .into_iter()
-            .map(|p| image::RgbaImage::from_raw(p.width, p.height, p.rgba).map(|img| image::Frame::from_parts(img, 0, 0, delay)).ok_or_else(|| "a frame came out the wrong size".to_string()))
+            .map(|p| {
+                image::RgbaImage::from_raw(p.width, p.height, p.rgba)
+                    .map(|img| image::Frame::from_parts(img, 0, 0, delay))
+                    .ok_or_else(|| "a frame came out the wrong size".to_string())
+            })
             .collect();
         enc.encode_frames(frames?).map_err(|e| e.to_string())?;
     }

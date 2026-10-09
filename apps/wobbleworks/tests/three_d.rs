@@ -129,11 +129,12 @@ fn q_draws_a_guide_and_strokes_land_on_it() {
     press(&mut h, Key::Num1, Modifiers::NONE);
     let c = view_centre(&h);
     press(&mut h, Key::Q, Modifiers::NONE);
-    let circle: Vec<Pos2> = (0..=48).map(|i| {
-        let a = std::f32::consts::TAU * i as f32 / 48.0;
-        pos2(c.x + 120.0 * a.cos(), c.y + 120.0 * a.sin())
-    })
-    .collect();
+    let circle: Vec<Pos2> = (0..=48)
+        .map(|i| {
+            let a = std::f32::consts::TAU * i as f32 / 48.0;
+            pos2(c.x + 120.0 * a.cos(), c.y + 120.0 * a.sin())
+        })
+        .collect();
     drag(&mut h, &circle, PointerButton::Primary);
     assert!(h.state().space.ed.scene.active_guide().is_some(), "{}", h.state().space.ed.status);
     // After the guide, the tool is Draw again; draw across it from the side.
@@ -236,11 +237,12 @@ fn snapshot() {
         r(ed, "camera.view", json!({"view": "front"}));
         let vp = ed.camera.viewport;
         let (cx, cy) = (vp.width / 2.0, vp.height / 2.0);
-        let circle: Vec<[f32; 2]> = (0..=64).map(|i| {
-            let a = std::f32::consts::TAU * i as f32 / 64.0;
-            [cx + 110.0 * a.cos(), cy + 110.0 * a.sin()]
-        })
-        .collect();
+        let circle: Vec<[f32; 2]> = (0..=64)
+            .map(|i| {
+                let a = std::f32::consts::TAU * i as f32 / 64.0;
+                [cx + 110.0 * a.cos(), cy + 110.0 * a.sin()]
+            })
+            .collect();
         r(ed, "guide.draw", json!({"points": circle}));
         r(ed, "camera.set", json!({"yaw": 35, "pitch": 18, "orthographic": false}));
         let kinds = ["pen", "ink", "oil", "gouache", "marker", "chalk"];
@@ -248,11 +250,12 @@ fn snapshot() {
         for (i, (k, c)) in kinds.iter().zip(colours).enumerate() {
             r(ed, "brush.set", json!({"kind": k, "color": c, "size": 14 + i * 4}));
             let x0 = cx - 120.0 + i as f32 * 48.0;
-            let pts: Vec<[f32; 3]> = (0..40).map(|j| {
-                let t = j as f32 / 39.0;
-                [x0 + 18.0 * (t * 6.0).sin(), cy - 150.0 + t * 300.0, 0.4 + 0.6 * (t * 3.1).sin().abs()]
-            })
-            .collect();
+            let pts: Vec<[f32; 3]> = (0..40)
+                .map(|j| {
+                    let t = j as f32 / 39.0;
+                    [x0 + 18.0 * (t * 6.0).sin(), cy - 150.0 + t * 300.0, 0.4 + 0.6 * (t * 3.1).sin().abs()]
+                })
+                .collect();
             r(ed, "stroke.draw", json!({"points": pts}));
         }
         if std::env::var("WOBBLE3D_RENDER").is_ok() {

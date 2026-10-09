@@ -37,18 +37,31 @@ impl Mode {
 pub enum Constraint {
     Free,
     /// Along one axis (0 = X, 1 = Y, 2 = Z).
-    Axis { axis: usize, local: bool },
+    Axis {
+        axis: usize,
+        local: bool,
+    },
     /// In the plane that leaves out one axis.
-    Plane { axis: usize, local: bool },
+    Plane {
+        axis: usize,
+        local: bool,
+    },
 }
 
 /// What a transform does, ready to apply to points, normals and placements.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Delta {
     Translate(Vec3),
-    Rotate { pivot: Vec3, rot: Quat },
+    Rotate {
+        pivot: Vec3,
+        rot: Quat,
+    },
     /// Per-axis factors in the frame `orient`, about `pivot`.
-    Scale { pivot: Vec3, orient: Quat, factors: Vec3 },
+    Scale {
+        pivot: Vec3,
+        orient: Quat,
+        factors: Vec3,
+    },
 }
 
 impl Delta {
@@ -461,7 +474,12 @@ pub fn gizmo(view: &View, pivot: Vec3, orient: Quat, local: bool, kind: GizmoKin
                     out.push(Part { handle: Handle::Scale(k), line: vec![p0, p1], axis: k, filled: false });
                 }
                 let h = 5.0;
-                out.push(Part { handle: Handle::Scale(k), line: vec![[p1[0] - h, p1[1] - h], [p1[0] + h, p1[1] - h], [p1[0] + h, p1[1] + h], [p1[0] - h, p1[1] + h]], axis: k, filled: true });
+                out.push(Part {
+                    handle: Handle::Scale(k),
+                    line: vec![[p1[0] - h, p1[1] - h], [p1[0] + h, p1[1] - h], [p1[0] + h, p1[1] + h], [p1[0] - h, p1[1] + h]],
+                    axis: k,
+                    filled: true,
+                });
             }
         }
         if rot {
@@ -482,29 +500,32 @@ pub fn gizmo(view: &View, pivot: Vec3, orient: Quat, local: bool, kind: GizmoKin
     }
     if rot {
         let r = size * 1.05;
-        let ring: Vec<[f32; 2]> = (0..=64).map(|i| {
-            let t = std::f32::consts::TAU * i as f32 / 64.0;
-            [c.x + r * t.cos(), c.y + r * t.sin()]
-        })
-        .collect();
+        let ring: Vec<[f32; 2]> = (0..=64)
+            .map(|i| {
+                let t = std::f32::consts::TAU * i as f32 / 64.0;
+                [c.x + r * t.cos(), c.y + r * t.sin()]
+            })
+            .collect();
         out.push(Part { handle: Handle::RotateView, line: ring, axis: 3, filled: false });
     }
     if sc && !mv {
         let r = size * 1.2;
-        let ring: Vec<[f32; 2]> = (0..=64).map(|i| {
-            let t = std::f32::consts::TAU * i as f32 / 64.0;
-            [c.x + r * t.cos(), c.y + r * t.sin()]
-        })
-        .collect();
+        let ring: Vec<[f32; 2]> = (0..=64)
+            .map(|i| {
+                let t = std::f32::consts::TAU * i as f32 / 64.0;
+                [c.x + r * t.cos(), c.y + r * t.sin()]
+            })
+            .collect();
         out.push(Part { handle: Handle::ScaleUniform, line: ring, axis: 3, filled: false });
     }
     if mv {
         let r = 7.0;
-        let ring: Vec<[f32; 2]> = (0..=24).map(|i| {
-            let t = std::f32::consts::TAU * i as f32 / 24.0;
-            [c.x + r * t.cos(), c.y + r * t.sin()]
-        })
-        .collect();
+        let ring: Vec<[f32; 2]> = (0..=24)
+            .map(|i| {
+                let t = std::f32::consts::TAU * i as f32 / 24.0;
+                [c.x + r * t.cos(), c.y + r * t.sin()]
+            })
+            .collect();
         out.push(Part { handle: Handle::MoveView, line: ring, axis: 3, filled: false });
     }
     out

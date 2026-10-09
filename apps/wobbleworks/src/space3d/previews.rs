@@ -38,7 +38,11 @@ pub fn picture(atlas: &mut Atlas, kind: BrushKind, b: &Brush) -> Option<Vec<u8>>
     let points: Vec<Point> = (0..40)
         .map(|i| {
             let t = i as f32 / 39.0;
-            Point { p: v3(-0.95 + t * 1.9, (t * std::f32::consts::TAU).sin() * 0.12, 0.0), pressure: 0.35 + 0.65 * (t * std::f32::consts::PI).sin(), n: Vec3::Z }
+            Point {
+                p: v3(-0.95 + t * 1.9, (t * std::f32::consts::TAU).sin() * 0.12, 0.0),
+                pressure: 0.35 + 0.65 * (t * std::f32::consts::PI).sin(),
+                n: Vec3::Z,
+            }
         })
         .collect();
     let mut scene = Scene::default();

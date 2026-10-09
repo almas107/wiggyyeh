@@ -517,7 +517,10 @@ impl WobbleApp {
             // only as tall as its widgets.
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true), |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
-                if widgets::button(ui, look, "3D", self.three_d, true).on_hover_text("Draw in 3D: Feather's 3D Guides, Blender's controls, boiling lines").clicked() {
+                if widgets::button(ui, look, "3D", self.three_d, true)
+                    .on_hover_text("Draw in 3D: Feather's 3D Guides, Blender's controls, boiling lines")
+                    .clicked()
+                {
                     let on = !self.three_d;
                     self.set_three_d(on);
                 }
@@ -958,7 +961,8 @@ impl eframe::App for WobbleApp {
         // In 3D the keyboard is the 3D mode's (Blender's keys): PhotoCraft's shortcuts don't see it.
         let held: Vec<egui::Event> = if self.three_d {
             ctx.input_mut(|i| {
-                let (keys, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut i.events).into_iter().partition(|e| matches!(e, egui::Event::Key { .. } | egui::Event::Text(_)));
+                let (keys, rest): (Vec<_>, Vec<_>) =
+                    std::mem::take(&mut i.events).into_iter().partition(|e| matches!(e, egui::Event::Key { .. } | egui::Event::Text(_)));
                 i.events = rest;
                 keys
             })

@@ -23,12 +23,25 @@ const LEVELS: f32 = 8.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RowKey {
     Solid,
-    Paint { kind: BrushKind, rough: u8, bristles: u8, dryness: u8, grain: u8, variant: u8 },
-    Pattern { kind: PatternKind, angle: u8, contrast: u8 },
+    Paint {
+        kind: BrushKind,
+        rough: u8,
+        bristles: u8,
+        dryness: u8,
+        grain: u8,
+        variant: u8,
+    },
+    Pattern {
+        kind: PatternKind,
+        angle: u8,
+        contrast: u8,
+    },
     Halo,
     Grain,
     /// Eight brush dabs side by side (one per eighth of the tile), for scattered dabs.
-    Dabs { variant: u8 },
+    Dabs {
+        variant: u8,
+    },
 }
 
 /// Dab shapes in a [`RowKey::Dabs`] row.

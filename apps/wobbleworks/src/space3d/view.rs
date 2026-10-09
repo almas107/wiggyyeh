@@ -12,12 +12,8 @@ use wobbleworks_3d::transform::Part;
 use crate::widgets::Look;
 
 /// Axis colours (X red, Y green, Z blue, view white), as in Blender.
-pub const AXIS: [Color32; 4] = [
-    Color32::from_rgb(0xe8, 0x44, 0x4a),
-    Color32::from_rgb(0x6c, 0xc0, 0x3c),
-    Color32::from_rgb(0x44, 0x7c, 0xf0),
-    Color32::from_rgb(0xf4, 0xf4, 0xf4),
-];
+pub const AXIS: [Color32; 4] =
+    [Color32::from_rgb(0xe8, 0x44, 0x4a), Color32::from_rgb(0x6c, 0xc0, 0x3c), Color32::from_rgb(0x44, 0x7c, 0xf0), Color32::from_rgb(0xf4, 0xf4, 0xf4)];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavMode {
@@ -133,7 +129,19 @@ pub struct Viewport {
 
 impl Default for Viewport {
     fn default() -> Self {
-        Viewport { textures: Textures::default(), cache: None, nav: None, drawing: false, alt_click: None, emulate_mmb: false, rect: Rect::NOTHING, gpu: None, gpu_textures: None, cache_origin: Pos2::ZERO, triangles: 0 }
+        Viewport {
+            textures: Textures::default(),
+            cache: None,
+            nav: None,
+            drawing: false,
+            alt_click: None,
+            emulate_mmb: false,
+            rect: Rect::NOTHING,
+            gpu: None,
+            gpu_textures: None,
+            cache_origin: Pos2::ZERO,
+            triangles: 0,
+        }
     }
 }
 
@@ -320,7 +328,8 @@ impl Viewport {
     /// The atlas and images for the GPU path, remade only when they change.
     fn gpu_textures(&mut self, ed: &Editor) -> std::sync::Arc<super::gpu::TextureData> {
         let a = &ed.atlas;
-        let all: Vec<&std::sync::Arc<wobbleworks_3d::model::ImageResource>> = ed.scene.images.iter().chain(ed.scene.environment.background_image.iter()).collect();
+        let all: Vec<&std::sync::Arc<wobbleworks_3d::model::ImageResource>> =
+            ed.scene.images.iter().chain(ed.scene.environment.background_image.iter()).collect();
         let key = (a.revision ^ (a.generation << 40), all.iter().map(|i| i.id).collect::<Vec<u64>>());
         if let Some((k, t)) = &self.gpu_textures
             && *k == key

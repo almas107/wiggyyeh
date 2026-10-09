@@ -229,12 +229,8 @@ impl Guide {
     /// A drawn guide from a stroke drawn on screen: the stroke lands on the plane through
     /// `anchor` facing the camera and is extruded along the view direction.
     pub fn drawn(id: u64, view: &View, screen: &[(f32, f32)], anchor: Vec3) -> Result<Guide, String> {
-        let world: Vec<Vec3> = screen
-            .iter()
-            .filter(|(x, y)| x.is_finite() && y.is_finite())
-            .take(CURVE_POINTS_MAX)
-            .map(|(x, y)| view.unproject_at(*x, *y, anchor))
-            .collect();
+        let world: Vec<Vec3> =
+            screen.iter().filter(|(x, y)| x.is_finite() && y.is_finite()).take(CURVE_POINTS_MAX).map(|(x, y)| view.unproject_at(*x, *y, anchor)).collect();
         Guide::drawn_from_world(id, &world, anchor, view.back)
     }
 
@@ -271,12 +267,8 @@ impl Guide {
             return Err("only drawn guides bend".into());
         };
         let anchor = self.xform.apply(*center);
-        let world: Vec<Vec3> = screen
-            .iter()
-            .filter(|(x, y)| x.is_finite() && y.is_finite())
-            .take(CURVE_POINTS_MAX)
-            .map(|(x, y)| view.unproject_at(*x, *y, anchor))
-            .collect();
+        let world: Vec<Vec3> =
+            screen.iter().filter(|(x, y)| x.is_finite() && y.is_finite()).take(CURVE_POINTS_MAX).map(|(x, y)| view.unproject_at(*x, *y, anchor)).collect();
         self.bend_world(&world)
     }
 
@@ -636,11 +628,12 @@ mod tests {
     use crate::camera::{Camera, PerfectView};
 
     fn circle(n: usize, r: f32) -> Vec<(f32, f32)> {
-        (0..=n).map(|i| {
-            let a = std::f32::consts::TAU * i as f32 / n as f32;
-            (640.0 + r * a.cos(), 400.0 + r * a.sin())
-        })
-        .collect()
+        (0..=n)
+            .map(|i| {
+                let a = std::f32::consts::TAU * i as f32 / n as f32;
+                (640.0 + r * a.cos(), 400.0 + r * a.sin())
+            })
+            .collect()
     }
 
     #[test]

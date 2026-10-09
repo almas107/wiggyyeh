@@ -157,11 +157,7 @@ impl Quat {
 
     pub fn normalized(self) -> Quat {
         let l = (self.x * self.x + self.y * self.y + self.z * self.z + self.w * self.w).sqrt();
-        if l > 1e-12 && l.is_finite() {
-            Quat { x: self.x / l, y: self.y / l, z: self.z / l, w: self.w / l }
-        } else {
-            Quat::IDENTITY
-        }
+        if l > 1e-12 && l.is_finite() { Quat { x: self.x / l, y: self.y / l, z: self.z / l, w: self.w / l } } else { Quat::IDENTITY }
     }
 
     pub fn conjugate(self) -> Quat {

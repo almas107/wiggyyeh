@@ -80,9 +80,7 @@ pub fn strokes_near(scene: &Scene, view: &View, at: [f32; 2], radius: f32) -> Ve
             sp[0].is_some_and(|a| ((at[0] - a.0).powi(2) + (at[1] - a.1).powi(2)).sqrt() <= radius)
         } else {
             sp.windows(2).enumerate().any(|(i, w)| match (w[0], w[1]) {
-                (Some(a), Some(b)) => {
-                    seg_dist(at, (a.0, a.1), (b.0, b.1)) <= radius && !s.points.get(i).is_some_and(|p| occluded_by_guide(scene, view, p.p))
-                }
+                (Some(a), Some(b)) => seg_dist(at, (a.0, a.1), (b.0, b.1)) <= radius && !s.points.get(i).is_some_and(|p| occluded_by_guide(scene, view, p.p)),
                 _ => false,
             })
         };
@@ -111,9 +109,7 @@ pub fn strokes_in_polygon(scene: &Scene, view: &View, poly: &[[f32; 2]]) -> Vec<
         return Vec::new();
     }
     candidates(scene, false)
-        .filter(|s| {
-            s.points.iter().any(|p| view.project(p.p).is_some_and(|q| inside((q.x, q.y), poly)) && !occluded_by_guide(scene, view, p.p))
-        })
+        .filter(|s| s.points.iter().any(|p| view.project(p.p).is_some_and(|q| inside((q.x, q.y), poly)) && !occluded_by_guide(scene, view, p.p)))
         .map(|s| s.id)
         .collect()
 }
@@ -655,10 +651,8 @@ mod tests {
     #[test]
     fn closed_curves_fill_with_strokes_on_their_plane() {
         let v = front();
-        let square: Vec<Vec3> = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0)]
-            .iter()
-            .flat_map(|(x, y)| std::iter::once(v3(*x, *y, 0.5)))
-            .collect();
+        let square: Vec<Vec3> =
+            [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0)].iter().flat_map(|(x, y)| std::iter::once(v3(*x, *y, 0.5))).collect();
         let f = Fill { spacing: 0.2, angle: 0.0, zigzag: false, jitter: 0.0 };
         let made = fill_curve(&square, &v, &f, 1).expect("fill");
         assert_eq!(made.len(), 10);
@@ -682,7 +676,8 @@ mod tests {
         let before = s.strokes[0].points.len();
         let n = lighten(&mut s, None, 0.25);
         assert_eq!(n, before - 2, "a straight line keeps its ends");
-        let wavy: Vec<crate::model::Point> = (0..50).map(|i| crate::model::Point { p: v3(i as f32 * 0.02, (i as f32 * 0.5).sin() * 0.2, 0.0), pressure: 1.0, n: Vec3::ZERO }).collect();
+        let wavy: Vec<crate::model::Point> =
+            (0..50).map(|i| crate::model::Point { p: v3(i as f32 * 0.02, (i as f32 * 0.5).sin() * 0.2, 0.0), pressure: 1.0, n: Vec3::ZERO }).collect();
         s.strokes.push(Arc::new(Stroke { id: 11, group: 1, points: wavy, brush: Brush::default(), seed: 1 }));
         lighten(&mut s, None, 0.25);
         assert!(s.strokes[1].points.len() > 10, "curves keep their shape");

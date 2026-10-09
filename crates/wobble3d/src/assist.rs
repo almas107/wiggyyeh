@@ -56,21 +56,33 @@ impl Stabilizer {
         let (dx, dy) = (x - cur[0], y - cur[1]);
         let d = (dx * dx + dy * dy).sqrt();
         let steps = (d / 4.0).ceil().clamp(0.0, 64.0) as usize;
-        (1..=steps).map(|i| {
-            let t = i as f32 / steps as f32;
-            [cur[0] + dx * t, cur[1] + dy * t, cur[2] + (p - cur[2]) * t]
-        })
-        .collect()
+        (1..=steps)
+            .map(|i| {
+                let t = i as f32 / steps as f32;
+                [cur[0] + dx * t, cur[1] + dy * t, cur[2] + (p - cur[2]) * t]
+            })
+            .collect()
     }
 }
 
 /// A corrected shape on screen.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Shape {
-    Line { a: [f32; 2], b: [f32; 2] },
+    Line {
+        a: [f32; 2],
+        b: [f32; 2],
+    },
     /// A smooth curve: quadratic Bézier from `a` to `b` through `mid` at its middle.
-    Curve { a: [f32; 2], mid: [f32; 2], b: [f32; 2] },
-    Circle { c: [f32; 2], r: f32, start: f32 },
+    Curve {
+        a: [f32; 2],
+        mid: [f32; 2],
+        b: [f32; 2],
+    },
+    Circle {
+        c: [f32; 2],
+        r: f32,
+        start: f32,
+    },
 }
 
 fn dist(a: [f32; 2], b: [f32; 2]) -> f32 {
@@ -174,30 +186,33 @@ impl Shape {
         match *self {
             Shape::Line { a, b } => {
                 let n = ((dist(a, b) / 3.0).ceil() as usize).clamp(1, 4000);
-                (0..=n).map(|i| {
-                    let t = i as f32 / n as f32;
-                    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
-                })
-                .collect()
+                (0..=n)
+                    .map(|i| {
+                        let t = i as f32 / n as f32;
+                        [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+                    })
+                    .collect()
             }
             Shape::Curve { a, mid, b } => {
                 // Control point so the curve passes through `mid` at t = 0.5.
                 let c = [2.0 * mid[0] - 0.5 * (a[0] + b[0]), 2.0 * mid[1] - 0.5 * (a[1] + b[1])];
                 let n = (((dist(a, c) + dist(c, b)) / 3.0).ceil() as usize).clamp(2, 4000);
-                (0..=n).map(|i| {
-                    let t = i as f32 / n as f32;
-                    let u = 1.0 - t;
-                    [u * u * a[0] + 2.0 * u * t * c[0] + t * t * b[0], u * u * a[1] + 2.0 * u * t * c[1] + t * t * b[1]]
-                })
-                .collect()
+                (0..=n)
+                    .map(|i| {
+                        let t = i as f32 / n as f32;
+                        let u = 1.0 - t;
+                        [u * u * a[0] + 2.0 * u * t * c[0] + t * t * b[0], u * u * a[1] + 2.0 * u * t * c[1] + t * t * b[1]]
+                    })
+                    .collect()
             }
             Shape::Circle { c, r, start } => {
                 let n = ((std::f32::consts::TAU * r / 3.0).ceil() as usize).clamp(12, 4000);
-                (0..=n).map(|i| {
-                    let a = start + std::f32::consts::TAU * i as f32 / n as f32;
-                    [c[0] + r * a.cos(), c[1] + r * a.sin()]
-                })
-                .collect()
+                (0..=n)
+                    .map(|i| {
+                        let a = start + std::f32::consts::TAU * i as f32 / n as f32;
+                        [c[0] + r * a.cos(), c[1] + r * a.sin()]
+                    })
+                    .collect()
             }
         }
     }
@@ -208,11 +223,7 @@ pub fn mirror_maps(axes: [bool; 3]) -> Vec<[f32; 3]> {
     let mut out = Vec::new();
     for mask in 1u8..8 {
         if (0..3).all(|k| mask & (1 << k) == 0 || axes[k]) {
-            out.push([
-                if mask & 1 != 0 { -1.0 } else { 1.0 },
-                if mask & 2 != 0 { -1.0 } else { 1.0 },
-                if mask & 4 != 0 { -1.0 } else { 1.0 },
-            ]);
+            out.push([if mask & 1 != 0 { -1.0 } else { 1.0 }, if mask & 2 != 0 { -1.0 } else { 1.0 }, if mask & 4 != 0 { -1.0 } else { 1.0 }]);
         }
     }
     out
@@ -242,20 +253,22 @@ mod tests {
     fn shapes_are_recognised() {
         let line: Vec<[f32; 2]> = (0..50).map(|i| [i as f32 * 4.0, 100.0 + (i % 3) as f32]).collect();
         assert!(matches!(recognize(&line), Some(Shape::Line { .. })));
-        let circle: Vec<[f32; 2]> = (0..=60).map(|i| {
-            let a = i as f32 / 60.0 * std::f32::consts::TAU;
-            [200.0 + 80.0 * a.cos() + (i % 2) as f32, 200.0 + 80.0 * a.sin()]
-        })
-        .collect();
+        let circle: Vec<[f32; 2]> = (0..=60)
+            .map(|i| {
+                let a = i as f32 / 60.0 * std::f32::consts::TAU;
+                [200.0 + 80.0 * a.cos() + (i % 2) as f32, 200.0 + 80.0 * a.sin()]
+            })
+            .collect();
         match recognize(&circle) {
             Some(Shape::Circle { c, r, .. }) => assert!((r - 80.0).abs() < 4.0 && dist(c, [200.0, 200.0]) < 4.0),
             other => panic!("{other:?}"),
         }
-        let arc: Vec<[f32; 2]> = (0..=40).map(|i| {
-            let t = i as f32 / 40.0;
-            [t * 300.0, 200.0 - (t * std::f32::consts::PI).sin() * 90.0]
-        })
-        .collect();
+        let arc: Vec<[f32; 2]> = (0..=40)
+            .map(|i| {
+                let t = i as f32 / 40.0;
+                [t * 300.0, 200.0 - (t * std::f32::consts::PI).sin() * 90.0]
+            })
+            .collect();
         let mut s = recognize(&arc).expect("curve");
         assert!(matches!(s, Shape::Curve { .. }));
         let pts = s.points();

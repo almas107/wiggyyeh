@@ -309,7 +309,20 @@ fn one() -> f32 {
 
 impl Default for Paint {
     fn default() -> Self {
-        Paint { roughness: 0.0, bristles: 0.0, dryness: 0.0, grain: 0.0, taper: 0.0, layers: 1, echo: None, boil: 1.0, scatter: 0.0, dab_size: 1.0, jitter: 0.0, color_jitter: 0.0 }
+        Paint {
+            roughness: 0.0,
+            bristles: 0.0,
+            dryness: 0.0,
+            grain: 0.0,
+            taper: 0.0,
+            layers: 1,
+            echo: None,
+            boil: 1.0,
+            scatter: 0.0,
+            dab_size: 1.0,
+            jitter: 0.0,
+            color_jitter: 0.0,
+        }
     }
 }
 
@@ -794,7 +807,12 @@ impl Scene {
         }
         self.images.retain(|i| i.rgba.len() as u64 == i.width as u64 * i.height as u64 * 4 && i.width > 0 && i.height > 0);
         self.images.truncate(IMAGES_MAX);
-        if self.environment.background_image.as_ref().is_some_and(|i| i.rgba.len() as u64 != i.width as u64 * i.height as u64 * 4 || i.width == 0 || i.height == 0) {
+        if self
+            .environment
+            .background_image
+            .as_ref()
+            .is_some_and(|i| i.rgba.len() as u64 != i.width as u64 * i.height as u64 * 4 || i.width == 0 || i.height == 0)
+        {
             self.environment.background_image = None;
         }
         self.models.truncate(MODELS_MAX);

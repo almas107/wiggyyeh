@@ -136,7 +136,14 @@ impl Canvas {
 }
 
 /// Fill a frame into a picture over a background.
-pub fn rasterize(frame: &Frame, textures: &Textures<'_>, width: u32, height: u32, background: Option<Rgba>, effects: Option<&Effects>) -> Result<Picture, String> {
+pub fn rasterize(
+    frame: &Frame,
+    textures: &Textures<'_>,
+    width: u32,
+    height: u32,
+    background: Option<Rgba>,
+    effects: Option<&Effects>,
+) -> Result<Picture, String> {
     if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
         return Err(format!("picture size must be 1–{MAX_SIDE} pixels a side"));
     }
@@ -154,7 +161,9 @@ pub fn rasterize(frame: &Frame, textures: &Textures<'_>, width: u32, height: u32
                 Tex::Image(id) => textures.images.get(&id),
             };
             for t in b.indices.chunks_exact(3) {
-                let (Some(a), Some(bb), Some(c)) = (b.vertices.get(t[0] as usize), b.vertices.get(t[1] as usize), b.vertices.get(t[2] as usize)) else { continue };
+                let (Some(a), Some(bb), Some(c)) = (b.vertices.get(t[0] as usize), b.vertices.get(t[1] as usize), b.vertices.get(t[2] as usize)) else {
+                    continue;
+                };
                 let solid = a.solid && bb.solid && c.solid;
                 if pass == Pass::Solid && !solid {
                     continue;
@@ -316,7 +325,11 @@ mod tests {
         let atlas = Atlas::default();
         let uv = atlas.solid_uv();
         let v = |x: f32, y: f32| Vtx { pos: [x, y], uv, color: [128, 0, 0, 128], z: 0.5, solid: false };
-        let frame = Frame { batches: vec![Batch { tex: Tex::Atlas, vertices: vec![v(0.0, 0.0), v(10.0, 0.0), v(0.0, 10.0)], indices: vec![0, 1, 2] }], triangles: 1, focus_z: 0.0 };
+        let frame = Frame {
+            batches: vec![Batch { tex: Tex::Atlas, vertices: vec![v(0.0, 0.0), v(10.0, 0.0), v(0.0, 10.0)], indices: vec![0, 1, 2] }],
+            triangles: 1,
+            focus_z: 0.0,
+        };
         let tex = Textures { atlas: &atlas, images: HashMap::new() };
         let pic = rasterize(&frame, &tex, 10, 10, Some(Rgba::WHITE), None).expect("raster");
         let px = &pic.rgba[(2 * 10 + 2) * 4..(2 * 10 + 2) * 4 + 4];
@@ -332,7 +345,8 @@ mod tests {
         assert!(rasterize(&Frame::default(), &tex, 0, 10, None, None).is_err());
         assert!(rasterize(&Frame::default(), &tex, 10, MAX_SIDE + 1, None, None).is_err());
         let frame = Frame { batches: vec![Batch { tex: Tex::Image(77), vertices: vec![], indices: vec![0, 5, 9] }], triangles: 1, focus_z: 0.0 };
-        let pic = rasterize(&frame, &tex, 4, 4, None, Some(&Effects { grain: 1.0, pixelate: 2.0, bloom: 1.0, dof: 2.0, ..Effects::default() })).expect("raster");
+        let pic =
+            rasterize(&frame, &tex, 4, 4, None, Some(&Effects { grain: 1.0, pixelate: 2.0, bloom: 1.0, dof: 2.0, ..Effects::default() })).expect("raster");
         assert_eq!(pic.rgba.len(), 64);
     }
 }

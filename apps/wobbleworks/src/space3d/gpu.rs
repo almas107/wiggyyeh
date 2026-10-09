@@ -189,7 +189,15 @@ struct Resources {
     tick: u64,
 }
 
-fn texture_bind(device: &wgpu::Device, queue: &wgpu::Queue, bgl: &wgpu::BindGroupLayout, sampler: &wgpu::Sampler, w: u32, h: u32, px: &[u8]) -> Option<wgpu::BindGroup> {
+fn texture_bind(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    bgl: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    w: u32,
+    h: u32,
+    px: &[u8],
+) -> Option<wgpu::BindGroup> {
     let max = device.limits().max_texture_dimension_2d;
     if w == 0 || h == 0 || w > max || h > max || px.len() as u64 != u64::from(w) * u64::from(h) * 4 {
         return None;
@@ -215,10 +223,10 @@ fn texture_bind(device: &wgpu::Device, queue: &wgpu::Queue, bgl: &wgpu::BindGrou
     Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("w3d_texture"),
         layout: bgl,
-        entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }, wgpu::BindGroupEntry {
-            binding: 1,
-            resource: wgpu::BindingResource::Sampler(sampler),
-        }],
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+        ],
     }))
 }
 
@@ -246,7 +254,8 @@ impl Resources {
                 },
             ],
         });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("w3d"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
+        let layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("w3d"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
         let vertex = Some(wgpu::VertexBufferLayout {
             array_stride: STRIDE,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -259,14 +268,27 @@ impl Resources {
             ],
         });
         let premul = wgpu::BlendState {
-            color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add },
-            alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add },
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
         };
         let scene = |label: &str, fs: &str, write: bool, compare: wgpu::CompareFunction, blend: Option<wgpu::BlendState>| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&layout),
-                vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), buffers: std::slice::from_ref(&vertex), compilation_options: Default::default() },
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs"),
+                    buffers: std::slice::from_ref(&vertex),
+                    compilation_options: Default::default(),
+                },
                 primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH,
@@ -321,17 +343,27 @@ impl Resources {
         let size = [size[0].clamp(1, max), size[1].clamp(1, max)];
         let extent = wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 };
         let make = |format, usage, label| {
-            device.create_texture(&wgpu::TextureDescriptor { label: Some(label), size: extent, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format, usage, view_formats: &[] })
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: extent,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
         };
-        let color = make(COLOR, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, "w3d_color").create_view(&wgpu::TextureViewDescriptor::default());
+        let color = make(COLOR, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, "w3d_color")
+            .create_view(&wgpu::TextureViewDescriptor::default());
         let depth = make(DEPTH, wgpu::TextureUsages::RENDER_ATTACHMENT, "w3d_depth").create_view(&wgpu::TextureViewDescriptor::default());
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("w3d_target"),
             layout: &self.bgl,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&color) }, wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::Sampler(&self.sampler),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&color) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            ],
         });
         self.target = Some(Target { size, color, depth, bind, shows: None });
     }
@@ -393,9 +425,14 @@ fn upload(res: &mut Resources, device: &wgpu::Device, queue: &wgpu::Queue, p: &P
     res.pictures.retain(|_, pic| pic.revision == p.revision);
     if !res.pictures.contains_key(&p.id) && !p.indices.is_empty() {
         use wgpu::util::DeviceExt;
-        let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("w3d_vertices"), contents: &p.vertices, usage: wgpu::BufferUsages::VERTEX });
+        let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("w3d_vertices"),
+            contents: &p.vertices,
+            usage: wgpu::BufferUsages::VERTEX,
+        });
         let ibytes: Vec<u8> = p.indices.iter().flat_map(|i| i.to_le_bytes()).collect();
-        let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("w3d_indices"), contents: &ibytes, usage: wgpu::BufferUsages::INDEX });
+        let ibuf =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("w3d_indices"), contents: &ibytes, usage: wgpu::BufferUsages::INDEX });
         if res.pictures.len() >= KEEP
             && let Some(old) = res.pictures.iter().min_by_key(|(_, pic)| pic.used).map(|(k, _)| *k)
         {

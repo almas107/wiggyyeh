@@ -226,7 +226,21 @@ enum Paint {
 impl<'a> Builder<'a> {
     fn new(view: View, atlas: &'a Atlas, env: &'a Environment, boil: Boil, frame: u32, light: Vec3) -> Builder<'a> {
         let far = (view.half_height * view.f * 400.0).max(view.near * 10.0);
-        Builder { view, atlas, env, boil, frame, verts: Vec::new(), idx: Vec::new(), items: Vec::new(), open: None, light, pending_dabs: Vec::new(), order: 0, far }
+        Builder {
+            view,
+            atlas,
+            env,
+            boil,
+            frame,
+            verts: Vec::new(),
+            idx: Vec::new(),
+            items: Vec::new(),
+            open: None,
+            light,
+            pending_dabs: Vec::new(),
+            order: 0,
+            far,
+        }
     }
 
     /// A texture row made before the frame (see [`stroke_rows`]); the solid row if missing.
@@ -898,18 +912,13 @@ impl<'a> Builder<'a> {
         let variant = if self.boil.enabled && br.paint.boil > 0.0 { self.frame } else { 0 };
         let runs = self.runs(s, Some(1.0));
         let render = self.env.render_mode;
-        let color = |c: [f32; 3]| -> [f32; 3] {
-            if render && material == Material::Cutout { rgb(self.env.background) } else { c }
-        };
+        let color = |c: [f32; 3]| -> [f32; 3] { if render && material == Material::Cutout { rgb(self.env.background) } else { c } };
         let dry_ends = br.paint.roughness > 0.0 || br.paint.dryness > 0.0;
         let (start_paint, tail_paint) = dry_paints(&br.paint);
         if let Some(e) = br.paint.echo {
             let v = variant.wrapping_add(2);
-            let rows = [
-                self.row(RowKey::paint(kind, &start_paint, v)),
-                self.row(RowKey::paint(kind, &br.paint, v)),
-                self.row(RowKey::paint(kind, &tail_paint, v)),
-            ];
+            let rows =
+                [self.row(RowKey::paint(kind, &start_paint, v)), self.row(RowKey::paint(kind, &br.paint, v)), self.row(RowKey::paint(kind, &tail_paint, v))];
             let c = color(rgb(e.color));
             let paint = Paint::Flat([c[0], c[1], c[2], alpha * e.color.to_f32()[3]]);
             for run in &runs {
@@ -1111,12 +1120,8 @@ impl<'a> Builder<'a> {
         if l.y < 0.05 {
             return;
         }
-        let pts: Vec<crate::model::Point> = s
-            .points
-            .iter()
-            .filter(|p| p.p.y >= -1e-4)
-            .map(|p| crate::model::Point { p: p.p - l * (p.p.y / l.y), pressure: p.pressure, n: Vec3::Y })
-            .collect();
+        let pts: Vec<crate::model::Point> =
+            s.points.iter().filter(|p| p.p.y >= -1e-4).map(|p| crate::model::Point { p: p.p - l * (p.p.y / l.y), pressure: p.pressure, n: Vec3::Y }).collect();
         if pts.len() < 2 {
             return;
         }
@@ -1249,11 +1254,7 @@ impl<'a> Builder<'a> {
                     let (x, z) = if axis_x { (j as f32, k as f32) } else { (k as f32, j as f32) };
                     pts.push(v3(x, 0.0, z));
                 }
-                let color = if major {
-                    if axis_x { [0.9, 0.3, 0.3, 0.6] } else { [0.3, 0.45, 0.95, 0.6] }
-                } else {
-                    [c[0], c[1], c[2], 0.55]
-                };
+                let color = if major { if axis_x { [0.9, 0.3, 0.3, 0.6] } else { [0.3, 0.45, 0.95, 0.6] } } else { [c[0], c[1], c[2], 0.55] };
                 self.line(&pts, if major { 1.4 } else { 1.0 }, color, 1e-4);
             }
         }
@@ -1398,11 +1399,7 @@ fn render_once(scene: &Scene, camera: &Camera, atlas: &mut Atlas, opts: &Options
     cam.sanitize();
     let view = cam.view();
     let env = &scene.environment;
-    let light = if env.render_mode {
-        env.lighting.direction()
-    } else {
-        (view.back * 0.75 + view.up * 0.5 - view.right * 0.35).normalized()
-    };
+    let light = if env.render_mode { env.lighting.direction() } else { (view.back * 0.75 + view.up * 0.5 - view.right * 0.35).normalized() };
     let mut boil = scene.boil;
     boil.sanitize();
     let frame = if boil.enabled { opts.frame } else { 0 };

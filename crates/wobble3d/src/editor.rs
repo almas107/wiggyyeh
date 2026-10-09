@@ -642,7 +642,9 @@ impl Editor {
             self.error("The active group is hidden: show it to draw into it");
             return false;
         }
-        if self.scene.active_guide().is_none() && !self.draw_in_air && !self.scene.images.iter().any(|i| i.state == ResourceState::Active)
+        if self.scene.active_guide().is_none()
+            && !self.draw_in_air
+            && !self.scene.images.iter().any(|i| i.state == ResourceState::Active)
             && !self.scene.models.iter().any(|m| m.state == ResourceState::Active)
         {
             self.error("Draw a 3D Guide first (Q), or turn on drawing in the air");
@@ -1725,7 +1727,8 @@ impl Editor {
             (Some(before), true) => before,
             _ => &self.scene,
         };
-        let opts = Options { frame, selected: &selected, selected_resources: &resources, extra: &extra, hide: &empty, guides: overlays, overlays, orbit_point: orbit };
+        let opts =
+            Options { frame, selected: &selected, selected_resources: &resources, extra: &extra, hide: &empty, guides: overlays, overlays, orbit_point: orbit };
         render::render(scene, &self.camera, &mut self.atlas, &opts)
     }
 
@@ -1771,7 +1774,10 @@ impl Editor {
             if p.is_null() {
                 nb.pattern = None;
             } else {
-                let kind = s(p, "kind").and_then(PatternKind::parse).or(nb.pattern.map(|q| q.kind)).ok_or("pattern needs a kind (dot, line, cross, terrazzo, stippled)")?;
+                let kind = s(p, "kind")
+                    .and_then(PatternKind::parse)
+                    .or(nb.pattern.map(|q| q.kind))
+                    .ok_or("pattern needs a kind (dot, line, cross, terrazzo, stippled)")?;
                 let old = nb.pattern.unwrap_or(Pattern { kind, intensity: 0.5, angle: 0.0, contrast: 0.5 });
                 nb.pattern = Some(Pattern {
                     kind,
@@ -1892,7 +1898,8 @@ impl Editor {
             // ---- camera
             "camera.view" => {
                 let v = s(p, "view").ok_or("missing view")?;
-                let pv = if v == "nearest" { self.camera.nearest_perfect_view() } else { PerfectView::parse(v).ok_or_else(|| format!("unknown view {v:?}"))? };
+                let pv =
+                    if v == "nearest" { self.camera.nearest_perfect_view() } else { PerfectView::parse(v).ok_or_else(|| format!("unknown view {v:?}"))? };
                 self.camera.snap(pv);
                 self.touch();
                 Ok(json!(pv.name()))
@@ -1963,13 +1970,19 @@ impl Editor {
                     .scene
                     .active_guide()
                     .and_then(|g| g.raycast(o, d).map(|h| h.point))
-                    .or_else(|| ops::pick_stroke(&self.scene, &view, [x, y], 8.0, false).and_then(|sid| self.scene.stroke(sid)).map(|st| {
-                        st.points.iter().map(|q| q.p).min_by(|a, c| {
-                            let da = view.project(*a).map_or(f32::INFINITY, |s| (s.x - x).powi(2) + (s.y - y).powi(2));
-                            let dc = view.project(*c).map_or(f32::INFINITY, |s| (s.x - x).powi(2) + (s.y - y).powi(2));
-                            da.total_cmp(&dc)
-                        }).unwrap_or(st.centre())
-                    }))
+                    .or_else(|| {
+                        ops::pick_stroke(&self.scene, &view, [x, y], 8.0, false).and_then(|sid| self.scene.stroke(sid)).map(|st| {
+                            st.points
+                                .iter()
+                                .map(|q| q.p)
+                                .min_by(|a, c| {
+                                    let da = view.project(*a).map_or(f32::INFINITY, |s| (s.x - x).powi(2) + (s.y - y).powi(2));
+                                    let dc = view.project(*c).map_or(f32::INFINITY, |s| (s.x - x).powi(2) + (s.y - y).powi(2));
+                                    da.total_cmp(&dc)
+                                })
+                                .unwrap_or(st.centre())
+                        })
+                    })
                     .or_else(|| crate::math::ray_plane(o, d, Vec3::ZERO, Vec3::Y).map(|t| o + d * t));
                 match hit {
                     Some(pt) => {
@@ -2019,7 +2032,9 @@ impl Editor {
             "tool.set" => {
                 let name = s(p, "tool").ok_or("missing tool")?;
                 let mut t = Tool::parse(name).ok_or_else(|| format!("unknown tool {name:?}"))?;
-                if b(p, "cycle") == Some(true) && (t == self.tool || (t == Tool::Draw && self.tool == Tool::DrawShape) || (t == Tool::Erase && self.tool == Tool::Vacuum)) {
+                if b(p, "cycle") == Some(true)
+                    && (t == self.tool || (t == Tool::Draw && self.tool == Tool::DrawShape) || (t == Tool::Erase && self.tool == Tool::Vacuum))
+                {
                     t = match self.tool {
                         Tool::Draw => Tool::DrawShape,
                         Tool::DrawShape => Tool::Draw,
@@ -2159,7 +2174,14 @@ impl Editor {
                 let set = ids(p, "ids")?;
                 let alive: HashSet<u64> = self.scene.strokes.iter().map(|s| s.id).collect();
                 self.selection = set.iter().copied().filter(|i| alive.contains(i)).collect();
-                let res: HashSet<u64> = self.scene.guides.iter().map(|g| g.id).chain(self.scene.images.iter().map(|i| i.id)).chain(self.scene.models.iter().map(|m| m.id)).collect();
+                let res: HashSet<u64> = self
+                    .scene
+                    .guides
+                    .iter()
+                    .map(|g| g.id)
+                    .chain(self.scene.images.iter().map(|i| i.id))
+                    .chain(self.scene.models.iter().map(|m| m.id))
+                    .collect();
                 self.selected_resources = set.into_iter().filter(|i| res.contains(i)).collect();
                 self.touch();
                 Ok(json!(self.selection.len() + self.selected_resources.len()))
@@ -2283,12 +2305,8 @@ impl Editor {
                 }
                 let view = self.view();
                 let spacing = f(p, "spacing").unwrap_or(self.brush.radius() * 1.4);
-                let fill = ops::Fill {
-                    spacing,
-                    angle: f(p, "angle").unwrap_or(0.0),
-                    zigzag: b(p, "zigzag").unwrap_or(false),
-                    jitter: f(p, "jitter").unwrap_or(0.3),
-                };
+                let fill =
+                    ops::Fill { spacing, angle: f(p, "angle").unwrap_or(0.0), zigzag: b(p, "zigzag").unwrap_or(false), jitter: f(p, "jitter").unwrap_or(0.3) };
                 let sel: Vec<Arc<Stroke>> = self.scene.strokes.iter().filter(|s| self.selection.contains(&s.id)).cloned().collect();
                 let mut made_curves: Vec<(u64, Vec<Point>)> = Vec::new();
                 for st in &sel {
@@ -2314,7 +2332,10 @@ impl Editor {
                 Ok(json!(made))
             }
             "edit.flip" => {
-                let axis = id(p, "axis").map(|a| a as usize).or_else(|| s(p, "axis").and_then(|a| "xyz".find(a.to_ascii_lowercase().as_str()))).ok_or("axis is x, y or z")?;
+                let axis = id(p, "axis")
+                    .map(|a| a as usize)
+                    .or_else(|| s(p, "axis").and_then(|a| "xyz".find(a.to_ascii_lowercase().as_str())))
+                    .ok_or("axis is x, y or z")?;
                 let pivot = self.pivot_point().ok_or("select something to mirror")?;
                 let mut fac = v3(1.0, 1.0, 1.0);
                 match axis.min(2) {
@@ -2337,7 +2358,10 @@ impl Editor {
                 ok
             }
             "transform.axis" => {
-                let axis = id(p, "axis").map(|a| a as usize).or_else(|| s(p, "axis").and_then(|a| "xyz".find(a.to_ascii_lowercase().as_str()))).ok_or("axis is x, y or z")?;
+                let axis = id(p, "axis")
+                    .map(|a| a as usize)
+                    .or_else(|| s(p, "axis").and_then(|a| "xyz".find(a.to_ascii_lowercase().as_str())))
+                    .ok_or("axis is x, y or z")?;
                 let plane = b(p, "plane").unwrap_or(false);
                 let m = self.modal.as_mut().ok_or("no transform running")?;
                 m.modal.press_axis(axis, plane);
@@ -2511,7 +2535,11 @@ impl Editor {
                 let r = f(p, "radius").unwrap_or(self.eraser_size).clamp(0.5, 2000.0);
                 let view = self.view();
                 self.checkpoint("Erase");
-                let did = if b(p, "vacuum") == Some(true) { ops::vacuum(&mut self.scene, &view, [x, y], r) } else { ops::erase_points(&mut self.scene, &view, [x, y], r) };
+                let did = if b(p, "vacuum") == Some(true) {
+                    ops::vacuum(&mut self.scene, &view, [x, y], r)
+                } else {
+                    ops::erase_points(&mut self.scene, &view, [x, y], r)
+                };
                 if did {
                     self.prune_selection();
                     self.changed();
@@ -2834,7 +2862,9 @@ impl Editor {
                 }
                 if let Some(x) = p.get("effects") {
                     let ef = &mut e.effects;
-                    for (k, slot) in [("glow", &mut ef.glow), ("dof", &mut ef.dof), ("grain", &mut ef.grain), ("pixelate", &mut ef.pixelate), ("bloom", &mut ef.bloom)] {
+                    for (k, slot) in
+                        [("glow", &mut ef.glow), ("dof", &mut ef.dof), ("grain", &mut ef.grain), ("pixelate", &mut ef.pixelate), ("bloom", &mut ef.bloom)]
+                    {
                         if let Some(v) = f(x, k) {
                             *slot = v;
                         }
@@ -3149,7 +3179,16 @@ impl Editor {
                     return Err("the image data does not match its size".into());
                 }
                 let id = self.scene.alloc_id();
-                Some(Arc::new(ImageResource { id, name, width, height, rgba: Arc::new(rgba), xform: Xform::default(), opacity: 1.0, state: ResourceState::Visible }))
+                Some(Arc::new(ImageResource {
+                    id,
+                    name,
+                    width,
+                    height,
+                    rgba: Arc::new(rgba),
+                    xform: Xform::default(),
+                    opacity: 1.0,
+                    state: ResourceState::Visible,
+                }))
             }
             None => None,
         };
@@ -3221,9 +3260,15 @@ const COMMANDS: &[(&str, &str)] = &[
     ("camera.setOrbitPoint", "{x, y} pin the orbit point on what is under the screen point (empty space unpins, then resets)"),
     ("camera.set", "{yaw, pitch, distance, focal, orthographic, target: [x,y,z]}"),
     ("camera.viewport", "{width, height} the 3D view's size in pixels"),
-    ("tool.set", "{tool: draw|shape|erase|vacuum|select|deselect|guide|bend|loft|primitive|liquify|injector|eyedropper|stamp, mode?: brush|box|circle|lasso, cycle?}"),
+    (
+        "tool.set",
+        "{tool: draw|shape|erase|vacuum|select|deselect|guide|bend|loft|primitive|liquify|injector|eyedropper|stamp, mode?: brush|box|circle|lasso, cycle?}",
+    ),
     ("tool.toggleMode", "Draw ↔ Select (Tab)"),
-    ("brush.set", "{kind, color: #rrggbb, size: mm 1–300, opacity 0–1, pressure, material, glow, pattern: {kind,intensity,angle,contrast}|null, paint: {roughness,bristles,dryness,grain,taper,layers,boil,scatter,dabSize,jitter,colorJitter,echo:{color,offset:[x,y],width}|null}, applyToSelection}"),
+    (
+        "brush.set",
+        "{kind, color: #rrggbb, size: mm 1–300, opacity 0–1, pressure, material, glow, pattern: {kind,intensity,angle,contrast}|null, paint: {roughness,bristles,dryness,grain,taper,layers,boil,scatter,dabSize,jitter,colorJitter,echo:{color,offset:[x,y],width}|null}, applyToSelection}",
+    ),
     ("brush.nudge", "{size: ±1, opacity: ±1} step the size (10%) or opacity (10%)"),
     ("brush.cycle", "next brush kind"),
     ("brush.sample", "{x, y, whole?} Injector (whole brush) or Eyedropper (colour)"),
@@ -3294,7 +3339,10 @@ const COMMANDS: &[(&str, &str)] = &[
     ("resource.delete", "{ids}"),
     ("resource.addModel", "{obj, name?} import an OBJ as a 3D model resource"),
     ("resource.addImage", "{width, height, rgbaHex, name?} add a reference image"),
-    ("env.set", "{grid, axes, fog, render, background, lighting: {azimuth, altitude, strength, color, groundShadow, toon}, effects: {glow, dof, grain, pixelate, bloom}}"),
+    (
+        "env.set",
+        "{grid, axes, fog, render, background, lighting: {azimuth, altitude, strength, color, groundShadow, toon}, effects: {glow, dof, grain, pixelate, bloom}}",
+    ),
     ("env.toggleRender", "render mode on / off"),
     ("env.clearBackgroundImage", "remove the background image"),
     ("env.lightFromView", "light from the view direction"),

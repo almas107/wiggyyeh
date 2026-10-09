@@ -49,8 +49,7 @@ pub enum PerfectView {
 }
 
 impl PerfectView {
-    pub const ALL: [PerfectView; 6] =
-        [PerfectView::Front, PerfectView::Back, PerfectView::Left, PerfectView::Right, PerfectView::Top, PerfectView::Bottom];
+    pub const ALL: [PerfectView; 6] = [PerfectView::Front, PerfectView::Back, PerfectView::Left, PerfectView::Right, PerfectView::Top, PerfectView::Bottom];
 
     /// (yaw, pitch) in degrees.
     pub fn angles(self) -> (f32, f32) {
@@ -325,8 +324,7 @@ impl View {
         let ny = (h * 0.5 - sy) / (h * 0.5);
         if self.orthographic {
             // Start well behind the eye so geometry behind an orthographic eye is still hit.
-            let origin = self.eye + self.right * (nx * self.half_height) + self.up * (ny * self.half_height)
-                + self.back * (self.half_height * 50.0);
+            let origin = self.eye + self.right * (nx * self.half_height) + self.up * (ny * self.half_height) + self.back * (self.half_height * 50.0);
             return (origin, -self.back);
         }
         let dir = (-self.back + self.right * (nx / self.f) + self.up * (ny / self.f)).normalized();
@@ -349,11 +347,7 @@ impl View {
 
     /// World units per screen pixel at a depth.
     pub fn world_per_px(&self, depth: f32) -> f32 {
-        if self.orthographic {
-            2.0 * self.half_height / self.viewport.height
-        } else {
-            2.0 * depth.max(self.near) / (self.f * self.viewport.height)
-        }
+        if self.orthographic { 2.0 * self.half_height / self.viewport.height } else { 2.0 * depth.max(self.near) / (self.f * self.viewport.height) }
     }
 }
 

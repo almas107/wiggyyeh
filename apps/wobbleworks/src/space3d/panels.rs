@@ -640,7 +640,9 @@ pub fn context_bar(s: &mut Space3d, ui: &mut Ui, look: &Look) {
                         }
                     }
                     let l = s.ed.liquify;
-                    for (label, v, key, range) in [("Size", l.size, "size", 4.0..=600.0), ("Range", l.range, "range", 0.0..=1.0), ("Strength", l.strength, "strength", 0.0..=1.0)] {
+                    for (label, v, key, range) in
+                        [("Size", l.size, "size", 4.0..=600.0), ("Range", l.range, "range", 0.0..=1.0), ("Strength", l.strength, "strength", 0.0..=1.0)]
+                    {
                         let mut x = v;
                         if ui.add(egui::Slider::new(&mut x, range).text(label)).changed() {
                             s.run("liquify.set", json!({key: x}));
@@ -680,7 +682,11 @@ pub fn context_bar(s: &mut Space3d, ui: &mut Ui, look: &Look) {
             if let Some(g) = s.ed.scene.active_guide().cloned() {
                 ui.separator();
                 let mut op = g.opacity;
-                if ui.add(egui::Slider::new(&mut op, 0.0..=wobbleworks_3d::guide::OPACITY_MAX).show_value(false).text("Guide")).on_hover_text("Guide opacity (it never covers your drawing completely)").changed() {
+                if ui
+                    .add(egui::Slider::new(&mut op, 0.0..=wobbleworks_3d::guide::OPACITY_MAX).show_value(false).text("Guide"))
+                    .on_hover_text("Guide opacity (it never covers your drawing completely)")
+                    .changed()
+                {
                     s.run("guide.opacity", json!({"value": op}));
                 }
                 if ui.button("Close").on_hover_text(s.tip("Close the guide", "guide.close")).clicked() {
@@ -692,7 +698,8 @@ pub fn context_bar(s: &mut Space3d, ui: &mut Ui, look: &Look) {
             } else if ui.button("Recall guide").on_hover_text(s.tip("Bring back the last closed guide", "guide.recall")).clicked() {
                 s.run("guide.recall", Value::Null);
             }
-            if matches!(s.ed.tool, Tool::Erase | Tool::Vacuum) || (s.ed.tool == Tool::Select && s.ed.select_mode == wobbleworks_3d::editor::SelectMode::Circle) {
+            if matches!(s.ed.tool, Tool::Erase | Tool::Vacuum) || (s.ed.tool == Tool::Select && s.ed.select_mode == wobbleworks_3d::editor::SelectMode::Circle)
+            {
                 ui.separator();
                 let mut r = s.ed.eraser_size;
                 if ui.add(egui::Slider::new(&mut r, 2.0..=200.0).text("Radius")).changed() {
@@ -704,7 +711,9 @@ pub fn context_bar(s: &mut Space3d, ui: &mut Ui, look: &Look) {
                 ui.label(RichText::new(format!("{} selected", s.ed.selection.len() + s.ed.selected_resources.len())).strong());
                 let at = ui.ctx().pointer_latest_pos().unwrap_or_default();
                 let local = [at.x - s.view.rect.min.x, at.y - s.view.rect.min.y];
-                for (label, mode, action) in [("Move", "grab", "transform.grab"), ("Rotate", "rotate", "transform.rotate"), ("Scale", "scale", "transform.scale")] {
+                for (label, mode, action) in
+                    [("Move", "grab", "transform.grab"), ("Rotate", "rotate", "transform.rotate"), ("Scale", "scale", "transform.scale")]
+                {
                     if ui.button(label).on_hover_text(s.tip(label, action)).clicked() {
                         let c = s.view.rect.center();
                         let _ = local;
@@ -715,11 +724,19 @@ pub fn context_bar(s: &mut Space3d, ui: &mut Ui, look: &Look) {
                     if ui.button("Liquify").on_hover_text(s.tip("Liquify", "tool.liquify")).clicked() {
                         s.run("tool.set", json!({"tool": "liquify"}));
                     }
-                    if ui.selectable_label(s.ed.tool == Tool::Stamp, "Stamp").on_hover_text("Click (or drag) to drop copies of the selection on the guide").clicked() {
+                    if ui
+                        .selectable_label(s.ed.tool == Tool::Stamp, "Stamp")
+                        .on_hover_text("Click (or drag) to drop copies of the selection on the guide")
+                        .clicked()
+                    {
                         let t = if s.ed.tool == Tool::Stamp { "select" } else { "stamp" };
                         s.run("tool.set", json!({"tool": t}));
                     }
-                    if ui.button("Fill").on_hover_text("Fill the selected closed curves with strokes in the current brush (a painterly brush paints a panel)").clicked() {
+                    if ui
+                        .button("Fill")
+                        .on_hover_text("Fill the selected closed curves with strokes in the current brush (a painterly brush paints a panel)")
+                        .clicked()
+                    {
                         s.run("edit.fill", json!({}));
                     }
                     if ui.button("Duplicate").on_hover_text(s.tip("Duplicate", "edit.duplicate")).clicked() {
@@ -728,7 +745,11 @@ pub fn context_bar(s: &mut Space3d, ui: &mut Ui, look: &Look) {
                     if ui.button("Duplicate by view").on_hover_text(s.tip("Duplicate by view", "edit.duplicateView")).clicked() {
                         s.run("edit.duplicate", json!({"mode": "view"}));
                     }
-                    if ui.add_enabled(s.ed.mirror_on, egui::Button::new("Duplicate by mirror")).on_hover_text(s.tip("One copy per mirror axis (turn Mirror on first)", "edit.duplicateMirror")).clicked() {
+                    if ui
+                        .add_enabled(s.ed.mirror_on, egui::Button::new("Duplicate by mirror"))
+                        .on_hover_text(s.tip("One copy per mirror axis (turn Mirror on first)", "edit.duplicateMirror"))
+                        .clicked()
+                    {
                         s.run("edit.duplicate", json!({"mode": "mirror"}));
                     }
                 }
@@ -977,7 +998,11 @@ fn environment(s: &mut Space3d, ui: &mut Ui) {
         }
     });
     ui.horizontal(|ui| {
-        if ui.button(if env.background_image.is_some() { "Change background image…" } else { "Background image…" }).on_hover_text("An image filling the view behind everything").clicked() {
+        if ui
+            .button(if env.background_image.is_some() { "Change background image…" } else { "Background image…" })
+            .on_hover_text("An image filling the view behind everything")
+            .clicked()
+        {
             s.pick("background", IMAGE_EXTS);
         }
         if env.background_image.is_some() && ui.button("Remove").clicked() {
@@ -988,7 +1013,9 @@ fn environment(s: &mut Space3d, ui: &mut Ui) {
     ui.label(RichText::new("Lighting").strong());
     let l = env.lighting;
     let mut light = serde_json::Map::new();
-    for (label, v, key, range) in [("Azimuth", l.azimuth, "azimuth", 0.0..=360.0), ("Altitude", l.altitude, "altitude", -90.0..=90.0), ("Strength", l.strength, "strength", 0.0..=2.0)] {
+    for (label, v, key, range) in
+        [("Azimuth", l.azimuth, "azimuth", 0.0..=360.0), ("Altitude", l.altitude, "altitude", -90.0..=90.0), ("Strength", l.strength, "strength", 0.0..=2.0)]
+    {
         let mut x = v;
         if ui.add(egui::Slider::new(&mut x, range).text(label)).changed() {
             light.insert(key.into(), json!(x));
@@ -1188,7 +1215,14 @@ fn item(s: &mut Space3d, ui: &mut Ui) {
     let c = s.ed.camera;
     ui.label(RichText::new("Camera").strong());
     ui.label(format!("Orbit point {:.2}, {:.2}, {:.2}", c.target.x, c.target.y, c.target.z));
-    ui.label(format!("Yaw {:.1}°  Pitch {:.1}°  Distance {:.2} m  Lens {:.0} mm  {}", c.yaw, c.pitch, c.distance, c.focal_mm, if c.orthographic { "ortho" } else { "persp" }));
+    ui.label(format!(
+        "Yaw {:.1}°  Pitch {:.1}°  Distance {:.2} m  Lens {:.0} mm  {}",
+        c.yaw,
+        c.pitch,
+        c.distance,
+        c.focal_mm,
+        if c.orthographic { "ortho" } else { "persp" }
+    ));
 }
 
 fn history(s: &mut Space3d, ui: &mut Ui, look: &Look) {
@@ -1225,7 +1259,13 @@ fn keys(s: &mut Space3d, ui: &mut Ui, look: &Look) {
         for b in bindings {
             ui.label(&b.label);
             let waiting = s.rebinding.as_deref() == Some(b.action.as_str());
-            let text = if waiting { "press keys…".to_string() } else if b.chord.is_empty() { "—".to_string() } else { b.chord.clone() };
+            let text = if waiting {
+                "press keys…".to_string()
+            } else if b.chord.is_empty() {
+                "—".to_string()
+            } else {
+                b.chord.clone()
+            };
             if ui.selectable_label(waiting, text).clicked() {
                 s.rebinding = Some(b.action.clone());
             }
@@ -1237,18 +1277,30 @@ fn keys(s: &mut Space3d, ui: &mut Ui, look: &Look) {
 fn help(ui: &mut Ui, look: &Look) {
     let lines = [
         ("Drawing in 3D", ""),
-        ("", "Every curve lands on a 3D Guide. Pick Draw 3D Guide (Q) and draw: the stroke is pulled straight back along your view into a surface, like bent paper."),
+        (
+            "",
+            "Every curve lands on a 3D Guide. Pick Draw 3D Guide (Q) and draw: the stroke is pulled straight back along your view into a surface, like bent paper.",
+        ),
         ("", "Turn the view (middle drag) and draw on the guide (D). Draw another guide from another side to build the shape."),
         ("", "Bend (Ctrl+B): draw from another view and the guide sweeps along that stroke (a circle bent by a bigger circle makes a doughnut)."),
         ("", "Loft joins curves in order into a guide; Primitives (Shift+A) give cubes, spheres, tubes, pyramids and planes."),
         ("", "Esc closes the guide; Save keeps it in Resources. Curves behind an opaque guide are protected from erasing and selecting."),
         ("Moving things (Blender)", ""),
-        ("", "Select (W) and click or drag; A selects all, Alt+A none. G moves, R rotates, S scales: then X / Y / Z for an axis (twice: local), Shift+X for a plane, type a number, Ctrl snaps, Shift is precise. Click or Enter confirms; right-click or Esc cancels."),
+        (
+            "",
+            "Select (W) and click or drag; A selects all, Alt+A none. G moves, R rotates, S scales: then X / Y / Z for an axis (twice: local), Shift+X for a plane, type a number, Ctrl snaps, Shift is precise. Click or Enter confirms; right-click or Esc cancels.",
+        ),
         ("", "Shift+D duplicates and moves; X or Delete deletes; Ctrl+M mirrors; M moves curves to a group."),
         ("Views", ""),
-        ("", "Middle drag orbits, Shift+middle pans, the wheel zooms. 1 / 3 / 7 front, right, top (Ctrl: the other side), 5 perspective, . frames the selection, Home frames everything, Alt+middle click snaps to the nearest view. The axis ball top right does the same with clicks."),
+        (
+            "",
+            "Middle drag orbits, Shift+middle pans, the wheel zooms. 1 / 3 / 7 front, right, top (Ctrl: the other side), 5 perspective, . frames the selection, Home frames everything, Alt+middle click snaps to the nearest view. The axis ball top right does the same with clicks.",
+        ),
         ("The WobbleWorks part", ""),
-        ("", "Lines boil (Space toggles). Painterly brushes (oil, gouache, dry brush, chalk, ink) have ragged edges, bristles, layers and an echo; their paint shimmers as they boil. Try \"Metaphor look\" in the brush panel."),
+        (
+            "",
+            "Lines boil (Space toggles). Painterly brushes (oil, gouache, dry brush, chalk, ink) have ragged edges, bristles, layers and an echo; their paint shimmers as they boil. Try \"Metaphor look\" in the brush panel.",
+        ),
     ];
     for (head, body) in lines {
         if !head.is_empty() {
@@ -1287,7 +1339,11 @@ pub fn framing(s: &Space3d, ui: &mut Ui, look: &Look, rect: Rect) {
         );
         let pos = pos2(rect.min.x + 12.0, rect.min.y + 12.0);
         let galley = painter.layout_no_wrap(text, egui::FontId::monospace(12.0), look.t.ink);
-        painter.rect_filled(Rect::from_min_size(pos - vec2(6.0, 4.0), galley.size() + vec2(12.0, 8.0)), 6.0, crate::theme::mix(look.t.card, Color32::TRANSPARENT, 0.2));
+        painter.rect_filled(
+            Rect::from_min_size(pos - vec2(6.0, 4.0), galley.size() + vec2(12.0, 8.0)),
+            6.0,
+            crate::theme::mix(look.t.card, Color32::TRANSPARENT, 0.2),
+        );
         painter.galley(pos, galley, look.t.ink);
     }
 }
@@ -1382,7 +1438,8 @@ pub fn menus(s: &mut Space3d, ctx: &egui::Context, look: &Look) {
                     let r = ui.add(egui::TextEdit::singleline(&mut q).hint_text("Search commands"));
                     r.request_focus();
                     let ql = q.to_lowercase();
-                    let hits: Vec<_> = s.ed.keymap.bindings.iter().filter(|b| ql.is_empty() || b.label.to_lowercase().contains(&ql)).take(14).cloned().collect();
+                    let hits: Vec<_> =
+                        s.ed.keymap.bindings.iter().filter(|b| ql.is_empty() || b.label.to_lowercase().contains(&ql)).take(14).cloned().collect();
                     let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
                     for (i, b) in hits.iter().enumerate() {
                         let label = if b.chord.is_empty() { b.label.clone() } else { format!("{}  ({})", b.label, b.chord) };
