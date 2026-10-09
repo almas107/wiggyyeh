@@ -81,6 +81,11 @@ impl Atlas {
         self.rows * ROW
     }
 
+    /// The row index for a key, if it has been made.
+    pub fn find(&self, key: &RowKey) -> Option<usize> {
+        self.keys.get(key).copied()
+    }
+
     /// The row index for a key, made if needed. When the atlas is full it starts over (the
     /// caller's frame then rebuilds the rows it uses).
     pub fn row(&mut self, key: RowKey) -> usize {

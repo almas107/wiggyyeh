@@ -92,14 +92,18 @@ pub fn shapes(frame: &Frame, textures: &Textures, origin: Pos2) -> Vec<Shape> {
     out
 }
 
-/// (editor revision, boil frame, viewport size): when it changes, the picture is rebuilt.
-type CacheKey = (u64, u32, [u32; 2]);
+/// (editor revision, viewport size): while it holds, each boil frame's picture is reused.
+type CacheKey = (u64, [u32; 2]);
+/// Each boil frame's shapes and triangle count.
+type Pictures = HashMap<u32, (Vec<Shape>, usize)>;
 
 /// What the viewport keeps between frames.
 pub struct Viewport {
     pub textures: Textures,
-    /// The cached picture: (editor revision, boil frame, size) → shapes.
-    cache: Option<(CacheKey, Vec<Shape>)>,
+    /// The cached pictures, one per boil frame, for one editor revision and size (a still view
+    /// that boils costs nothing after the first loop). Meshes are shared (`Arc`), so drawing
+    /// one again is cheap.
+    cache: Option<(CacheKey, Pictures)>,
     nav: Option<(NavMode, Pos2)>,
     /// The primary button went down in the viewport (and goes to the editor until it lifts).
     drawing: bool,
@@ -108,13 +112,15 @@ pub struct Viewport {
     /// Emulate a three-button mouse: Alt+left drag orbits (Blender preference).
     pub emulate_mmb: bool,
     pub rect: Rect,
+    /// Where the cached pictures were laid out.
+    cache_origin: Pos2,
     /// Triangles drawn last frame (for the stats line).
     pub triangles: usize,
 }
 
 impl Default for Viewport {
     fn default() -> Self {
-        Viewport { textures: Textures::default(), cache: None, nav: None, drawing: false, alt_click: None, emulate_mmb: false, rect: Rect::NOTHING, triangles: 0 }
+        Viewport { textures: Textures::default(), cache: None, nav: None, drawing: false, alt_click: None, emulate_mmb: false, rect: Rect::NOTHING, cache_origin: Pos2::ZERO, triangles: 0 }
     }
 }
 
@@ -256,16 +262,23 @@ impl Viewport {
         let painter = ui.painter_at(rect);
         let bg = ed.scene.environment.background.0;
         painter.rect_filled(rect, 0.0, Color32::from_rgb(bg[0], bg[1], bg[2]));
-        let key = (ed.revision, frame_index, [rect.width() as u32, rect.height() as u32]);
-        let fresh = self.cache.as_ref().is_none_or(|(k, _)| *k != key);
-        if fresh {
+        let key = (ed.revision, [rect.width() as u32, rect.height() as u32]);
+        let origin_moved = self.cache_origin != rect.min;
+        if self.cache.as_ref().is_none_or(|(k, _)| *k != key) || origin_moved {
+            self.cache = Some((key, HashMap::new()));
+            self.cache_origin = rect.min;
+        }
+        let cached = self.cache.as_ref().and_then(|(_, m)| m.get(&frame_index)).is_some();
+        if !cached {
             let f = ed.render(frame_index, true);
-            self.triangles = f.triangles;
             self.textures.sync(&ctx, ed);
             let s = shapes(&f, &self.textures, rect.min);
-            self.cache = Some((key, s));
+            if let Some((_, m)) = &mut self.cache {
+                m.insert(frame_index, (s, f.triangles));
+            }
         }
-        if let Some((_, s)) = &self.cache {
+        if let Some((s, tris)) = self.cache.as_ref().and_then(|(_, m)| m.get(&frame_index)) {
+            self.triangles = *tris;
             painter.extend(s.iter().cloned());
         }
         let overlay = ed.overlay();

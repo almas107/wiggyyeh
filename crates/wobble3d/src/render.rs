@@ -13,7 +13,7 @@ use crate::camera::{Camera, View};
 use crate::guide::Guide;
 use crate::math::{Vec3, v3};
 use crate::model::{Boil, BrushKind, Environment, ImageResource, Material, ModelResource, ResourceState, Rgba, Scene, Stroke};
-use crate::noise::{fbm1, hash2, signed, unit};
+use crate::noise::{Track, hash2, signed, unit};
 use crate::texture::{Atlas, RowKey, TILE_WIDTHS};
 
 /// A vertex: screen pixels, atlas or image texture coordinates, premultiplied RGBA.
@@ -80,7 +80,7 @@ struct Item {
 
 struct Builder<'a> {
     view: View,
-    atlas: &'a mut Atlas,
+    atlas: &'a Atlas,
     env: &'a Environment,
     boil: Boil,
     frame: u32,
@@ -184,6 +184,29 @@ enum Paint {
 }
 
 impl<'a> Builder<'a> {
+    fn new(view: View, atlas: &'a Atlas, env: &'a Environment, boil: Boil, frame: u32, light: Vec3) -> Builder<'a> {
+        Builder { view, atlas, env, boil, frame, verts: Vec::new(), idx: Vec::new(), items: Vec::new(), open: None, light, pending_dabs: Vec::new() }
+    }
+
+    /// A texture row made before the frame (see [`stroke_rows`]); the solid row if missing.
+    fn row(&self, key: RowKey) -> usize {
+        self.atlas.find(&key).unwrap_or(0)
+    }
+
+    fn flush_dabs(&mut self) {
+        for (s, base, alpha) in std::mem::take(&mut self.pending_dabs) {
+            self.dabs(&s, base, alpha);
+        }
+    }
+
+    /// Take another builder's geometry (built in parallel) into this one.
+    fn absorb(&mut self, verts: Vec<Vtx>, idx: Vec<u32>, items: Vec<Item>) {
+        let (v_off, i_off) = (self.verts.len(), self.idx.len());
+        self.verts.extend(verts);
+        self.idx.extend(idx);
+        self.items.extend(items.into_iter().map(|it| Item { v0: it.v0 + v_off, i0: it.i0 + i_off, i1: it.i1 + i_off, ..it }));
+    }
+
     fn begin(&mut self, tex: Tex) {
         self.open = Some((tex, self.verts.len(), self.idx.len()));
     }
@@ -430,9 +453,7 @@ impl<'a> Builder<'a> {
     }
 
     fn finish(mut self) -> Frame {
-        for (s, base, alpha) in std::mem::take(&mut self.pending_dabs) {
-            self.dabs(&s, base, alpha);
-        }
+        self.flush_dabs();
         self.items.sort_by(|a, b| b.depth.total_cmp(&a.depth));
         // Atlas coordinates were row-space while rows were being added.
         let mut is_atlas = vec![false; self.verts.len()];
@@ -512,11 +533,14 @@ impl<'a> Builder<'a> {
         let taper = s.brush.paint.taper;
         let world_amp = ba.amp * 0.004;
         let world_wave = ba.wavelength * 0.004;
+        let mut tracks = [Track::new(ba.seed ^ 1), Track::new(ba.seed ^ 2), Track::new(ba.seed ^ 3)];
+        let mut wtracks = [Track::new(ba.seed ^ 1), Track::new(ba.seed ^ 2), Track::new(ba.seed ^ 3)];
         for (i, p) in pts.iter().enumerate() {
             let mut w = p.p;
             if ba.world && ba.amp > 0.0 {
                 let t = arc[i] / world_wave;
-                w += v3(fbm1(ba.seed ^ 1, t), fbm1(ba.seed ^ 2, t), fbm1(ba.seed ^ 3, t)) * world_amp;
+                let [a, b, c] = &mut wtracks;
+                w += v3(a.at(t), b.at(t), c.at(t)) * world_amp;
             }
             let Some(pr) = self.view.project(w) else {
                 if !cur.is_empty() {
@@ -532,8 +556,8 @@ impl<'a> Builder<'a> {
             last_px = Some((x, y));
             let t = arc_px / ba.wavelength;
             if !ba.world && ba.amp > 0.0 {
-                x += fbm1(ba.seed ^ 1, t) * ba.amp;
-                y += fbm1(ba.seed ^ 2, t) * ba.amp;
+                x += tracks[0].at(t) * ba.amp;
+                y += tracks[1].at(t) * ba.amp;
             }
             let pf = if pressure { 0.15 + 0.85 * p.pressure } else { 1.0 };
             let frac = arc[i] / total_w;
@@ -543,7 +567,7 @@ impl<'a> Builder<'a> {
             } else {
                 1.0
             };
-            let wob = 1.0 + ba.thickness * fbm1(ba.seed ^ 3, t * 1.7) * 0.6;
+            let wob = if ba.thickness > 0.0 { 1.0 + ba.thickness * tracks[2].at(t * 1.7) * 0.6 } else { 1.0 };
             let mut hw = radius * pr.scale * pf * tf * wob;
             let mut alpha = 1.0;
             if hw < 0.5 {
@@ -557,20 +581,10 @@ impl<'a> Builder<'a> {
             runs.push(cur);
         }
         for run in &mut runs {
-            // Drop samples closer than a third of a pixel (keep the ends).
+            // Only the samples the picture needs: drop those within a third of a pixel of the
+            // straight run between their neighbours (and of its width).
             if run.len() > 2 {
-                let mut out: Vec<Sample> = Vec::with_capacity(run.len());
-                let last = run.len() - 1;
-                for (i, s) in run.iter().enumerate() {
-                    if let Some(prev) = out.last()
-                        && i != last
-                        && (s.x - prev.x).powi(2) + (s.y - prev.y).powi(2) < 0.11
-                    {
-                        continue;
-                    }
-                    out.push(*s);
-                }
-                *run = out;
+                *run = simplify(run, 0.33);
             }
             if textured_scale.is_some() {
                 *run = wrap_u(run);
@@ -578,6 +592,51 @@ impl<'a> Builder<'a> {
         }
         runs
     }
+}
+
+/// Greedy screen-space simplification: keep a sample when skipping it would move the line (or
+/// its edge) more than `tol` pixels. Each step checks the newest skipped sample and the worst one
+/// so far (constant work per sample); runs of at most 48 samples are bridged at a time.
+fn simplify(run: &[Sample], tol: f32) -> Vec<Sample> {
+    let n = run.len();
+    let mut out = Vec::with_capacity(n / 2 + 2);
+    let Some(first) = run.first() else { return out };
+    out.push(*first);
+    let error = |a: &Sample, b: &Sample, m: &Sample, f: f32| -> f32 {
+        let (dx, dy) = (b.x - a.x, b.y - a.y);
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 > 1e-9 { (((m.x - a.x) * dx + (m.y - a.y) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+        let (px, py) = (a.x + dx * t, a.y + dy * t);
+        let off = ((m.x - px).powi(2) + (m.y - py).powi(2)).sqrt();
+        let hw = a.hw + (b.hw - a.hw) * f;
+        let alpha_err = ((m.alpha - (a.alpha + (b.alpha - a.alpha) * f)).abs() - 0.04).max(0.0) * 100.0;
+        off + (m.hw - hw).abs() + alpha_err + if m.connect { 0.0 } else { 1e6 }
+    };
+    let mut anchor = 0usize;
+    let mut worst = 1usize;
+    let mut j = 2usize;
+    while j < n {
+        let a = run[anchor];
+        let b = run[j];
+        let span = (j - anchor) as f32;
+        let check = |k: usize| error(&a, &b, &run[k], (k - anchor) as f32 / span);
+        let newest = j - 1;
+        let (e_new, e_worst) = (check(newest), if worst > anchor && worst < j { check(worst) } else { 0.0 });
+        if j - anchor > 48 || e_new > tol || e_worst > tol {
+            anchor = j - 1;
+            worst = anchor + 1;
+            out.push(run[anchor]);
+        } else if e_new > e_worst {
+            worst = newest;
+        }
+        j += 1;
+    }
+    if let Some(last) = run.last()
+        && anchor != n - 1
+    {
+        out.push(*last);
+    }
+    out
 }
 
 /// Insert seam samples where the texture coordinate crosses a tile edge, so no quad spans it.
@@ -668,7 +727,9 @@ impl<'a> Builder<'a> {
                         if run.len() == 1 {
                             self.cap(&run[0], shade, [0.0, 0.0], 1.0, 0.0, distance);
                         } else {
-                            self.strips(run, &[&TUBE], shade, solid, [0.0, 0.0], 1.0, 0.0, distance);
+                            // Hairlines don't need five shaded columns.
+                            let thin = run.iter().map(|s| s.hw).fold(0.0f32, f32::max) < 1.6;
+                            self.strips(run, &[if thin { &BAND } else { &TUBE }], shade, solid, [0.0, 0.0], 1.0, 0.0, distance);
                             if let (Some(a), Some(b)) = (run.first().copied(), run.last().copied()) {
                                 self.cap(&a, shade, [0.0, 0.0], 1.0, 0.0, distance);
                                 self.cap(&b, shade, [0.0, 0.0], 1.0, 0.0, distance);
@@ -696,7 +757,7 @@ impl<'a> Builder<'a> {
                 && (!render || matches!(material, Material::Shadeless | Material::Shaded))
             {
                 let runs_t = self.runs(s, Some(1.0));
-                let row = self.atlas.row(RowKey::pattern(p.kind, p.angle, p.contrast));
+                let row = self.row(RowKey::pattern(p.kind, p.angle, p.contrast));
                 let mark = [base[0] * 0.3, base[1] * 0.3, base[2] * 0.3, alpha * p.intensity];
                 for run in &runs_t {
                     self.strips(run, &[&TEXTURED], Paint::Flat(mark), row, [0.0, 0.0], 0.92, -2e-4, distance);
@@ -710,7 +771,7 @@ impl<'a> Builder<'a> {
     }
 
     fn halo(&mut self, runs: &[Vec<Sample>], base: [f32; 3], glow: f32, distance: f32) {
-        let row = self.atlas.row(RowKey::Halo);
+        let row = self.row(RowKey::Halo);
         let size = 2.5 + glow * 4.0 + self.env.effects.glow * 6.0;
         for run in runs {
             let r = wrap_u(run);
@@ -728,17 +789,13 @@ impl<'a> Builder<'a> {
             if render && material == Material::Cutout { rgb(self.env.background) } else { c }
         };
         let dry_ends = br.paint.roughness > 0.0 || br.paint.dryness > 0.0;
-        let mut start_paint = br.paint;
-        start_paint.dryness = start_paint.dryness.max(0.5);
-        let mut tail_paint = br.paint;
-        tail_paint.dryness = tail_paint.dryness.max(0.9);
-        tail_paint.bristles = tail_paint.bristles.max(0.8);
+        let (start_paint, tail_paint) = dry_paints(&br.paint);
         if let Some(e) = br.paint.echo {
             let v = variant.wrapping_add(2);
             let rows = [
-                self.atlas.row(RowKey::paint(kind, &start_paint, v)),
-                self.atlas.row(RowKey::paint(kind, &br.paint, v)),
-                self.atlas.row(RowKey::paint(kind, &tail_paint, v)),
+                self.row(RowKey::paint(kind, &start_paint, v)),
+                self.row(RowKey::paint(kind, &br.paint, v)),
+                self.row(RowKey::paint(kind, &tail_paint, v)),
             ];
             let c = color(rgb(e.color));
             let paint = Paint::Flat([c[0], c[1], c[2], alpha * e.color.to_f32()[3]]);
@@ -751,9 +808,9 @@ impl<'a> Builder<'a> {
         }
         let layers = br.paint.layers.clamp(1, 4) as u32;
         for layer in (0..layers).rev() {
-            let row = self.atlas.row(RowKey::paint(kind, &br.paint, variant.wrapping_add(layer)));
-            let start_row = self.atlas.row(RowKey::paint(kind, &start_paint, variant.wrapping_add(layer)));
-            let tail_row = self.atlas.row(RowKey::paint(kind, &tail_paint, variant.wrapping_add(layer)));
+            let row = self.row(RowKey::paint(kind, &br.paint, variant.wrapping_add(layer)));
+            let start_row = self.row(RowKey::paint(kind, &start_paint, variant.wrapping_add(layer)));
+            let tail_row = self.row(RowKey::paint(kind, &tail_paint, variant.wrapping_add(layer)));
             let h = hash2(s.seed, layer.wrapping_add(self.frame.wrapping_mul(31)));
             let (off, width, tint) = if layer == 0 {
                 ([0.0, 0.0], 1.0, 1.0)
@@ -782,7 +839,7 @@ impl<'a> Builder<'a> {
     /// re-rolled every boil frame.
     fn dabs(&mut self, s: &Stroke, base: [f32; 3], alpha: f32) {
         let pa = s.brush.paint;
-        let row = self.atlas.row(RowKey::Dabs { variant: (self.frame % crate::texture::VARIANTS) as u8 });
+        let row = self.row(RowKey::Dabs { variant: (self.frame % crate::texture::VARIANTS) as u8 });
         let distance = self.cam_distance();
         let runs = self.runs(s, None);
         let frame_seed = if self.boil.enabled && pa.boil > 0.0 { self.frame } else { 0 };
@@ -1090,6 +1147,43 @@ impl<'a> Builder<'a> {
     }
 }
 
+/// The paint of a painterly stroke's dry start and dry tail.
+fn dry_paints(p: &crate::model::Paint) -> (crate::model::Paint, crate::model::Paint) {
+    let mut start = *p;
+    start.dryness = start.dryness.max(0.5);
+    let mut tail = *p;
+    tail.dryness = tail.dryness.max(0.9);
+    tail.bristles = tail.bristles.max(0.8);
+    (start, tail)
+}
+
+/// Every texture row a curve needs at a boil frame (`frame` is 0 when the boil is off). The
+/// rows are made before the frame is built, so curves can be built in parallel.
+fn stroke_rows(s: &Stroke, frame: u32, boil_on: bool, out: &mut Vec<RowKey>) {
+    let br = &s.brush;
+    let p = &br.paint;
+    if br.kind.painterly() {
+        let variant = if boil_on && p.boil > 0.0 { frame } else { 0 };
+        let (start, tail) = dry_paints(p);
+        let mut add = |v: u32| {
+            out.push(RowKey::paint(br.kind, p, v));
+            out.push(RowKey::paint(br.kind, &start, v));
+            out.push(RowKey::paint(br.kind, &tail, v));
+        };
+        if p.echo.is_some() {
+            add(variant.wrapping_add(2));
+        }
+        for layer in 0..u32::from(p.layers.clamp(1, 4)) {
+            add(variant.wrapping_add(layer));
+        }
+    } else if let Some(pat) = br.pattern {
+        out.push(RowKey::pattern(pat.kind, pat.angle, pat.contrast));
+    }
+    if p.scatter > 0.0 {
+        out.push(RowKey::Dabs { variant: (frame % crate::texture::VARIANTS) as u8 });
+    }
+}
+
 /// A colour nudged in hue, saturation and value by up to `amount`.
 fn jitter_colour(c: [f32; 3], amount: f32, h: u32) -> [f32; 3] {
     if amount <= 0.0 {
@@ -1166,23 +1260,32 @@ fn render_once(scene: &Scene, camera: &Camera, atlas: &mut Atlas, opts: &Options
     } else {
         (view.back * 0.75 + view.up * 0.5 - view.right * 0.35).normalized()
     };
-    let mut b = Builder {
-        view,
-        atlas,
-        env,
-        boil: scene.boil,
-        frame: opts.frame,
-        verts: Vec::new(),
-        idx: Vec::new(),
-        items: Vec::new(),
-        open: None,
-        light,
-        pending_dabs: Vec::new(),
-    };
-    b.boil.sanitize();
-    if !b.boil.enabled {
-        b.frame = 0;
+    let mut boil = scene.boil;
+    boil.sanitize();
+    let frame = if boil.enabled { opts.frame } else { 0 };
+    let strokes: Vec<(&Stroke, bool)> = scene
+        .strokes
+        .iter()
+        .filter(|s| !opts.hide.contains(&s.id) && scene.group_shown(s.group))
+        .map(|s| (&**s, opts.selected.contains(&s.id)))
+        .chain(opts.extra.iter().map(|s| (s, false)))
+        .collect();
+    // Make every texture row first (twice if the atlas filled up and started over).
+    let mut keys = Vec::new();
+    for (s, _) in &strokes {
+        stroke_rows(s, frame, boil.enabled, &mut keys);
     }
+    for _ in 0..2 {
+        let generation = atlas.generation;
+        for k in &keys {
+            atlas.row(*k);
+        }
+        if atlas.generation == generation {
+            break;
+        }
+    }
+    let atlas: &Atlas = atlas;
+    let mut b = Builder::new(view, atlas, env, boil, frame, light);
     if opts.overlays && env.show_grid {
         b.grid();
     }
@@ -1195,15 +1298,7 @@ fn render_once(scene: &Scene, camera: &Camera, atlas: &mut Atlas, opts: &Options
     for m in &scene.models {
         b.model(m, opts.selected_resources.contains(&m.id));
     }
-    for s in &scene.strokes {
-        if opts.hide.contains(&s.id) || !scene.group_shown(s.group) {
-            continue;
-        }
-        b.stroke(s, opts.selected.contains(&s.id));
-    }
-    for s in opts.extra {
-        b.stroke(s, false);
-    }
+    build_strokes(&mut b, &strokes, view, atlas, env, boil, frame, light);
     if opts.guides {
         for g in &scene.guides {
             b.guide(g, scene.guide_state(g.id), opts.selected_resources.contains(&g.id));
@@ -1215,6 +1310,34 @@ fn render_once(scene: &Scene, camera: &Camera, atlas: &mut Atlas, opts: &Options
         b.orbit_point(p);
     }
     b.finish()
+}
+
+/// Curves, built on every core (native) in chunks, then gathered for sorting.
+#[allow(clippy::too_many_arguments)]
+fn build_strokes(b: &mut Builder<'_>, strokes: &[(&Stroke, bool)], view: View, atlas: &Atlas, env: &Environment, boil: Boil, frame: u32, light: Vec3) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if strokes.len() > 48 {
+        use rayon::prelude::*;
+        let parts: Vec<(Vec<Vtx>, Vec<u32>, Vec<Item>)> = strokes
+            .par_chunks(32)
+            .map(|chunk| {
+                let mut part = Builder::new(view, atlas, env, boil, frame, light);
+                for (s, sel) in chunk {
+                    part.stroke(s, *sel);
+                }
+                part.flush_dabs();
+                (part.verts, part.idx, part.items)
+            })
+            .collect();
+        for (v, i, it) in parts {
+            b.absorb(v, i, it);
+        }
+        return;
+    }
+    let _ = (view, atlas, env, boil, frame, light);
+    for (s, sel) in strokes {
+        b.stroke(s, *sel);
+    }
 }
 
 #[cfg(test)]
