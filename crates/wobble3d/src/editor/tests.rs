@@ -376,3 +376,81 @@ fn drawing_lands_on_active_images_and_models_and_notes_import_as_groups() {
     assert_eq!(groups.len(), 1);
     assert_eq!(e.scene.strokes.len(), (n + 1) * 2);
 }
+
+/// Draw a jittery horizontal line with real pointer events; the curve's vertical wiggle in
+/// world units.
+fn jittery_line(e: &mut Editor, mods: Mods) -> f32 {
+    e.pointer_down(300.0, 400.0, 0.5, 0.0, mods);
+    for i in 1..60 {
+        let y = 400.0 + if i % 2 == 0 { 4.0 } else { -4.0 };
+        e.pointer_move(300.0 + i as f32 * 8.0, y, 0.5, i as f64 * 0.01, mods);
+    }
+    e.pointer_up(780.0, 400.0, 0.6, mods);
+    let s = e.scene.strokes.last().expect("a curve");
+    s.points.windows(2).map(|w| (w[1].p.y - w[0].p.y).abs()).sum()
+}
+
+#[test]
+fn post_processing_smooths_what_the_pen_drew() {
+    let mut e = ed();
+    e.run("camera.view", &json!({"view": "front"})).expect("front");
+    e.run("feel.set", &json!({"post": false})).expect("off");
+    let raw = jittery_line(&mut e, Mods::default());
+    e.run("feel.set", &json!({"post": true, "smooth": 1.0, "smoothIterations": 4})).expect("on");
+    let smoothed = jittery_line(&mut e, Mods::default());
+    assert!(smoothed < raw * 0.4, "smoothed {smoothed} vs raw {raw}");
+    // Subdivide adds points; simplify removes them.
+    e.run("feel.set", &json!({"subdivide": 1, "simplify": 0.0})).expect("sub");
+    let n_sub = {
+        jittery_line(&mut e, Mods::default());
+        e.scene.strokes.last().map_or(0, |s| s.points.len())
+    };
+    e.run("feel.set", &json!({"subdivide": 0, "simplify": 1.0, "smoothIterations": 10, "smooth": 2.0})).expect("simp");
+    let n_simple = {
+        jittery_line(&mut e, Mods::default());
+        e.scene.strokes.last().map_or(0, |s| s.points.len())
+    };
+    assert!(n_simple < n_sub, "{n_simple} < {n_sub}");
+}
+
+#[test]
+fn shift_toggles_the_stabilizer_and_the_pressure_curve_applies() {
+    let mut e = ed();
+    e.run("camera.view", &json!({"view": "front"})).expect("front");
+    let shift = Mods { shift: true, ..Mods::default() };
+    // Stable Stroke off: Shift turns it on for this stroke.
+    e.pointer_down(300.0, 300.0, 1.0, 0.0, shift);
+    assert_eq!(e.live.as_ref().map(|l| l.stab.amount), Some(SHIFT_STABLE));
+    e.cancel();
+    // Stable Stroke on: Shift turns it off.
+    e.run("stable.set", &json!({"value": 0.6})).expect("stable");
+    e.pointer_down(300.0, 300.0, 1.0, 0.0, shift);
+    assert_eq!(e.live.as_ref().map(|l| l.stab.amount), Some(0.0));
+    e.cancel();
+    e.pointer_down(300.0, 300.0, 1.0, 0.0, Mods::default());
+    assert_eq!(e.live.as_ref().map(|l| l.stab.amount), Some(0.6));
+    e.cancel();
+    // A floor of 0.5: the lightest touch still draws half pressure.
+    e.run("stable.set", &json!({"value": 0.0})).expect("stable");
+    e.run("feel.set", &json!({"pressureMin": 0.5, "post": false})).expect("curve");
+    e.pointer_down(300.0, 300.0, 0.0, 0.0, Mods::default());
+    e.pointer_move(400.0, 300.0, 0.0, 0.1, Mods::default());
+    e.pointer_up(500.0, 300.0, 0.2, Mods::default());
+    let s = e.scene.strokes.last().expect("curve");
+    assert!(s.points.iter().all(|p| p.pressure >= 0.5 - 1e-6), "{:?}", s.points.iter().map(|p| p.pressure).collect::<Vec<_>>());
+}
+
+#[test]
+fn feel_set_rejects_bad_params() {
+    let mut e = ed();
+    for p in [json!({}), json!({"smooth": "lots"}), json!({"subdivide": -1}), json!({"post": 1}), json!({"smoothIterations": 2.5})] {
+        assert!(e.run("feel.set", &p).is_err(), "{p}");
+    }
+    let v = e.run("feel.set", &json!({"smooth": 99, "subdivide": 50, "pressureGamma": 0})).expect("clamped");
+    assert_eq!(v["smooth"], 2.0);
+    assert_eq!(v["subdivide"], 3);
+    assert_eq!(v["pressureGamma"], 0.25);
+    let v = e.run("feel.set", &json!({"reset": true})).expect("reset");
+    assert_eq!(v, serde_json::to_value(crate::feel::StrokeFeel::default()).expect("json"));
+    assert_eq!(e.run("feel.get", &Value::Null).expect("get"), v);
+}

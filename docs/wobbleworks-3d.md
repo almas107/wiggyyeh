@@ -38,7 +38,7 @@ Status: **done**, **partial** (works, details differ), **open**.
 | Draw on guide, on image resources (bounded flat guide), on OBJ models | done | + drawing in the air (toggle) |
 | Brush: type, colour, size 1–300 mm, opacity, pressure, injector, eyedropper, presets | done | 10 brush types (Feather's names are undocumented) |
 | Materials: Shadeless, Shaded, Glow, Cutout; patterns Dot, Line, Cross, Terrazzo, Stippled (intensity, angle, contrast) | done | Shown in Render mode; Cutout shows the background image (or colour) |
-| Assistance: Mirror X/Y/Z any combination, Draw Shape (line / curve / circle, hold to adjust, press-hold-drag circle), Stable Stroke | done | |
+| Assistance: Mirror X/Y/Z any combination, Draw Shape (line / curve / circle, hold to adjust, press-hold-drag circle), Stable Stroke | done | + Grease Pencil's pressure curve and post-processing; Shift toggles Stable Stroke |
 | Erase (centre-line points) / Vacuum (whole curves); guides isolate what they cover | done | |
 | Selection: drag-select, deselect, resources; duplicate in place / by view / by mirror; delete | done | + click, box, circle, lasso, invert (Blender) |
 | Transform | done (Blender) | No joystick, by request: G / R / S modal, axis & plane constraints, typed numbers, snapping, gizmo |
@@ -77,7 +77,7 @@ all of it at once.
 ## Tests and looking at it
 
 ```sh
-cargo test -p wobbleworks-3d                     # core: 70 tests incl. a hostile-params hunt
+cargo test -p wobbleworks-3d                     # core: 78 tests incl. a hostile-params hunt
 cargo test -p wobbleworks --test three_d         # real egui input: draw, G X 2 Enter, orbit, guides
 cargo run -p wobbleworks-3d --example render -- out_dir [render|swatches]   # PNGs, no window
 WOBBLE3D_SNAPSHOT=shot.png cargo test -p wobbleworks --test three_d snapshot -- --ignored
@@ -118,5 +118,11 @@ The screenshot needs a GPU or `mesa-vulkan-drivers`; Linux builds need `libasoun
   full-range BT.709): boil (looped to 4 s), 120-step turntable at 30 fps, and the shots
   fly-through Feather plays (also as GIF). Checked with ffprobe/ffmpeg: 480 × 320, 120 frames,
   exactly 30 fps, decodes clean. Tiles cut encoding from 9.1 s to 4.6 s on 4 cores (dev build).
-- **Still open:** Feather's undocumented brush type names; stroke feel tuned against
-  Grease Pencil's documented behaviour (next).
+- **2026-10-09, stroke feel (Grease Pencil):** `feel.rs` with Blender's documented draw-brush
+  settings: pressure curve (power + lightest touch), post-processing when the pen lifts
+  (Smooth + iterations, Smooth Thickness + iterations, Subdivide, adaptive Simplify, Trim
+  Strokes End), Shift while drawing toggles Stable Stroke (GP's Shift-LMB). Runs on screen
+  samples before projection, so curves stay on their guide. `feel.set` / `feel.get`; Stroke
+  feel card in the brush panel; saved with the settings.
+- **Still open:** Feather's undocumented brush type names; side-by-side feel tuning with real
+  users (defaults: smooth 0.35 × 1, thickness 0.3 × 1).

@@ -215,22 +215,25 @@ fn save_open_and_exports_go_through_the_platform() {
     assert_eq!(w2.space.ed.scene.strokes.len(), 1);
     // Settings survive a restart, keymap included.
     w.space.ed.run("keymap.rebind", &json!({"action": "transform.grab", "chord": "Ctrl+G"})).unwrap();
+    w.space.ed.run("feel.set", &json!({"smooth": 1.5, "trim": true})).unwrap();
     let text = w.settings_json();
     let mut w3 = app().0;
     w3.restore_settings(&text);
     assert_eq!(w3.space.ed.keymap.chord("transform.grab"), Some("Ctrl+G"));
+    assert_eq!((w3.space.ed.feel.smooth, w3.space.ed.feel.trim), (1.5, true));
 }
 
 /// Offscreen screenshot of the 3D mode through wgpu:
 /// `WOBBLE3D_SNAPSHOT=shot.png cargo test -p wobbleworks --test three_d snapshot -- --ignored`
 /// (`WOBBLE3D_RENDER=1` for render mode, `WOBBLE3D_EFFECTS` for effects as JSON,
-/// `WOBBLE3D_WIDTH` for the window width).
+/// `WOBBLE3D_WIDTH` / `WOBBLE3D_HEIGHT` for the window size).
 #[test]
 #[ignore = "needs a GPU or software renderer; run on demand"]
 fn snapshot() {
     let out = std::env::var("WOBBLE3D_SNAPSHOT").unwrap_or_else(|_| "wobble3d.png".into());
     let width: f32 = std::env::var("WOBBLE3D_WIDTH").ok().and_then(|s| s.parse().ok()).unwrap_or(1440.0);
-    let mut h = Harness::builder().with_size(egui::vec2(width, 900.0)).with_pixels_per_point(1.0).with_max_steps(32).wgpu().build_eframe(|cc| {
+    let height: f32 = std::env::var("WOBBLE3D_HEIGHT").ok().and_then(|s| s.parse().ok()).unwrap_or(900.0);
+    let mut h = Harness::builder().with_size(egui::vec2(width, height)).with_pixels_per_point(1.0).with_max_steps(32).wgpu().build_eframe(|cc| {
         photocraft_ui_egui::PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
         let mut a = app().0;
         if let Some(rs) = cc.wgpu_render_state.clone() {

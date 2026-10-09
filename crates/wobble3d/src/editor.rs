@@ -24,6 +24,8 @@ use crate::transform::{self, Delta, GizmoKind, Handle, Modal, Mode, Part};
 pub const UNDO_MAX: usize = 256;
 /// How long the pen must rest for Draw Shape's hold-to-adjust (seconds).
 pub const HOLD_SECONDS: f64 = 0.45;
+/// Stable Stroke strength when Shift turns it on for one stroke (Stable Stroke itself is off).
+pub const SHIFT_STABLE: f32 = 0.5;
 /// Most points in one command's point list.
 pub const PARAM_POINTS_MAX: usize = 100_000;
 
@@ -287,6 +289,8 @@ pub struct Editor {
     pub mirror_axes: [bool; 3],
     /// Stable Stroke amount, 0..1 (0 = off).
     pub stable: f32,
+    /// Pressure curve and post-processing (Grease Pencil's draw brush settings).
+    pub feel: crate::feel::StrokeFeel,
     /// Draw Shape also corrects guide and bend strokes.
     pub guide_shape: bool,
     /// With no guide, draw on the plane through the orbit point facing the view (Feather needs a
@@ -395,6 +399,7 @@ impl Editor {
             mirror_on: false,
             mirror_axes: [true, false, false],
             stable: 0.3,
+            feel: crate::feel::StrokeFeel::default(),
             guide_shape: true,
             draw_in_air: true,
             pin_orbit: false,
@@ -765,7 +770,7 @@ impl Editor {
         }
         self.mouse = [x, y];
         self.time = t;
-        let pressure = if pressure.is_finite() { pressure.clamp(0.0, 1.0) } else { 1.0 };
+        let pressure = self.feel.pressure(pressure);
         if self.modal.is_some() {
             self.modal_confirm();
             return;
@@ -814,7 +819,13 @@ impl Editor {
                 return;
             }
         };
-        let stab = Stabilizer::new(if kind == LiveKind::Draw || kind == LiveKind::Guide || kind == LiveKind::Bend { self.stable } else { 0.0 });
+        // Shift while drawing toggles the stabilizer (Grease Pencil's Shift-LMB).
+        let stable = match (mods.shift, self.stable > 0.0) {
+            (false, _) => self.stable,
+            (true, true) => 0.0,
+            (true, false) => SHIFT_STABLE,
+        };
+        let stab = Stabilizer::new(if kind == LiveKind::Draw || kind == LiveKind::Guide || kind == LiveKind::Bend { stable } else { 0.0 });
         self.live = Some(Live {
             kind,
             raw: Vec::new(),
@@ -868,7 +879,7 @@ impl Editor {
         let prev = self.mouse;
         self.mouse = [x, y];
         self.time = t;
-        let pressure = if pressure.is_finite() { pressure.clamp(0.0, 1.0) } else { 1.0 };
+        let pressure = self.feel.pressure(pressure);
         if let Some(m) = &mut self.modal {
             m.modal.mouse = [x, y];
             m.modal.snap = mods.ctrl;
@@ -982,6 +993,16 @@ impl Editor {
                     if correct {
                         let pts: Vec<[f32; 2]> = live.raw.iter().map(|q| [q[0], q[1]]).collect();
                         live.shape = recognize(&pts);
+                    }
+                    // Post-processing (smooth, subdivide, simplify, trim) on what was drawn.
+                    if live.shape.is_none() && self.feel.post {
+                        live.raw = self.feel.process(&live.raw);
+                        if live.kind == LiveKind::Draw {
+                            self.live = Some(live);
+                            self.reproject_live();
+                            let Some(l) = self.live.take() else { return };
+                            live = l;
+                        }
                     }
                 }
                 let screen: Vec<[f32; 3]> = match live.shape {
@@ -2942,6 +2963,47 @@ impl Editor {
                 self.touch();
                 Ok(json!(self.mirror_on))
             }
+            "feel.get" => Ok(serde_json::to_value(self.feel).unwrap_or(Value::Null)),
+            "feel.set" => {
+                let mut fl = self.feel;
+                let mut changed = false;
+                for (key, slot) in [
+                    ("pressureGamma", &mut fl.pressure_gamma),
+                    ("pressureMin", &mut fl.pressure_min),
+                    ("smooth", &mut fl.smooth),
+                    ("smoothThickness", &mut fl.smooth_thickness),
+                    ("simplify", &mut fl.simplify),
+                ] {
+                    if p.get(key).is_some() {
+                        *slot = need_f(p, key)?;
+                        changed = true;
+                    }
+                }
+                for (key, slot) in
+                    [("smoothIterations", &mut fl.smooth_iterations), ("thicknessIterations", &mut fl.thickness_iterations), ("subdivide", &mut fl.subdivide)]
+                {
+                    if let Some(v) = p.get(key) {
+                        *slot = v.as_u64().ok_or_else(|| format!("{key} must be a whole number"))?.min(100) as u32;
+                        changed = true;
+                    }
+                }
+                for (key, slot) in [("post", &mut fl.post), ("trim", &mut fl.trim)] {
+                    if let Some(v) = p.get(key) {
+                        *slot = v.as_bool().ok_or_else(|| format!("{key} must be true or false"))?;
+                        changed = true;
+                    }
+                }
+                if p.get("reset").and_then(Value::as_bool) == Some(true) {
+                    fl = crate::feel::StrokeFeel::default();
+                    changed = true;
+                }
+                if !changed {
+                    return Err("nothing to set (pressureGamma, pressureMin, post, smooth, smoothIterations, smoothThickness, thicknessIterations, subdivide, simplify, trim, reset)".into());
+                }
+                fl.sanitize();
+                self.feel = fl;
+                Ok(serde_json::to_value(self.feel).unwrap_or(Value::Null))
+            }
             "stable.set" => {
                 self.stable = need_f(p, "value")?.clamp(0.0, 1.0);
                 ok
@@ -3350,7 +3412,12 @@ const COMMANDS: &[(&str, &str)] = &[
     ("boil.toggle", "boil on / off"),
     ("mirror.set", "{on, x, y, z}"),
     ("mirror.toggle", "mirror on / off"),
-    ("stable.set", "{value 0–1} Stable Stroke"),
+    ("stable.set", "{value 0–1} Stable Stroke (Shift while drawing toggles it)"),
+    ("feel.get", "the pressure curve and post-processing settings"),
+    (
+        "feel.set",
+        "{pressureGamma 0.25–4, pressureMin 0–0.9, post, smooth 0–2, smoothIterations 0–10, smoothThickness 0–1, thicknessIterations 0–10, subdivide 0–3, simplify 0–1, trim, reset} Grease Pencil-style stroke feel",
+    ),
     ("assist.set", "{guideShape, drawInAir, showOrbit, pinOrbit}"),
     ("shot.add", "{after?} add a camera shot of the current view"),
     ("shot.go", "{id}"),

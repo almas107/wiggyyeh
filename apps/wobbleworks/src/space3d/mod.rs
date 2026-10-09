@@ -311,6 +311,7 @@ impl Space3d {
             "emulateMmb": self.view.emulate_mmb,
             "holdBoil": self.hold_boil_while_drawing,
             "stable": self.ed.stable,
+            "feel": self.ed.feel,
             "drawInAir": self.ed.draw_in_air,
             "guideShape": self.ed.guide_shape,
             "exportScale": self.export_scale,
@@ -341,6 +342,10 @@ impl Space3d {
         }
         if let Some(x) = v.get("stable").and_then(Value::as_f64).filter(|x| x.is_finite()) {
             self.ed.stable = (x as f32).clamp(0.0, 1.0);
+        }
+        if let Some(mut f) = v.get("feel").and_then(|f| serde_json::from_value::<wobbleworks_3d::feel::StrokeFeel>(f.clone()).ok()) {
+            f.sanitize();
+            self.ed.feel = f;
         }
         if let Some(b) = flag("drawInAir") {
             self.ed.draw_in_air = b;

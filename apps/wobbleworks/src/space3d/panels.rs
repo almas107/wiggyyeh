@@ -577,6 +577,12 @@ pub fn brush_panel(s: &mut Space3d, ui: &mut Ui, look: &Look, right: bool) {
                 if ui.checkbox(&mut gs, "Hold to straighten guide strokes").changed() {
                     s.run("assist.set", json!({"guideShape": gs}));
                 }
+                ui.label(RichText::new("Shift while drawing toggles Stable stroke").color(look.t.dim));
+            });
+            ui.add_space(6.0);
+            widgets::card(ui, look, "w3d-feel-card", 8.0, |ui| {
+                ui.set_max_width(ui.available_width());
+                feel(ui, look, s);
             });
             ui.add_space(6.0);
             widgets::card(ui, look, "w3d-preset-card", 8.0, |ui| {
@@ -1529,4 +1535,65 @@ pub fn menus(s: &mut Space3d, ctx: &egui::Context, look: &Look) {
         s.menu = None;
     }
     let _ = Pos2::ZERO;
+}
+
+/// Stroke feel: the pressure curve and Grease Pencil's post-processing settings.
+fn feel(ui: &mut Ui, look: &Look, s: &mut Space3d) {
+    let f = s.ed.feel;
+    let mut set = serde_json::Map::new();
+    egui::CollapsingHeader::new(RichText::new("Stroke feel").color(look.t.ink)).id_salt("w3d-feel").default_open(false).show(ui, |ui| {
+        ui.label(RichText::new("Pressure").color(look.t.dim));
+        let mut g = f.pressure_gamma;
+        if ui
+            .add(egui::Slider::new(&mut g, 0.25..=4.0).logarithmic(true).text("Curve"))
+            .on_hover_text("Below 1: a light touch draws fuller; above 1: you press harder for full size")
+            .changed()
+        {
+            set.insert("pressureGamma".into(), json!(g));
+        }
+        let mut m = f.pressure_min;
+        if ui.add(egui::Slider::new(&mut m, 0.0..=0.9).text("Lightest")).on_hover_text("The lightest touch still counts as this much pressure").changed() {
+            set.insert("pressureMin".into(), json!(m));
+        }
+        let mut post = f.post;
+        if ui.checkbox(&mut post, "Post-processing (when the pen lifts)").on_hover_text("As in Blender's Grease Pencil draw brush").changed() {
+            set.insert("post".into(), json!(post));
+        }
+        ui.add_enabled_ui(f.post, |ui| {
+            let mut v = f.smooth;
+            if ui.add(egui::Slider::new(&mut v, 0.0..=2.0).text("Smooth")).changed() {
+                set.insert("smooth".into(), json!(v));
+            }
+            let mut n = f.smooth_iterations;
+            if ui.add(egui::Slider::new(&mut n, 0..=10).text("Iterations")).changed() {
+                set.insert("smoothIterations".into(), json!(n));
+            }
+            let mut v = f.smooth_thickness;
+            if ui.add(egui::Slider::new(&mut v, 0.0..=1.0).text("Smooth thickness")).changed() {
+                set.insert("smoothThickness".into(), json!(v));
+            }
+            let mut n = f.thickness_iterations;
+            if ui.add(egui::Slider::new(&mut n, 0..=10).text("Thickness iterations")).changed() {
+                set.insert("thicknessIterations".into(), json!(n));
+            }
+            let mut n = f.subdivide;
+            if ui.add(egui::Slider::new(&mut n, 0..=3).text("Subdivide")).changed() {
+                set.insert("subdivide".into(), json!(n));
+            }
+            let mut v = f.simplify;
+            if ui.add(egui::Slider::new(&mut v, 0.0..=1.0).text("Simplify")).on_hover_text("Fewer points where the curve is straight").changed() {
+                set.insert("simplify".into(), json!(v));
+            }
+            let mut t = f.trim;
+            if ui.checkbox(&mut t, "Trim ends where the stroke crosses itself").changed() {
+                set.insert("trim".into(), json!(t));
+            }
+        });
+        if ui.button("Reset").clicked() {
+            set.insert("reset".into(), json!(true));
+        }
+    });
+    if !set.is_empty() {
+        s.run("feel.set", Value::Object(set));
+    }
 }

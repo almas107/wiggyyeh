@@ -12,6 +12,7 @@
 pub mod assist;
 pub mod camera;
 pub mod editor;
+pub mod feel;
 pub mod guide;
 pub mod io;
 pub mod keys;

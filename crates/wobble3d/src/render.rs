@@ -272,6 +272,7 @@ impl<'a> Builder<'a> {
     }
 
     /// Take another builder's geometry (built in parallel) into this one.
+    #[cfg(not(target_arch = "wasm32"))]
     fn absorb(&mut self, verts: Vec<Vtx>, idx: Vec<u32>, items: Vec<Item>) {
         let (v_off, i_off) = (self.verts.len(), self.idx.len());
         self.verts.extend(verts);
