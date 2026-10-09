@@ -242,6 +242,15 @@ struct PrimitiveState {
     base: Scene,
 }
 
+/// A session in progress, for the context bar.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Session {
+    None,
+    Loft { curves: usize, tension: f32 },
+    Primitive { kind: Primitive, segments: u32 },
+    Liquify,
+}
+
 /// What the shell draws over the 3D view.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Overlay {
@@ -1007,6 +1016,28 @@ impl Editor {
             return true;
         }
         false
+    }
+
+    pub fn session(&self) -> Session {
+        if let Some(p) = &self.primitive {
+            return Session::Primitive { kind: p.kind, segments: p.segments };
+        }
+        if let Some(l) = &self.loft {
+            return Session::Loft { curves: l.curves.len(), tension: l.tension };
+        }
+        if self.liquify_before.is_some() {
+            return Session::Liquify;
+        }
+        Session::None
+    }
+
+    /// Undo back to (and including) the step `index` from the oldest (History panel).
+    pub fn undo_to(&mut self, index: usize) {
+        while self.undo.len() > index {
+            if !self.undo() {
+                break;
+            }
+        }
     }
 
     pub fn is_busy(&self) -> bool {

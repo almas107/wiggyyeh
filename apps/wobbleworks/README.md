@@ -15,7 +15,12 @@ tool, panel and file format) and redraws it by hand:
 - `shell.rs`: dots and a paper-sheet outline around the picture, and the colour strip (current
   colour + mixer, recently painted colours, the user's palette; kept between sessions).
 
-Plan and progress: `docs/wobbleworks-spec.md`.
+- `space3d/`: **WobbleWorks 3D** (the dock's 3D button): Feather-style drawing on 3D Guides,
+  driven with Blender's mouse and keys, with boiling lines and painterly brushes. The note, tools
+  and renderer are the `wobbleworks-3d` crate; this folder is only its UI. See
+  `docs/wobbleworks-3d.md`.
+
+Plan and progress: `docs/wobbleworks-spec.md` (2D) and `docs/wobbleworks-3d.md` (3D).
 
 Linux builds need ALSA's headers for sound (`libasound2-dev` on Debian/Ubuntu).
 
@@ -26,6 +31,8 @@ cargo test -p wobbleworks
 # Offscreen screenshot (WOBBLE_MIXER=1, WOBBLE_WIDTH=390, WOBBLE_HOVER=x,y, WOBBLE_FLAT=1,
 # WOBBLE_PLAIN_FONT=1, WOBBLE_SVG_ICONS=1 to compare against PhotoCraft's own look):
 WOBBLE_SNAPSHOT=/tmp/shot.png cargo test -p wobbleworks snapshot -- --ignored
+# The 3D mode (WOBBLE3D_RENDER=1 for render mode):
+WOBBLE3D_SNAPSHOT=/tmp/shot3d.png cargo test -p wobbleworks --test three_d snapshot -- --ignored
 ```
 
 It replaced an earlier standalone WobbleWorks (no PhotoCraft); that app's `.wob` projects open

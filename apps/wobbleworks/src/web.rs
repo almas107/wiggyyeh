@@ -44,6 +44,20 @@ pub fn start() {
                             ctx.request_repaint();
                         });
                     }));
+                    let repaint = cc.egui_ctx.clone();
+                    w.space.files = wobbleworks::space3d::Files {
+                        pick: Some(Box::new(move |inbox, purpose, exts| {
+                            let ctx = repaint.clone();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                let Some(file) = rfd::AsyncFileDialog::new().add_filter("Files", exts).pick_file().await else { return };
+                                let bytes = file.read().await;
+                                inbox.lock().unwrap_or_else(|e| e.into_inner()).push((purpose.to_string(), file.file_name(), bytes));
+                                ctx.request_repaint();
+                            });
+                        })),
+                        // No save dialog on the web: the file downloads under the suggested name.
+                        save: Some(Box::new(|suggested: &str, bytes: &[u8]| download(suggested, bytes).map(|()| Some(suggested.to_string())))),
+                    };
                     if let Some(rs) = cc.wgpu_render_state.clone() {
                         w.app.set_wgpu(rs);
                     }
@@ -158,6 +172,8 @@ fn mime_for(name: &str) -> &'static str {
         Some("png") => "image/png",
         Some("gif") => "image/gif",
         Some("psd" | "psb") => "image/vnd.adobe.photoshop",
+        Some("glb") => "model/gltf-binary",
+        Some("obj") => "model/obj",
         _ => "application/octet-stream",
     }
 }

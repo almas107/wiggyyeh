@@ -19,6 +19,7 @@ pub mod mascot;
 pub mod pixfont;
 pub mod rough;
 pub mod shell;
+pub mod space3d;
 pub mod svgicon;
 pub mod theme;
 pub mod ttf;

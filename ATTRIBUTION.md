@@ -27,6 +27,7 @@ next to them.
 | `assets/app-icon/` (all files) | PhotoCraft app icon (nine-tailed kitsune) | The project owner (drawn in ArtCraft, vectorised) | Original work, see [`assets/app-icon/README.md`](assets/app-icon/README.md) | MIT OR Apache-2.0, [`assets/app-icon/LICENSE.txt`](assets/app-icon/LICENSE.txt) |
 | `apps/wobbleworks/src/pixfont.rs` | WobbleWorks pixel font (5 × 7 glyphs defined in code; `ttf.rs` builds it into a TrueType font in memory, no font file is shipped) | PhotoCraft contributors | Original work | MIT OR Apache-2.0 |
 | `apps/wobbleworks` (look and feel) | Inspired by WigglyPaint's boiling lines and chunky UI; no WigglyPaint code or assets are copied | Internet Janitor (WigglyPaint) | <https://internet-janitor.itch.io/wigglypaint> (itch.io lists code as MIT, assets as CC0-1.0) | Credit only (no files reused) |
+| `crates/wobble3d`, `apps/wobbleworks/src/space3d` (3D mode behaviour) | Behaviour modelled on Feather (Draw in 3D) from its public docs and the paper *Feather: 3D sketchbook light as a feather* (SIGGRAPH '23 Appy Hour); controls modelled on Blender's default keymap. No code, shaders or assets copied | Sketchsoft Inc. (Feather); Blender Foundation (Blender) | <https://support.feather.art/docs>, doi:10.1145/3588427.3595355, <https://docs.blender.org> | Credit only (no files reused) |
 
 ### Optional build input: craft-fonts (not files in this repo)
 

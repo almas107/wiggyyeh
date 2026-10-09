@@ -3,7 +3,9 @@
 //! way, and tooltips show the shortcut next to each action. `ui.*` commands are handled by the
 //! shell (menus, panels, search), the rest by [`crate::editor::Editor::run`].
 //!
-//! Mouse navigation is Blender's too: middle drag orbits, Shift+middle pans, Ctrl+middle or the
+//! The view keys are Blender's with "Emulate Numpad" on (1 / 3 / 7 front, right, top; Ctrl for the
+//! opposite side; 5 perspective; . frame selected), because egui reports the numpad and the top
+//! row as the same keys. Mouse navigation is Blender's too: middle drag orbits, Shift+middle pans, Ctrl+middle or the
 //! wheel zooms, and Alt+middle click snaps to the nearest view (Feather's double tap).
 
 use serde::{Deserialize, Serialize};
@@ -24,21 +26,21 @@ pub struct Binding {
 /// (action, label, chord, command, params JSON).
 const DEFAULTS: &[(&str, &str, &str, &str, &str)] = &[
     // Views (numpad, as in Blender).
-    ("view.front", "Front view", "Numpad1", "camera.view", r#"{"view":"front"}"#),
-    ("view.back", "Back view", "Ctrl+Numpad1", "camera.view", r#"{"view":"back"}"#),
-    ("view.right", "Right view", "Numpad3", "camera.view", r#"{"view":"right"}"#),
-    ("view.left", "Left view", "Ctrl+Numpad3", "camera.view", r#"{"view":"left"}"#),
-    ("view.top", "Top view", "Numpad7", "camera.view", r#"{"view":"top"}"#),
-    ("view.bottom", "Bottom view", "Ctrl+Numpad7", "camera.view", r#"{"view":"bottom"}"#),
-    ("view.nearest", "Snap to nearest view", "Alt+Numpad5", "camera.view", r#"{"view":"nearest"}"#),
-    ("view.projection", "Perspective / orthographic", "Numpad5", "camera.toggleProjection", "null"),
-    ("view.orbitLeft", "Orbit left", "Numpad4", "camera.orbit", r#"{"dx":-43,"dy":0}"#),
-    ("view.orbitRight", "Orbit right", "Numpad6", "camera.orbit", r#"{"dx":43,"dy":0}"#),
-    ("view.orbitUp", "Orbit up", "Numpad8", "camera.orbit", r#"{"dx":0,"dy":43}"#),
-    ("view.orbitDown", "Orbit down", "Numpad2", "camera.orbit", r#"{"dx":0,"dy":-43}"#),
-    ("view.zoomIn", "Zoom in", "NumpadPlus", "camera.zoom", r#"{"factor":1.2}"#),
-    ("view.zoomOut", "Zoom out", "NumpadMinus", "camera.zoom", r#"{"factor":0.8333}"#),
-    ("view.frameSelected", "Frame selected", "NumpadPeriod", "camera.frameSelected", "null"),
+    ("view.front", "Front view", "1", "camera.view", r#"{"view":"front"}"#),
+    ("view.back", "Back view", "Ctrl+1", "camera.view", r#"{"view":"back"}"#),
+    ("view.right", "Right view", "3", "camera.view", r#"{"view":"right"}"#),
+    ("view.left", "Left view", "Ctrl+3", "camera.view", r#"{"view":"left"}"#),
+    ("view.top", "Top view", "7", "camera.view", r#"{"view":"top"}"#),
+    ("view.bottom", "Bottom view", "Ctrl+7", "camera.view", r#"{"view":"bottom"}"#),
+    ("view.nearest", "Snap to nearest view", "Alt+5", "camera.view", r#"{"view":"nearest"}"#),
+    ("view.projection", "Perspective / orthographic", "5", "camera.toggleProjection", "null"),
+    ("view.orbitLeft", "Orbit left", "4", "camera.orbit", r#"{"dx":-43,"dy":0}"#),
+    ("view.orbitRight", "Orbit right", "6", "camera.orbit", r#"{"dx":43,"dy":0}"#),
+    ("view.orbitUp", "Orbit up", "8", "camera.orbit", r#"{"dx":0,"dy":43}"#),
+    ("view.orbitDown", "Orbit down", "2", "camera.orbit", r#"{"dx":0,"dy":-43}"#),
+    ("view.zoomIn", "Zoom in", "=", "camera.zoom", r#"{"factor":1.2}"#),
+    ("view.zoomOut", "Zoom out", "-", "camera.zoom", r#"{"factor":0.8333}"#),
+    ("view.frameSelected", "Frame selected", ".", "camera.frameSelected", "null"),
     ("view.frameAll", "Frame all", "Home", "camera.frameAll", "null"),
     ("view.reset", "Reset view", "Shift+Home", "camera.reset", "null"),
     ("view.pie", "View menu", "`", "ui.viewPie", "null"),
@@ -88,19 +90,19 @@ const DEFAULTS: &[(&str, &str, &str, &str, &str)] = &[
     ("brush.sizeUp", "Bigger brush", "]", "brush.nudge", r#"{"size":1}"#),
     ("brush.sizeRadial", "Brush size (drag)", "F", "ui.radialSize", "null"),
     ("brush.opacityRadial", "Brush opacity (drag)", "Shift+F", "ui.radialOpacity", "null"),
-    ("brush.opacityDown", "Less opaque", "-", "brush.nudge", r#"{"opacity":-1}"#),
-    ("brush.opacityUp", "More opaque", "=", "brush.nudge", r#"{"opacity":1}"#),
+    ("brush.opacityDown", "Less opaque", "Alt+-", "brush.nudge", r#"{"opacity":-1}"#),
+    ("brush.opacityUp", "More opaque", "Alt+=", "brush.nudge", r#"{"opacity":1}"#),
     ("brush.next", "Next brush type", "Shift+B", "brush.cycle", "null"),
-    ("brush.opacity10", "Opacity 10%", "1", "brush.set", r#"{"opacity":0.1}"#),
-    ("brush.opacity20", "Opacity 20%", "2", "brush.set", r#"{"opacity":0.2}"#),
-    ("brush.opacity30", "Opacity 30%", "3", "brush.set", r#"{"opacity":0.3}"#),
-    ("brush.opacity40", "Opacity 40%", "4", "brush.set", r#"{"opacity":0.4}"#),
-    ("brush.opacity50", "Opacity 50%", "5", "brush.set", r#"{"opacity":0.5}"#),
-    ("brush.opacity60", "Opacity 60%", "6", "brush.set", r#"{"opacity":0.6}"#),
-    ("brush.opacity70", "Opacity 70%", "7", "brush.set", r#"{"opacity":0.7}"#),
-    ("brush.opacity80", "Opacity 80%", "8", "brush.set", r#"{"opacity":0.8}"#),
-    ("brush.opacity90", "Opacity 90%", "9", "brush.set", r#"{"opacity":0.9}"#),
-    ("brush.opacity100", "Opacity 100%", "0", "brush.set", r#"{"opacity":1.0}"#),
+    ("brush.opacity10", "Opacity 10%", "", "brush.set", r#"{"opacity":0.1}"#),
+    ("brush.opacity20", "Opacity 20%", "", "brush.set", r#"{"opacity":0.2}"#),
+    ("brush.opacity30", "Opacity 30%", "", "brush.set", r#"{"opacity":0.3}"#),
+    ("brush.opacity40", "Opacity 40%", "", "brush.set", r#"{"opacity":0.4}"#),
+    ("brush.opacity50", "Opacity 50%", "", "brush.set", r#"{"opacity":0.5}"#),
+    ("brush.opacity60", "Opacity 60%", "", "brush.set", r#"{"opacity":0.6}"#),
+    ("brush.opacity70", "Opacity 70%", "", "brush.set", r#"{"opacity":0.7}"#),
+    ("brush.opacity80", "Opacity 80%", "", "brush.set", r#"{"opacity":0.8}"#),
+    ("brush.opacity90", "Opacity 90%", "", "brush.set", r#"{"opacity":0.9}"#),
+    ("brush.opacity100", "Opacity 100%", "", "brush.set", r#"{"opacity":1.0}"#),
     ("mirror.toggle", "Mirror on / off", "Shift+X", "mirror.toggle", "null"),
     // Boil and playback.
     ("boil.play", "Boil on / off", "Space", "boil.toggle", "null"),
@@ -242,13 +244,13 @@ mod tests {
     fn defaults_are_unique_and_parse() {
         let k = Keymap::default();
         let mut seen = std::collections::HashSet::new();
-        for b in &k.bindings {
+        for b in k.bindings.iter().filter(|b| !b.chord.is_empty()) {
             assert!(seen.insert(normalize(&b.chord)), "duplicate chord {}", b.chord);
             assert!(!b.command.is_empty());
         }
         assert_eq!(k.lookup("g").map(|b| b.action.as_str()), Some("transform.grab"));
         assert_eq!(k.lookup("shift+ctrl+z").map(|b| b.action.as_str()), Some("edit.redo"));
-        assert_eq!(k.chord("view.front"), Some("Numpad1"));
+        assert_eq!(k.chord("view.front"), Some("1"));
         assert!(k.lookup("").is_none());
         assert_eq!(normalize("alt+shift+cmd+d"), "Ctrl+Shift+Alt+D");
     }
@@ -262,6 +264,6 @@ mod tests {
         assert!(k.rebind("nope", "Q").is_err());
         k.bindings.retain(|b| b.action != "view.top");
         k.merge_defaults();
-        assert_eq!(k.chord("view.top"), Some("Numpad7"));
+        assert_eq!(k.chord("view.top"), Some("7"));
     }
 }

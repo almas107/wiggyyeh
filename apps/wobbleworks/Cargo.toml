@@ -25,6 +25,8 @@ photocraft-io = { workspace = true }
 photocraft-codecs = { workspace = true }
 photocraft-doc = { workspace = true }
 photocraft-ui-egui = { workspace = true }
+# The 3D mode's note, tools and renderer (no UI): Feather-style drawing in 3D.
+wobbleworks-3d = { workspace = true }
 egui = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }

@@ -39,6 +39,7 @@ pub fn run() -> eframe::Result {
                     Err(e) => log::warn!("couldn't read {}: {e}", path.display()),
                 }
             }));
+            w.space.files = space_files();
             w.app.background_jobs = true;
             if let Some(rs) = cc.wgpu_render_state.clone() {
                 w.app.set_wgpu(rs);
@@ -54,6 +55,35 @@ pub fn run() -> eframe::Result {
             Ok(Box::new(w))
         }),
     )
+}
+
+/// File dialogs for the 3D mode: pick into its inbox, save with a dialog and a crash-safe write.
+fn space_files() -> wobbleworks::space3d::Files {
+    wobbleworks::space3d::Files {
+        pick: Some(Box::new(|inbox, purpose, exts| {
+            let Some(path) = rfd::FileDialog::new().add_filter("Files", exts).pick_file() else { return };
+            match photocraft_format::read_file(&path) {
+                Ok(bytes) => inbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((purpose.to_string(), path.to_string_lossy().into_owned(), bytes)),
+                Err(e) => log::warn!("couldn't read {}: {e}", path.display()),
+            }
+        })),
+        save: Some(Box::new(|suggested: &str, bytes: &[u8]| {
+            let ext = Path::new(suggested).extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
+            let mut d = rfd::FileDialog::new();
+            if !ext.is_empty() {
+                d = d.add_filter(ext.to_uppercase(), &[ext.as_str()]);
+            }
+            if let Some(name) = Path::new(suggested).file_name() {
+                d = d.set_file_name(name.to_string_lossy());
+            }
+            let Some(mut path) = d.save_file() else { return Ok(None) };
+            if !ext.is_empty() && path.extension().is_none() {
+                path.set_extension(&ext);
+            }
+            photocraft_format::atomic_write(&path, bytes).map_err(|e| e.to_string())?;
+            Ok(Some(path.to_string_lossy().into_owned()))
+        })),
+    }
 }
 
 fn services() -> Services {

@@ -22,6 +22,7 @@ use crate::colour::ColourPicker;
 use crate::juice::Juice;
 use crate::mascot::{self, Mascot};
 use crate::rough::{self, Paint};
+use crate::space3d::{Feedback, Space3d};
 use crate::svgicon::{self, IconInk};
 use crate::theme::{self, Theme, mix};
 use crate::widgets::{self, Look, TEXT};
@@ -113,6 +114,10 @@ pub struct WobbleApp {
     /// (document, history length) last seen, to notice painting.
     seen: Option<(u64, u64)>,
     frames: u64,
+    /// WobbleWorks 3D: Feather-style drawing in 3D (the second mode).
+    pub space: Space3d,
+    /// The 3D mode is showing instead of the 2D editor.
+    pub three_d: bool,
 }
 
 /// Below this window width the side panels start closed, so the picture gets the room.
@@ -162,6 +167,8 @@ impl WobbleApp {
             icons: Arc::new(Mutex::new((0, ink))),
             seen: None,
             frames: 0,
+            space: Space3d::new(),
+            three_d: false,
         };
         w.app.ui.theme = theme::base_kind(&theme);
         w.style_canvas();
@@ -287,11 +294,32 @@ impl WobbleApp {
     }
 
     pub fn set_foreground(&mut self, c: Color32) -> Result<(), String> {
+        if self.three_d {
+            self.space.set_colour(c);
+        }
         self.run("tools.setColors", json!({"foreground": theme::to_hex(c)})).map(|_| ())
+    }
+
+    /// Show the 3D mode (or the 2D editor).
+    pub fn set_three_d(&mut self, on: bool) {
+        if on && !self.three_d {
+            // The 3D brush starts in the colour being painted with.
+            let c = self.foreground();
+            self.space.set_colour(c);
+        }
+        self.three_d = on;
+    }
+
+    /// Where the drawing is on screen (the 2D canvas or the 3D view).
+    pub fn drawing_rect(&self) -> Rect {
+        if self.three_d { self.space.view.rect } else { self.app.last_canvas_rect }
     }
 
     /// The foreground colour.
     pub fn foreground(&self) -> Color32 {
+        if self.three_d {
+            return self.space.brush_colour();
+        }
         let [r, g, b, _] = self.app.session.tools.foreground;
         let c = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
         Color32::from_rgb(c(r), c(g), c(b))
@@ -489,6 +517,14 @@ impl WobbleApp {
             // only as tall as its widgets.
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true), |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
+                if widgets::button(ui, look, "3D", self.three_d, true).on_hover_text("Draw in 3D: Feather's 3D Guides, Blender's controls, boiling lines").clicked() {
+                    let on = !self.three_d;
+                    self.set_three_d(on);
+                }
+                if self.three_d {
+                    self.dock_3d(ui, look);
+                    return;
+                }
                 let label = if self.boil_play { "Boil: on" } else { "Boil: off" };
                 if widgets::button(ui, look, label, self.boil_play, true).on_hover_text("Play the boil frames").clicked() {
                     self.boil_play = !self.boil_play;
@@ -515,6 +551,54 @@ impl WobbleApp {
                 }
             });
         });
+    }
+
+    /// Files dropped on the window (or read by the web shell) go to the 3D note in 3D.
+    fn take_drops_3d(&mut self, ctx: &egui::Context) {
+        let mut got: Vec<(String, String, Vec<u8>)> = Vec::new();
+        #[cfg(target_arch = "wasm32")]
+        let _ = ctx;
+        #[cfg(not(target_arch = "wasm32"))]
+        for f in ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files)) {
+            // The web shell reads drops itself (into PhotoCraft's inbox, below); here they're local.
+            let name = f.path().to_string_lossy().into_owned();
+            match f.bytes() {
+                Ok(b) => got.push(("drop".into(), name, b)),
+                Err(e) => self.space.ed.status = format!("Couldn't read {name}: {e}"),
+            }
+        }
+        if let Some(q) = &self.app.services.inbox {
+            let items = std::mem::take(&mut *q.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+            got.extend(items.into_iter().map(|(n, b)| ("drop".to_string(), n, b)));
+        }
+        if !got.is_empty() {
+            self.space.inbox.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend(got);
+        }
+    }
+
+    /// The dock's controls in 3D: they act on the 3D note.
+    fn dock_3d(&mut self, ui: &mut Ui, look: &Look) {
+        let boil = self.space.ed.scene.boil;
+        let label = if boil.enabled { "Boil: on" } else { "Boil: off" };
+        if widgets::button(ui, look, label, boil.enabled, true).on_hover_text("Boiling lines (Space)").clicked() {
+            self.space.run("boil.toggle", Value::Null);
+        }
+        let mut amount = boil.amount;
+        if widgets::slider(ui, look, "Wiggle", &mut amount, 0.0..=12.0, 120.0, |v| format!("{v:.1}")).dragged() {
+            self.space.run("boil.set", json!({"amount": amount}));
+        }
+        if widgets::button(ui, look, "+ Group", false, true).on_hover_text("A new group: what you draw next goes in it").clicked() {
+            self.space.run("group.new", Value::Null);
+        }
+        if widgets::button(ui, look, "GIF", false, true).on_hover_text("Export the boil as an animated GIF").clicked() {
+            self.space.export_gif(false);
+        }
+        if widgets::button(ui, look, "PNG", false, true).on_hover_text("Export the view as a PNG (F12)").clicked() {
+            self.space.export_png();
+        }
+        if widgets::button(ui, look, "Settings", self.show_settings, true).on_hover_text("Sound, motion and Wob").clicked() {
+            self.show_settings = !self.show_settings;
+        }
     }
 
     /// Switch the look (one of [`theme::PRESETS`]): WobbleWorks' widgets, PhotoCraft's panels and
@@ -585,6 +669,7 @@ impl WobbleApp {
             "handDrawn": self.hand_drawn,
             "wiggle": self.wiggle_amount,
             "theme": self.theme_name(),
+            "threeD": self.space.settings(),
         })
         .to_string()
     }
@@ -611,6 +696,9 @@ impl WobbleApp {
         }
         if let Some(t) = v.get("theme").and_then(Value::as_str).and_then(|n| theme::PRESETS.iter().find(|(name, _)| *name == n)) {
             self.set_theme(t.1);
+        }
+        if let Some(t) = v.get("threeD") {
+            self.space.restore_settings(t);
         }
         if let Some(x) = num("wiggle") {
             self.wiggle_amount = (x as f32).clamp(0.0, 10.0).round();
@@ -669,13 +757,14 @@ impl WobbleApp {
     /// Sounds, particles, shake and Wob's reactions to what just happened.
     fn effects(&mut self, ctx: &egui::Context, now: f64) {
         let pointer = ctx.pointer_latest_pos();
-        let canvas = self.app.last_canvas_rect;
+        let canvas = self.drawing_rect();
         let at = crate::juice::centre_or(pointer, canvas);
         let fg = self.foreground();
         let confetti = [self.theme.hot, self.theme.sun, self.theme.cool, fg, Color32::WHITE];
         if ctx.input(|i| !i.events.is_empty()) {
             self.mascot.input(now);
         }
+        self.effects_3d(now, at, &confetti);
         // Commands that just ran.
         let journal = &self.app.session.journal;
         let start = self.fx_seen.min(journal.len());
@@ -760,6 +849,63 @@ impl WobbleApp {
         }
     }
 
+    /// Sounds, particles and Wob for what happened in the 3D mode.
+    fn effects_3d(&mut self, now: f64, at: Pos2, confetti: &[Color32]) {
+        use wobbleworks_3d::editor::Event as E;
+        let fg = self.space.brush_colour();
+        let top = self.space.view.rect.center();
+        for f in std::mem::take(&mut self.space.feedback) {
+            match f {
+                Feedback::Saved => {
+                    self.audio.play(Sound::Chime);
+                    self.juice.confetti(now, top, confetti, 80);
+                    self.mascot.react(now, mascot::Event::Saved);
+                }
+                Feedback::Exported => {
+                    self.audio.play(Sound::Chime);
+                    self.juice.confetti(now, top, confetti, 80);
+                    self.mascot.react(now, mascot::Event::Exported);
+                }
+                Feedback::Event(e) => match e {
+                    E::Stroke => {
+                        self.recent.retain(|&x| x != fg);
+                        self.recent.insert(0, fg);
+                        self.recent.truncate(RECENT_MAX);
+                        if !self.drawn {
+                            self.drawn = true;
+                            self.audio.play(Sound::Chime);
+                            self.juice.confetti(now, at, confetti, 60);
+                            self.mascot.react(now, mascot::Event::FirstStroke);
+                        }
+                    }
+                    E::Erased => {}
+                    E::Undo => {
+                        self.audio.play(Sound::Undo);
+                        self.mascot.react(now, mascot::Event::Undo);
+                        self.juice.splat(now, at, &[self.theme.dim, self.theme.cool], 10);
+                    }
+                    E::Redo => self.audio.play(Sound::Redo),
+                    E::Deleted => {
+                        self.audio.play(Sound::Thud);
+                        self.juice.shake(now, 6.0);
+                        self.mascot.react(now, mascot::Event::BigAction);
+                    }
+                    E::Duplicated | E::Transformed => {
+                        self.audio.play(Sound::Pop);
+                        self.juice.splat(now, at, &[fg, self.theme.sun], 10);
+                    }
+                    E::GuideMade => {
+                        self.audio.play(Sound::Pop);
+                        self.juice.splat(now, at, &[crate::space3d::ORANGE, self.theme.cool], 16);
+                    }
+                    E::GuideClosed | E::Selected(_) | E::Sampled => self.audio.play(Sound::Click),
+                    E::GuideSaved => self.audio.play(Sound::Chime),
+                    E::Error(_) => self.audio.play(Sound::Boing),
+                },
+            }
+        }
+    }
+
     /// Dots on the paper around the picture, and the picture's own wobbly outline and shadow.
     fn sheet(&self, ui: &Ui, look: &Look) {
         let Some(idx) = self.app.session.active_index() else { return };
@@ -803,13 +949,29 @@ impl WobbleApp {
 
 const CANCELLED: &str = "cancelled";
 
-fn file_name(path: &str) -> String {
+pub fn file_name(path: &str) -> String {
     std::path::Path::new(path).file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned())
 }
 
 impl eframe::App for WobbleApp {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // In 3D the keyboard is the 3D mode's (Blender's keys): PhotoCraft's shortcuts don't see it.
+        let held: Vec<egui::Event> = if self.three_d {
+            ctx.input_mut(|i| {
+                let (keys, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut i.events).into_iter().partition(|e| matches!(e, egui::Event::Key { .. } | egui::Event::Text(_)));
+                i.events = rest;
+                keys
+            })
+        } else {
+            Vec::new()
+        };
+        if self.three_d {
+            self.take_drops_3d(ctx);
+        }
         self.app.logic(ctx, frame);
+        if !held.is_empty() {
+            ctx.input_mut(|i| i.events.extend(held));
+        }
         // PhotoCraft (re)applies its own theme on its first frame and when preferences change.
         if !theme::is_applied(ctx, &self.theme) {
             theme::apply(ctx, &self.theme);
@@ -846,6 +1008,19 @@ impl eframe::App for WobbleApp {
         // Paper under everything, so wobbly panel edges show paper rather than a gap.
         ctx.layer_painter(egui::LayerId::background()).rect_filled(ctx.content_rect(), 0.0, self.theme.paper);
         self.colour_strip(ui, &look);
+        if self.three_d {
+            let pressure = {
+                let events = ctx.input(|i| i.events.clone());
+                self.app.stylus.update(&events);
+                self.app.stylus.pressure()
+            };
+            self.space.show(ui, &look, pressure);
+            if std::mem::take(&mut self.space.leave) {
+                self.set_three_d(false);
+            }
+            self.after_editor(ui, &ctx, &look);
+            return;
+        }
         if ui.available_width() >= NARROW {
             self.brush_strip(ui, &look);
         }
@@ -869,12 +1044,20 @@ impl eframe::App for WobbleApp {
         self.spread_to_frames();
         self.track_recent();
         self.sheet(ui, &look);
+        self.after_editor(ui, &ctx, &look);
+    }
+}
+
+impl WobbleApp {
+    /// Effects, settings, Wob and the hand-drawn pass: after either mode has drawn.
+    fn after_editor(&mut self, ui: &mut Ui, ctx: &egui::Context, look: &Look) {
+        let (ctx, look) = (ctx.clone(), *look);
         let now = ctx.input(|i| i.time);
         self.effects(&ctx, now);
         if self.show_settings {
             self.settings(&ctx, &look);
         }
-        let canvas = self.app.last_canvas_rect;
+        let canvas = self.drawing_rect();
         let foot = canvas.right_bottom() - vec2(56.0, 14.0);
         // Wob ducks out of the way of windows, menus and popups over its corner.
         let wob = Rect::from_center_size(foot - vec2(0.0, 60.0), vec2(220.0, 150.0));
@@ -896,7 +1079,7 @@ impl eframe::App for WobbleApp {
                 pressed: ctx.input(|i| i.pointer.primary_down()),
                 jiggle: if self.reduce_motion { look.frame } else { (now * 24.0) as u64 },
             });
-            handdrawn::apply(&ctx, self.app.last_canvas_rect, look.frame, pointer);
+            handdrawn::apply(&ctx, self.drawing_rect(), look.frame, pointer);
         }
         let own =
             [egui::Id::new("wobble-colour-card"), egui::Id::new("wobble-mascot"), egui::Id::new("wobble-mascot-paint"), egui::Id::new("wobble-particles")];
@@ -905,5 +1088,6 @@ impl eframe::App for WobbleApp {
             // Wob breathes.
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
+        let _ = ui;
     }
 }

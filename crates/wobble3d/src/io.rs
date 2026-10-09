@@ -130,8 +130,9 @@ pub fn export_obj(scene: &Scene, mtl_name: &str) -> (String, String) {
                 colours.len() - 1
             });
             let _ = writeln!(obj, "usemtl c{ci}");
+            let c = s.brush.color.to_f32();
             for p in &pos {
-                let _ = writeln!(obj, "v {:.5} {:.5} {:.5}", p.x, p.y, p.z);
+                let _ = writeln!(obj, "v {:.5} {:.5} {:.5} {:.4} {:.4} {:.4}", p.x, p.y, p.z, c[0], c[1], c[2]);
             }
             for f in &faces {
                 let _ = writeln!(obj, "f {} {} {} {}", f[0] + base, f[1] + base, f[2] + base, f[3] + base);
@@ -144,6 +145,108 @@ pub fn export_obj(scene: &Scene, mtl_name: &str) -> (String, String) {
         let _ = writeln!(mtl, "newmtl c{i}\nKd {:.4} {:.4} {:.4}\nd {:.4}\n", f[0], f[1], f[2], f[3]);
     }
     (obj, mtl)
+}
+
+/// The visible curves as a binary glTF (`.glb`): tubes with baked vertex colours (Feather's GLTF
+/// export), one mesh per group so Blender gets one object per group.
+pub fn export_glb(scene: &Scene) -> Result<Vec<u8>, String> {
+    let mut bin: Vec<u8> = Vec::new();
+    let mut views = Vec::new();
+    let mut accessors = Vec::new();
+    let mut meshes = Vec::new();
+    let mut nodes = Vec::new();
+    for g in &scene.groups {
+        if !scene.group_shown(g.id) {
+            continue;
+        }
+        let mut pos: Vec<Vec3> = Vec::new();
+        let mut col: Vec<[f32; 4]> = Vec::new();
+        let mut idx: Vec<u32> = Vec::new();
+        for s in scene.strokes.iter().filter(|s| s.group == g.id) {
+            let (p, faces) = tube(s, 8);
+            if faces.is_empty() {
+                continue;
+            }
+            let base = u32::try_from(pos.len()).map_err(|_| "the note is too big for glTF")?;
+            let c = s.brush.color.to_f32();
+            // glTF vertex colours are linear.
+            let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+            let c = [lin(c[0]), lin(c[1]), lin(c[2]), s.brush.opacity];
+            col.extend(std::iter::repeat_n(c, p.len()));
+            pos.extend(p);
+            for f in faces {
+                let q = f.map(|i| base + i as u32);
+                idx.extend_from_slice(&[q[0], q[1], q[2], q[0], q[2], q[3]]);
+            }
+            if pos.len() > OBJ_MAX {
+                return Err("the note is too big to export".into());
+            }
+        }
+        if idx.is_empty() {
+            continue;
+        }
+        let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+        for p in &pos {
+            for (k, v) in p.to_array().into_iter().enumerate() {
+                lo[k] = lo[k].min(v);
+                hi[k] = hi[k].max(v);
+            }
+        }
+        let mut push_view = |data: &[u8], target: u32| -> usize {
+            while !bin.len().is_multiple_of(4) {
+                bin.push(0);
+            }
+            let off = bin.len();
+            bin.extend_from_slice(data);
+            views.push(serde_json::json!({"buffer": 0, "byteOffset": off, "byteLength": data.len(), "target": target}));
+            views.len() - 1
+        };
+        let pb: Vec<u8> = pos.iter().flat_map(|p| p.to_array()).flat_map(f32::to_le_bytes).collect();
+        let cb: Vec<u8> = col.iter().flatten().flat_map(|v| v.to_le_bytes()).collect();
+        let ib: Vec<u8> = idx.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let (vp, vc, vi) = (push_view(&pb, 34962), push_view(&cb, 34962), push_view(&ib, 34963));
+        let a0 = accessors.len();
+        accessors.push(serde_json::json!({"bufferView": vp, "componentType": 5126, "count": pos.len(), "type": "VEC3", "min": lo, "max": hi}));
+        accessors.push(serde_json::json!({"bufferView": vc, "componentType": 5126, "count": col.len(), "type": "VEC4"}));
+        accessors.push(serde_json::json!({"bufferView": vi, "componentType": 5125, "count": idx.len(), "type": "SCALAR"}));
+        meshes.push(serde_json::json!({"name": g.name, "primitives": [{"attributes": {"POSITION": a0, "COLOR_0": a0 + 1}, "indices": a0 + 2, "material": 0}]}));
+        nodes.push(serde_json::json!({"name": g.name, "mesh": meshes.len() - 1}));
+    }
+    if nodes.is_empty() {
+        return Err("nothing to export: draw some curves first".into());
+    }
+    let node_ids: Vec<usize> = (0..nodes.len()).collect();
+    let gltf = serde_json::json!({
+        "asset": {"version": "2.0", "generator": "WobbleWorks 3D"},
+        "scene": 0,
+        "scenes": [{"nodes": node_ids}],
+        "nodes": nodes,
+        "meshes": meshes,
+        "materials": [{"name": "Curves", "doubleSided": true, "pbrMetallicRoughness": {"baseColorFactor": [1.0, 1.0, 1.0, 1.0], "metallicFactor": 0.0, "roughnessFactor": 0.85}}],
+        "accessors": accessors,
+        "bufferViews": views,
+        "buffers": [{"byteLength": bin.len()}],
+    });
+    let mut json = serde_json::to_vec(&gltf).map_err(|e| e.to_string())?;
+    while !json.len().is_multiple_of(4) {
+        json.push(b' ');
+    }
+    while !bin.len().is_multiple_of(4) {
+        bin.push(0);
+    }
+    let total = 12 + 8 + json.len() + 8 + bin.len();
+    let total = u32::try_from(total).map_err(|_| "the note is too big for glTF")?;
+    let mut out = Vec::with_capacity(total as usize);
+    out.extend_from_slice(b"glTF");
+    out.extend_from_slice(&2u32.to_le_bytes());
+    out.extend_from_slice(&total.to_le_bytes());
+    out.extend_from_slice(&(json.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"JSON");
+    out.extend_from_slice(&json);
+    out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"BIN\0");
+    out.extend_from_slice(&bin);
+    Ok(out)
 }
 
 /// Positions and triangles from OBJ text (polygons are fanned; normals and UVs ignored).
@@ -243,6 +346,10 @@ mod tests {
         assert_eq!(pos.len(), 5 * 8);
         assert_eq!(tris.len(), 4 * 8 * 2);
         assert!(parse_obj("v 1 2\n").is_err());
+        let glb = export_glb(&s).expect("glb");
+        assert_eq!(&glb[0..4], b"glTF");
+        assert_eq!(u32::from_le_bytes([glb[8], glb[9], glb[10], glb[11]]) as usize, glb.len());
+        assert!(export_glb(&Scene::default()).is_err());
         assert!(parse_obj("v 0 0 0\nf 1 2 3\n").is_err(), "faces pointing nowhere are dropped");
         let (_, t) = parse_obj("v 0 0 0\nv 1 0 0\nv 0 1 0\nf -3/1/1 -2 -1\n").expect("relative indices");
         assert_eq!(t, vec![[0, 1, 2]]);
