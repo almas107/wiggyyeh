@@ -91,6 +91,8 @@ struct Builder<'a> {
     open: Option<(Tex, usize, usize)>,
     /// Lighting direction (world) used for shading.
     light: Vec3,
+    /// Curves whose scattered dabs are still to be drawn: (curve, colour, alpha).
+    pending_dabs: Vec<(Stroke, [f32; 3], f32)>,
 }
 
 fn premul(c: [f32; 4]) -> [u8; 4] {
@@ -428,6 +430,9 @@ impl<'a> Builder<'a> {
     }
 
     fn finish(mut self) -> Frame {
+        for (s, base, alpha) in std::mem::take(&mut self.pending_dabs) {
+            self.dabs(&s, base, alpha);
+        }
         self.items.sort_by(|a, b| b.depth.total_cmp(&a.depth));
         // Atlas coordinates were row-space while rows were being added.
         let mut is_atlas = vec![false; self.verts.len()];
@@ -636,6 +641,10 @@ impl<'a> Builder<'a> {
             self.ground_shadow(s, alpha);
         }
 
+        if br.paint.scatter > 0.0 {
+            // Drawn after (in front of) the stroke itself; see `dabs`.
+            self.pending_dabs.push((s.clone(), base, alpha));
+        }
         if kind == BrushKind::Flat {
             self.flat(s, shade, distance);
         } else if kind.painterly() {
@@ -718,11 +727,23 @@ impl<'a> Builder<'a> {
         let color = |c: [f32; 3]| -> [f32; 3] {
             if render && material == Material::Cutout { rgb(self.env.background) } else { c }
         };
+        let dry_ends = br.paint.roughness > 0.0 || br.paint.dryness > 0.0;
+        let mut start_paint = br.paint;
+        start_paint.dryness = start_paint.dryness.max(0.5);
+        let mut tail_paint = br.paint;
+        tail_paint.dryness = tail_paint.dryness.max(0.9);
+        tail_paint.bristles = tail_paint.bristles.max(0.8);
         if let Some(e) = br.paint.echo {
-            let row = self.atlas.row(RowKey::paint(kind, &br.paint, variant.wrapping_add(2)));
+            let v = variant.wrapping_add(2);
+            let rows = [
+                self.atlas.row(RowKey::paint(kind, &start_paint, v)),
+                self.atlas.row(RowKey::paint(kind, &br.paint, v)),
+                self.atlas.row(RowKey::paint(kind, &tail_paint, v)),
+            ];
             let c = color(rgb(e.color));
+            let paint = Paint::Flat([c[0], c[1], c[2], alpha * e.color.to_f32()[3]]);
             for run in &runs {
-                self.strips(run, &[&TEXTURED], Paint::Flat([c[0], c[1], c[2], alpha * e.color.to_f32()[3]]), row, e.offset, e.width, 2e-4, distance);
+                self.dry_ended(run, dry_ends, rows, paint, e.offset, e.width, 2e-4, distance);
             }
         }
         if render && material == Material::Glow {
@@ -731,6 +752,8 @@ impl<'a> Builder<'a> {
         let layers = br.paint.layers.clamp(1, 4) as u32;
         for layer in (0..layers).rev() {
             let row = self.atlas.row(RowKey::paint(kind, &br.paint, variant.wrapping_add(layer)));
+            let start_row = self.atlas.row(RowKey::paint(kind, &start_paint, variant.wrapping_add(layer)));
+            let tail_row = self.atlas.row(RowKey::paint(kind, &tail_paint, variant.wrapping_add(layer)));
             let h = hash2(s.seed, layer.wrapping_add(self.frame.wrapping_mul(31)));
             let (off, width, tint) = if layer == 0 {
                 ([0.0, 0.0], 1.0, 1.0)
@@ -741,12 +764,125 @@ impl<'a> Builder<'a> {
             let mut c = color(base);
             if !selected {
                 c = [c[0] * tint, c[1] * tint, c[2] * tint];
+                if layer > 0 {
+                    c = jitter_colour(c, br.paint.color_jitter, h ^ 0x77);
+                }
             }
             let c = if render && material == Material::Glow { mix3(c, [1.0, 1.0, 1.0], 0.35) } else { c };
             let paint = Paint::Flat([c[0], c[1], c[2], alpha]);
             for run in &runs {
-                self.strips(run, &[&TEXTURED], paint, row, off, width, layer as f32 * 1e-4, distance);
+                let bias = layer as f32 * 1e-4;
+                self.dry_ended(run, dry_ends, [start_row, row, tail_row], paint, off, width, bias, distance);
             }
+        }
+    }
+
+    /// Scattered brush dabs along a curve (geometry-nodes style brushstroke instances): each dab
+    /// is a textured card turned along the stroke, with random size, offset, turn and colour,
+    /// re-rolled every boil frame.
+    fn dabs(&mut self, s: &Stroke, base: [f32; 3], alpha: f32) {
+        let pa = s.brush.paint;
+        let row = self.atlas.row(RowKey::Dabs { variant: (self.frame % crate::texture::VARIANTS) as u8 });
+        let distance = self.cam_distance();
+        let runs = self.runs(s, None);
+        let frame_seed = if self.boil.enabled && pa.boil > 0.0 { self.frame } else { 0 };
+        let mut k: u32 = 0;
+        for run in &runs {
+            if run.len() < 2 {
+                continue;
+            }
+            let mut carry = 0.0f32;
+            for w in run.windows(2) {
+                let (a, b) = (w[0], w[1]);
+                let (dx, dy) = (b.x - a.x, b.y - a.y);
+                let seg = (dx * dx + dy * dy).sqrt();
+                if seg < 1e-4 {
+                    continue;
+                }
+                let hw = (a.hw + b.hw) * 0.5;
+                let spacing = (hw * 2.0 * (1.1 - pa.scatter * 0.9)).max(2.0);
+                let mut d = spacing - carry;
+                while d <= seg {
+                    let t = d / seg;
+                    let (x, y) = (a.x + dx * t, a.y + dy * t);
+                    let depth = a.depth + (b.depth - a.depth) * t;
+                    let h = hash2(s.seed ^ k.wrapping_mul(0x9e37_79b9), frame_seed.wrapping_mul(0x85eb_ca6b));
+                    k = k.wrapping_add(1);
+                    let ang = dy.atan2(dx) + signed(h) * pa.jitter * 1.1;
+                    let (ca, sa) = (ang.cos(), ang.sin());
+                    let (nx, ny) = (-dy / seg, dx / seg);
+                    let off_n = signed(h ^ 1) * pa.jitter * hw * 1.2;
+                    let off_t = signed(h ^ 2) * pa.jitter * hw * 0.8;
+                    let (cx, cy) = (x + nx * off_n + dx / seg * off_t, y + ny * off_n + dy / seg * off_t);
+                    let len = hw * 2.4 * pa.dab_size * (0.7 + 0.6 * unit(h ^ 3));
+                    let wid = hw * 1.15 * pa.dab_size * (0.7 + 0.6 * unit(h ^ 4));
+                    let shape = (h >> 9) % crate::texture::DABS;
+                    let (u0, u1) = (shape as f32 / crate::texture::DABS as f32, (shape + 1) as f32 / crate::texture::DABS as f32 - 1e-3);
+                    let c = jitter_colour(base, pa.color_jitter, h ^ 5);
+                    let col = self.colour(&Paint::Flat([c[0], c[1], c[2], alpha * (0.75 + 0.25 * unit(h ^ 6))]), self.view.back, 1.0, depth, distance);
+                    self.begin(Tex::Atlas);
+                    let corner = |su: f32, sv: f32| (cx + ca * len * 0.5 * su - sa * wid * 0.5 * sv, cy + sa * len * 0.5 * su + ca * wid * 0.5 * sv);
+                    let p00 = corner(-1.0, -1.0);
+                    let p10 = corner(1.0, -1.0);
+                    let p11 = corner(1.0, 1.0);
+                    let p01 = corner(-1.0, 1.0);
+                    let uv = |u: f32, v: f32| self.atlas.uv(row, u, v);
+                    let (q00, q10, q11, q01) = (uv(u0, 0.0), uv(u1, 0.0), uv(u1, 1.0), uv(u0, 1.0));
+                    let i0 = self.vtx(p00.0, p00.1, q00, col);
+                    let i1 = self.vtx(p10.0, p10.1, q10, col);
+                    let i2 = self.vtx(p11.0, p11.1, q11, col);
+                    let i3 = self.vtx(p01.0, p01.1, q01, col);
+                    self.tri(i0, i1, i2);
+                    self.tri(i0, i2, i3);
+                    self.end(depth * (1.0 - 2e-4) - (k % 7) as f32 * 1e-6);
+                    d += spacing * (0.8 + 0.4 * unit(h ^ 7));
+                }
+                carry = seg - (d - spacing).max(0.0);
+                carry = carry.clamp(0.0, spacing);
+            }
+        }
+    }
+
+    /// A painterly run with dry-brush ends: a stroke starts a little dry and runs out of paint at
+    /// its tail, where it breaks into bristle streaks instead of a smooth point. The dry texture
+    /// cross-fades in over the end stretches, so there is no seam. `rows` = [start, body, tail].
+    #[allow(clippy::too_many_arguments)]
+    fn dry_ended(&mut self, run: &[Sample], dry: bool, rows: [usize; 3], paint: Paint, off: [f32; 2], width: f32, bias: f32, distance: f32) {
+        let n = run.len();
+        if !dry || n < 6 {
+            self.strips(run, &[&TEXTURED], paint, rows[1], off, width, bias, distance);
+            return;
+        }
+        let (a, b) = end_split(run);
+        let ease = |t: f32| {
+            let t = t.clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        };
+        // The body, fading out over both end stretches.
+        let mut body = run.to_vec();
+        for (i, s) in body.iter_mut().enumerate() {
+            if a > 0 && i < a {
+                s.alpha *= ease(i as f32 / a as f32);
+            }
+            if i > b && n - 1 > b {
+                s.alpha *= 1.0 - ease((i - b) as f32 / (n - 1 - b) as f32);
+            }
+        }
+        self.strips(&body, &[&TEXTURED], paint, rows[1], off, width, bias, distance);
+        if a > 0 {
+            let mut start: Vec<Sample> = run[..=a].to_vec();
+            for (i, s) in start.iter_mut().enumerate() {
+                s.alpha *= 1.0 - ease(i as f32 / a as f32);
+            }
+            self.strips(&start, &[&TEXTURED], paint, rows[0], off, width, bias - 1e-5, distance);
+        }
+        if b + 1 < n {
+            let mut tail: Vec<Sample> = run[b..].to_vec();
+            let len = (n - 1 - b).max(1) as f32;
+            for (i, s) in tail.iter_mut().enumerate() {
+                s.alpha *= ease(i as f32 / len);
+            }
+            self.strips(&tail, &[&TEXTURED], paint, rows[2], off, width, bias - 1e-5, distance);
         }
     }
 
@@ -954,6 +1090,40 @@ impl<'a> Builder<'a> {
     }
 }
 
+/// A colour nudged in hue, saturation and value by up to `amount`.
+fn jitter_colour(c: [f32; 3], amount: f32, h: u32) -> [f32; 3] {
+    if amount <= 0.0 {
+        return c;
+    }
+    let rgba = Rgba::from_f32([c[0], c[1], c[2], 1.0]);
+    let (hue, sat, val) = rgba.to_hsv();
+    let out = Rgba::from_hsv(hue + signed(h) * amount * 28.0, sat + signed(h ^ 0x11) * amount * 0.15, val + signed(h ^ 0x22) * amount * 0.18, 255).to_f32();
+    [out[0], out[1], out[2]]
+}
+
+/// Where a painterly run's dry start ends and its dry tail begins: (a, b) with the start piece
+/// `..=a`, the body `a..=b` and the tail `b..` (all valid indices, a ≤ b).
+fn end_split(run: &[Sample]) -> (usize, usize) {
+    let n = run.len();
+    if n < 6 {
+        return (0, n.saturating_sub(1));
+    }
+    let mut arc = Vec::with_capacity(n);
+    let mut acc = 0.0f32;
+    for (i, s) in run.iter().enumerate() {
+        if i > 0 {
+            acc += ((s.x - run[i - 1].x).powi(2) + (s.y - run[i - 1].y).powi(2)).sqrt();
+        }
+        arc.push(acc);
+    }
+    let hw = run.iter().map(|s| s.hw).sum::<f32>() / n as f32;
+    let start_len = (hw * 1.2).min(acc * 0.15);
+    let tail_len = (hw * 4.0).min(acc * 0.35);
+    let a = arc.iter().position(|d| *d >= start_len).unwrap_or(0).min(n - 1);
+    let b = arc.iter().rposition(|d| *d <= acc - tail_len).unwrap_or(n - 1).max(a);
+    (a, b)
+}
+
 /// Nib: the width depends on the direction of travel on screen (a 45° calligraphy nib).
 fn nib_widths(run: &mut [Sample]) {
     let n = run.len();
@@ -1007,6 +1177,7 @@ fn render_once(scene: &Scene, camera: &Camera, atlas: &mut Atlas, opts: &Options
         items: Vec::new(),
         open: None,
         light,
+        pending_dabs: Vec::new(),
     };
     b.boil.sanitize();
     if !b.boil.enabled {
@@ -1112,6 +1283,31 @@ mod tests {
         scene.boil.world_space = true;
         let e = render(&scene, &cam, &mut atlas, &opts(&empty, 1));
         assert_ne!(e, b);
+    }
+
+    #[test]
+    fn scattered_dabs_add_cards_that_reroll_each_frame() {
+        let empty = HashSet::new();
+        let mut scene = Scene::default();
+        scene.environment.show_grid = false;
+        let mut s = line_stroke(BrushKind::Oil);
+        scene.strokes.push(Arc::new(s.clone()));
+        let mut atlas = Atlas::default();
+        let cam = Camera::default();
+        let plain = render(&scene, &cam, &mut atlas, &opts(&empty, 0)).triangles;
+        s.brush.paint.scatter = 0.8;
+        s.brush.paint.jitter = 0.6;
+        s.brush.paint.color_jitter = 0.5;
+        scene.strokes[0] = Arc::new(s);
+        let a = render(&scene, &cam, &mut atlas, &opts(&empty, 0));
+        let b = render(&scene, &cam, &mut atlas, &opts(&empty, 1));
+        assert!(a.triangles > plain + 20, "{} vs {plain}", a.triangles);
+        assert_ne!(a, b);
+        // Held still when the boil is off.
+        scene.boil.enabled = false;
+        let c = render(&scene, &cam, &mut atlas, &opts(&empty, 0));
+        let d = render(&scene, &cam, &mut atlas, &opts(&empty, 1));
+        assert_eq!(c, d);
     }
 
     #[test]

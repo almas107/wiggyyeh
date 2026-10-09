@@ -1717,7 +1717,18 @@ impl Editor {
         }
         if let Some(p) = params.get("paint") {
             let pa = &mut nb.paint;
-            for (k, slot) in [("roughness", &mut pa.roughness), ("bristles", &mut pa.bristles), ("dryness", &mut pa.dryness), ("grain", &mut pa.grain), ("taper", &mut pa.taper), ("boil", &mut pa.boil)] {
+            for (k, slot) in [
+                ("roughness", &mut pa.roughness),
+                ("bristles", &mut pa.bristles),
+                ("dryness", &mut pa.dryness),
+                ("grain", &mut pa.grain),
+                ("taper", &mut pa.taper),
+                ("boil", &mut pa.boil),
+                ("scatter", &mut pa.scatter),
+                ("dabSize", &mut pa.dab_size),
+                ("jitter", &mut pa.jitter),
+                ("colorJitter", &mut pa.color_jitter),
+            ] {
                 if let Some(v) = f(p, k) {
                     *slot = v;
                 }
@@ -3030,7 +3041,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("camera.viewport", "{width, height} the 3D view's size in pixels"),
     ("tool.set", "{tool: draw|shape|erase|vacuum|select|deselect|guide|bend|loft|primitive|liquify|injector|eyedropper, mode?: brush|box|circle|lasso, cycle?}"),
     ("tool.toggleMode", "Draw ↔ Select (Tab)"),
-    ("brush.set", "{kind, color: #rrggbb, size: mm 1–300, opacity 0–1, pressure, material, glow, pattern: {kind,intensity,angle,contrast}|null, paint: {roughness,bristles,dryness,grain,taper,layers,boil,echo:{color,offset:[x,y],width}|null}, applyToSelection}"),
+    ("brush.set", "{kind, color: #rrggbb, size: mm 1–300, opacity 0–1, pressure, material, glow, pattern: {kind,intensity,angle,contrast}|null, paint: {roughness,bristles,dryness,grain,taper,layers,boil,scatter,dabSize,jitter,colorJitter,echo:{color,offset:[x,y],width}|null}, applyToSelection}"),
     ("brush.nudge", "{size: ±1, opacity: ±1} step the size (10%) or opacity (10%)"),
     ("brush.cycle", "next brush kind"),
     ("brush.sample", "{x, y, whole?} Injector (whole brush) or Eyedropper (colour)"),

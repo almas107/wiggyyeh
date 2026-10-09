@@ -477,6 +477,13 @@ pub fn brush_panel(s: &mut Space3d, ui: &mut Ui, look: &Look, right: bool) {
                     brush_slider(s, ui, label, v, 0.0..=1.0, false, key, true);
                 }
                 brush_slider(s, ui, "Boil ×", pa.boil, 0.0..=4.0, false, "boil", true);
+                ui.label(RichText::new("Scattered dabs (geometry-nodes style, re-rolled every boil frame)").small());
+                brush_slider(s, ui, "Scatter dabs", pa.scatter, 0.0..=1.0, false, "scatter", true);
+                if pa.scatter > 0.0 {
+                    brush_slider(s, ui, "Dab size", pa.dab_size, 0.3..=3.0, false, "dabSize", true);
+                    brush_slider(s, ui, "Jitter", pa.jitter, 0.0..=1.0, false, "jitter", true);
+                }
+                brush_slider(s, ui, "Colour jitter", pa.color_jitter, 0.0..=1.0, false, "colorJitter", true);
                 let mut layers = pa.layers as f32;
                 if ui.add(egui::Slider::new(&mut layers, 1.0..=4.0).step_by(1.0).text("Layers")).on_hover_text("Overlapping passes, like a painted shape built up in strokes").changed() {
                     s.run("brush.set", json!({"paint": {"layers": layers as u64}}));
@@ -501,9 +508,18 @@ pub fn brush_panel(s: &mut Space3d, ui: &mut Ui, look: &Look, right: bool) {
                         }
                     });
                 }
-                if ui.button("Metaphor look").on_hover_text("Gouache with ragged edges, layered passes and a black echo, boiling").clicked() {
-                    s.run("brush.set", json!({"kind": "gouache", "paint": {"roughness": 0.75, "bristles": 0.35, "dryness": 0.1, "layers": 3, "taper": 0.25, "boil": 1.5, "echo": {"color": "#111111", "offset": [9, 7], "width": 1.12}}}));
-                }
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Metaphor look").on_hover_text("Painted panels: gouache with torn edges, layered passes, dry ends and a black echo, boiling").clicked() {
+                        s.run("brush.set", json!({"kind": "gouache", "paint": {"roughness": 0.8, "bristles": 0.5, "dryness": 0.1, "layers": 3, "taper": 0.0, "boil": 1.5, "scatter": 0.0, "colorJitter": 0.1, "echo": {"color": "#111111", "offset": [9, 7], "width": 1.12}}}));
+                    }
+                    if ui.button("Brushstrokes").on_hover_text("Scattered oil dabs that re-roll every frame (the geometry-nodes painterly look)").clicked() {
+                        s.run("brush.set", json!({"kind": "oil", "paint": {"roughness": 0.5, "bristles": 0.6, "dryness": 0.2, "layers": 1, "taper": 0.3, "boil": 1.0, "scatter": 0.75, "dabSize": 1.3, "jitter": 0.5, "colorJitter": 0.35, "echo": null}}));
+                    }
+                    if ui.button("Clean").on_hover_text("Back to this brush type's own settings").clicked() {
+                        let k = s.ed.brush.kind.name();
+                        s.run("brush.set", json!({"kind": k}));
+                    }
+                });
             });
             ui.add_space(6.0);
             widgets::card(ui, look, "w3d-assist-card", 8.0, |ui| {

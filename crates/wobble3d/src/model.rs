@@ -287,11 +287,29 @@ pub struct Paint {
     pub echo: Option<Echo>,
     /// How strongly this stroke boils, times the note's wiggle (0 holds it still), 0..4.
     pub boil: f32,
+    /// Scattered brush dabs along the stroke, 0 = none, 1 = dense (the painterly
+    /// "brushstroke instances" look that otherwise takes geometry nodes). Re-rolled every boil
+    /// frame, so the paint moves like stepped hand-painted animation.
+    #[serde(default)]
+    pub scatter: f32,
+    /// Dab size relative to the stroke width, 0.3..3.
+    #[serde(default = "one")]
+    pub dab_size: f32,
+    /// How far dabs stray and turn, 0..1.
+    #[serde(default)]
+    pub jitter: f32,
+    /// Hue and value variation between dabs and layers, 0..1.
+    #[serde(default)]
+    pub color_jitter: f32,
+}
+
+fn one() -> f32 {
+    1.0
 }
 
 impl Default for Paint {
     fn default() -> Self {
-        Paint { roughness: 0.0, bristles: 0.0, dryness: 0.0, grain: 0.0, taper: 0.0, layers: 1, echo: None, boil: 1.0 }
+        Paint { roughness: 0.0, bristles: 0.0, dryness: 0.0, grain: 0.0, taper: 0.0, layers: 1, echo: None, boil: 1.0, scatter: 0.0, dab_size: 1.0, jitter: 0.0, color_jitter: 0.0 }
     }
 }
 
@@ -358,6 +376,10 @@ impl Brush {
         pa.taper = unit(pa.taper, 0.0);
         pa.layers = pa.layers.clamp(1, 4);
         pa.boil = if pa.boil.is_finite() { pa.boil.clamp(0.0, 4.0) } else { 1.0 };
+        pa.scatter = unit(pa.scatter, 0.0);
+        pa.jitter = unit(pa.jitter, 0.0);
+        pa.color_jitter = unit(pa.color_jitter, 0.0);
+        pa.dab_size = if pa.dab_size.is_finite() { pa.dab_size.clamp(0.3, 3.0) } else { 1.0 };
         if let Some(e) = &mut pa.echo {
             let f = |v: f32| if v.is_finite() { v.clamp(-200.0, 200.0) } else { 0.0 };
             e.offset = [f(e.offset[0]), f(e.offset[1])];

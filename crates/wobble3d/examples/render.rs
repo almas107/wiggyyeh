@@ -13,6 +13,9 @@ fn main() -> Result<(), String> {
     if std::env::args().nth(2).as_deref() == Some("swatches") {
         return swatches(&out);
     }
+    if std::env::args().nth(2).as_deref() == Some("metaphor") {
+        return metaphor(&out);
+    }
     let mut e = Editor::new();
     e.set_viewport(960.0, 640.0);
     e.run("env.set", &json!({"render": render_mode, "lighting": {"groundShadow": true}}))?;
@@ -77,6 +80,45 @@ fn swatches(out: &str) -> Result<(), String> {
         let tex = Textures { atlas: &e.atlas, images: HashMap::new() };
         let pic = rasterize(&f, &tex, 1200, 700, Some(e.scene.environment.background), None)?;
         let path = format!("{out}/swatches_{frame}.png");
+        image::save_buffer(&path, &pic.rgba, pic.width, pic.height, image::ColorType::Rgba8).map_err(|e| e.to_string())?;
+        println!("{path}");
+    }
+    Ok(())
+}
+
+/// A Metaphor-style painted text box: a white gouache body with ragged edges built up in layers,
+/// a black echo behind it, a red accent stroke, seen straight on, two boil frames.
+fn metaphor(out: &str) -> Result<(), String> {
+    let mut e = Editor::new();
+    e.set_viewport(1000.0, 420.0);
+    e.run("env.set", &json!({"grid": false, "background": "#2a1f3d"}))?;
+    e.run("camera.view", &json!({"view": "front"}))?;
+    e.run("camera.set", &json!({"distance": 3.0}))?;
+    e.run("boil.set", &json!({"amount": 2.5}))?;
+    // The red accent first (behind), then the body rows.
+    e.run("brush.set", &json!({"kind": "drybrush", "color": "#e8243c", "size": 120, "pressure": false}))?;
+    let accent: Vec<[f32; 3]> = (0..40).map(|j| [90.0 + j as f32 * 21.0, 120.0 - (j as f32 * 0.15).sin() * 10.0, 1.0]).collect();
+    e.run("stroke.draw", &json!({"points": accent}))?;
+    e.run("brush.set", &json!({"kind": "gouache", "color": "#f6f1e7", "size": 220, "pressure": false,
+        "paint": {"roughness": 0.8, "bristles": 0.5, "dryness": 0.1, "layers": 3, "taper": 0.0, "boil": 1.5,
+                  "echo": {"color": "#0d0d10", "offset": [10, 8], "width": 1.12}}}))?;
+    for row in 0..4 {
+        let y = 190.0 + row as f32 * 50.0;
+        let pts: Vec<[f32; 3]> = (0..40).map(|j| [110.0 + j as f32 * 20.0 + row as f32 * 8.0, y + (j as f32 * 0.3 + row as f32).sin() * 4.0, 1.0]).collect();
+        e.run("stroke.draw", &json!({"points": pts}))?;
+    }
+    // Geometry-nodes style brushstrokes: scattered oil dabs.
+    e.run("brush.set", &json!({"kind": "oil", "color": "#ffb000", "size": 90, "paint": {"roughness": 0.5, "bristles": 0.6, "dryness": 0.2, "layers": 1, "taper": 0.3, "scatter": 0.75, "dabSize": 1.3, "jitter": 0.5, "colorJitter": 0.35, "echo": null}}))?;
+    let swirl: Vec<[f32; 3]> = (0..60).map(|j| {
+        let t = j as f32 / 59.0;
+        [120.0 + t * 760.0, 375.0 + (t * 9.0).sin() * 18.0, 1.0]
+    }).collect();
+    e.run("stroke.draw", &json!({"points": swirl}))?;
+    for frame in 0..2u32 {
+        let f = e.render(frame, false);
+        let tex = Textures { atlas: &e.atlas, images: HashMap::new() };
+        let pic = rasterize(&f, &tex, 1000, 420, Some(e.scene.environment.background), None)?;
+        let path = format!("{out}/metaphor_{frame}.png");
         image::save_buffer(&path, &pic.rgba, pic.width, pic.height, image::ColorType::Rgba8).map_err(|e| e.to_string())?;
         println!("{path}");
     }

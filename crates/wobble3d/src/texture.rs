@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use crate::model::{BrushKind, Paint, PatternKind};
-use crate::noise::{hash2, periodic1, signed, unit, value1};
+use crate::noise::{hash2, periodic1, periodic1_linear, unit, value1};
 
 pub const WIDTH: usize = 512;
 pub const ROW: usize = 32;
@@ -27,7 +27,12 @@ pub enum RowKey {
     Pattern { kind: PatternKind, angle: u8, contrast: u8 },
     Halo,
     Grain,
+    /// Eight brush dabs side by side (one per eighth of the tile), for scattered dabs.
+    Dabs { variant: u8 },
 }
+
+/// Dab shapes in a [`RowKey::Dabs`] row.
+pub const DABS: u32 = 8;
 
 fn q(v: f32) -> u8 {
     (if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 } * (LEVELS - 1.0)).round() as u8
@@ -169,6 +174,7 @@ fn texel(key: RowKey, u: f32, v: f32) -> (f32, f32) {
             paint_texel(kind, dq(rough), dq(bristles), dq(dryness), dq(grain), variant as u32, u, y)
         }
         RowKey::Pattern { kind, angle, contrast } => (1.0, pattern_texel(kind, angle as f32 * 15.0, dq(contrast), u, v)),
+        RowKey::Dabs { variant } => dab_texel(variant as u32, u, y),
     }
 }
 
@@ -193,11 +199,18 @@ fn paint_texel(kind: BrushKind, rough: f32, bristles: f32, dryness: f32, grain: 
         let b = periodic1(seed ^ s ^ 0x3c, along * edge_freq * 4.0, (p as f32 * edge_freq * 4.0).round().max(1.0) as u32);
         (a * 0.7 + b * 0.3) * 0.5 + 0.5
     };
-    let edge = 1.0 - rough * edge_amp * wobble(side);
+    // Angular jags on top of the slow wander: torn-paper, dragged-brush edges.
+    let jag_freq = match kind {
+        BrushKind::Ink => 7.0,
+        BrushKind::Chalk => 9.0,
+        _ => 5.0,
+    };
+    let jag = periodic1_linear(seed ^ side ^ 0x6a, along * jag_freq, (p as f32 * jag_freq) as u32) * 0.5 + 0.5;
+    let edge = 1.0 - rough * (edge_amp * wobble(side) + 0.16 * jag);
     let soft = match kind {
         BrushKind::Ink => 0.03,
         BrushKind::Chalk => 0.12,
-        _ => 0.06,
+        _ => 0.05,
     };
     let mut a = smoothstep(edge, edge - soft, y.abs());
     // Bristle streaks: lines along the stroke, a little wavy.
@@ -208,6 +221,15 @@ fn paint_texel(kind: BrushKind, rough: f32, bristles: f32, dryness: f32, grain: 
     };
     let drift = periodic1(seed ^ 0x99, along * 0.5, (p / 2).max(1)) * 0.02;
     let streak = value1(seed ^ 0x1234, (y + drift) * streak_freq) * 0.5 + 0.5;
+    // Frayed borders: towards the edge the paint breaks into bristle lines, as a real brush's
+    // outer hairs carry less paint.
+    if rough > 0.0 {
+        let zone = 0.38 * rough;
+        let into = ((y.abs() - (edge - zone)) / zone.max(1e-3)).clamp(0.0, 1.0);
+        let hair = value1(seed ^ 0x4ad1, (y + drift) * streak_freq * 2.3) * 0.5 + 0.5;
+        let keep = smoothstep(into * 0.95 - 0.08, into * 0.95 + 0.08, hair);
+        a *= 1.0 - into * (1.0 - keep);
+    }
     let streak_cut = bristles * 0.85 * (1.0 - streak).powi(2) * 2.0;
     a *= (1.0 - streak_cut).clamp(0.0, 1.0);
     // Dry brush: streaks break into gaps along the stroke.
@@ -226,10 +248,31 @@ fn paint_texel(kind: BrushKind, rough: f32, bristles: f32, dryness: f32, grain: 
     }
     // Paint thickness: streaks a little lighter and darker (the colour's own texture).
     let lum = match kind {
-        BrushKind::Oil | BrushKind::Gouache => 0.86 + 0.14 * streak + 0.05 * signed(hash2(seed, (along * 3.0) as u32)),
+        BrushKind::Oil | BrushKind::Gouache => 0.87 + 0.11 * streak + 0.03 * periodic1(seed ^ 0x51ab, along * 2.0, p * 2),
         BrushKind::DryBrush => 0.9 + 0.1 * streak,
         _ => 1.0,
     };
+    (lum.clamp(0.0, 1.0), a.clamp(0.0, 1.0))
+}
+
+/// A brush dab: an elongated blob with a ragged edge, bristle streaks along it and a tip that
+/// thins out. `u` picks one of [`DABS`] shapes, `y` is across (-1..1).
+fn dab_texel(variant: u32, u: f32, y: f32) -> (f32, f32) {
+    let k = ((u * DABS as f32).floor() as u32).min(DABS - 1);
+    let x = (u * DABS as f32 - k as f32).clamp(0.0, 1.0);
+    let seed = hash2(0xdab5 ^ k, variant);
+    // Keep clear of the cell's ends so neighbouring dabs never bleed in.
+    let xm = ((x - 0.06) / 0.88).clamp(0.0, 1.0);
+    // Width along the dab: full at the loaded end, thinning to a flicked tip.
+    let load = 0.35 + 0.65 * unit(seed);
+    let profile = (std::f32::consts::PI * xm).sin().powf(0.6) * (1.0 - 0.45 * xm * load);
+    let edge_noise = value1(seed ^ 0x77, xm * 9.0 + if y > 0.0 { 0.0 } else { 31.0 }) * 0.18 + value1(seed ^ 0x99, xm * 31.0) * 0.07;
+    let half = (profile * (0.92 + edge_noise)).max(0.0);
+    let mut a = smoothstep(half, half - 0.08, y.abs());
+    // Bristle streaks, breaking up towards the tip.
+    let streak = value1(seed ^ 0x51, y * 21.0) * 0.5 + 0.5;
+    a *= 1.0 - (0.25 + 0.6 * xm) * (1.0 - streak).powi(2) * 1.8;
+    let lum = 0.86 + 0.14 * streak;
     (lum.clamp(0.0, 1.0), a.clamp(0.0, 1.0))
 }
 

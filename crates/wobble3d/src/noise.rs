@@ -75,6 +75,22 @@ pub fn periodic1(seed: u32, x: f32, period: u32) -> f32 {
     a + (b - a) * t
 }
 
+/// Periodic 1D noise with straight segments between its points: angular, like torn paper or a
+/// dragged brush, in [-1, 1].
+pub fn periodic1_linear(seed: u32, x: f32, period: u32) -> f32 {
+    if !x.is_finite() {
+        return 0.0;
+    }
+    let p = period.max(1);
+    let xf = x.floor();
+    let i = (xf as i64).rem_euclid(p as i64) as u32;
+    let j = (i + 1) % p;
+    let t = x - xf;
+    let a = signed(hash2(seed, i));
+    let b = signed(hash2(seed, j));
+    a + (b - a) * t
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
