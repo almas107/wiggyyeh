@@ -147,7 +147,7 @@ struct Across {
     theta: f32,
     alpha: f32,
     v: f32,
-    /// Extra pixels outwards (the anti-aliasing fringe).
+    /// Extra pixels outwards, away from the centre line (the anti-aliasing fringe).
     px: f32,
 }
 
@@ -157,7 +157,7 @@ const fn ac(off: f32, theta: f32, alpha: f32, v: f32, px: f32) -> Across {
 
 /// A tube: five shaded vertices across plus fringes.
 const TUBE: [Across; 7] = [
-    ac(-1.0, -1.5, 0.0, 0.0, -1.0),
+    ac(-1.0, -1.5, 0.0, 0.0, 1.0),
     ac(-1.0, -1.5, 1.0, 0.0, 0.0),
     ac(-std::f32::consts::FRAC_1_SQRT_2, -0.785, 1.0, 0.15, 0.0),
     ac(0.0, 0.0, 1.0, 0.5, 0.0),
@@ -165,9 +165,9 @@ const TUBE: [Across; 7] = [
     ac(1.0, 1.5, 1.0, 1.0, 0.0),
     ac(1.0, 1.5, 0.0, 1.0, 1.0),
 ];
-const BAND: [Across; 4] = [ac(-1.0, 0.0, 0.0, 0.0, -1.0), ac(-1.0, 0.0, 1.0, 0.0, 0.0), ac(1.0, 0.0, 1.0, 1.0, 0.0), ac(1.0, 0.0, 0.0, 1.0, 1.0)];
+const BAND: [Across; 4] = [ac(-1.0, 0.0, 0.0, 0.0, 1.0), ac(-1.0, 0.0, 1.0, 0.0, 0.0), ac(1.0, 0.0, 1.0, 1.0, 0.0), ac(1.0, 0.0, 0.0, 1.0, 1.0)];
 const TEXTURED: [Across; 2] = [ac(-1.0, 0.0, 1.0, 0.0, 0.0), ac(1.0, 0.0, 1.0, 1.0, 0.0)];
-const SQUARE_L: [Across; 3] = [ac(-1.0, -0.7, 0.0, 0.0, -1.0), ac(-1.0, -0.7, 1.0, 0.0, 0.0), ac(0.0, -0.7, 1.0, 0.5, 0.0)];
+const SQUARE_L: [Across; 3] = [ac(-1.0, -0.7, 0.0, 0.0, 1.0), ac(-1.0, -0.7, 1.0, 0.0, 0.0), ac(0.0, -0.7, 1.0, 0.5, 0.0)];
 const SQUARE_R: [Across; 3] = [ac(0.0, 0.7, 1.0, 0.5, 0.0), ac(1.0, 0.7, 1.0, 1.0, 0.0), ac(1.0, 0.7, 0.0, 1.0, 1.0)];
 
 /// How a pass colours its vertices.
@@ -429,6 +429,24 @@ impl<'a> Builder<'a> {
 
     fn finish(mut self) -> Frame {
         self.items.sort_by(|a, b| b.depth.total_cmp(&a.depth));
+        // Atlas coordinates were row-space while rows were being added.
+        let mut is_atlas = vec![false; self.verts.len()];
+        for it in &self.items {
+            if it.tex == Tex::Atlas
+                && let Some(idx) = self.idx.get(it.i0..it.i1)
+            {
+                for i in idx {
+                    if let Some(f) = is_atlas.get_mut(it.v0 + *i as usize) {
+                        *f = true;
+                    }
+                }
+            }
+        }
+        for (v, a) in self.verts.iter_mut().zip(is_atlas) {
+            if a {
+                v.uv = self.atlas.normalize(v.uv);
+            }
+        }
         let mut frame = Frame::default();
         for it in &self.items {
             let need_new = frame.batches.last().is_none_or(|b: &Batch| b.tex != it.tex || b.vertices.len() > 60_000);
@@ -496,7 +514,7 @@ impl<'a> Builder<'a> {
                 w += v3(fbm1(ba.seed ^ 1, t), fbm1(ba.seed ^ 2, t), fbm1(ba.seed ^ 3, t)) * world_amp;
             }
             let Some(pr) = self.view.project(w) else {
-                if cur.len() > 0 {
+                if !cur.is_empty() {
                     runs.push(std::mem::take(&mut cur));
                 }
                 last_px = None;
@@ -656,11 +674,11 @@ impl<'a> Builder<'a> {
                     }
                     _ => {
                         self.strips(run, &[&BAND], shade, solid, [0.0, 0.0], 1.0, 0.0, distance);
-                        if run.len() == 1 || kind == BrushKind::Marker {
-                            if let (Some(a), Some(b)) = (run.first().copied(), run.last().copied()) {
-                                self.cap(&a, shade, [0.0, 0.0], 1.0, 0.0, distance);
-                                self.cap(&b, shade, [0.0, 0.0], 1.0, 0.0, distance);
-                            }
+                        if (run.len() == 1 || kind == BrushKind::Marker)
+                            && let (Some(a), Some(b)) = (run.first().copied(), run.last().copied())
+                        {
+                            self.cap(&a, shade, [0.0, 0.0], 1.0, 0.0, distance);
+                            self.cap(&b, shade, [0.0, 0.0], 1.0, 0.0, distance);
                         }
                     }
                 }
@@ -959,6 +977,16 @@ fn nib_widths(run: &mut [Sample]) {
 
 /// Render the note as seen by the camera at a boil frame.
 pub fn render(scene: &Scene, camera: &Camera, atlas: &mut Atlas, opts: &Options<'_>) -> Frame {
+    let generation = atlas.generation;
+    let frame = render_once(scene, camera, atlas, opts);
+    if atlas.generation == generation {
+        return frame;
+    }
+    // The atlas filled up and started over mid-frame: its rows now all exist, so once more.
+    render_once(scene, camera, atlas, opts)
+}
+
+fn render_once(scene: &Scene, camera: &Camera, atlas: &mut Atlas, opts: &Options<'_>) -> Frame {
     let mut cam = *camera;
     cam.sanitize();
     let view = cam.view();

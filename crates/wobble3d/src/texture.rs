@@ -54,11 +54,13 @@ pub struct Atlas {
     pub rows: usize,
     /// Bumped whenever pixels change.
     pub revision: u64,
+    /// Bumped when the atlas starts over (row indices handed out before are stale).
+    pub generation: u64,
 }
 
 impl Default for Atlas {
     fn default() -> Self {
-        let mut a = Atlas { keys: HashMap::new(), pixels: Vec::new(), rows: 0, revision: 0 };
+        let mut a = Atlas { keys: HashMap::new(), pixels: Vec::new(), rows: 0, revision: 0, generation: 0 };
         a.row(RowKey::Solid);
         a.row(RowKey::Halo);
         a.row(RowKey::Grain);
@@ -84,6 +86,7 @@ impl Atlas {
             self.keys.clear();
             self.pixels.clear();
             self.rows = 0;
+            self.generation = self.generation.wrapping_add(1);
             for k in [RowKey::Solid, RowKey::Halo, RowKey::Grain] {
                 self.push(k);
             }
@@ -100,18 +103,27 @@ impl Atlas {
         r
     }
 
-    /// Texture coordinates of (u along the tile 0..1, v across 0..1) in a row.
+    /// Row-space coordinates of (u along the tile 0..1, v across 0..1) in a row: u is already
+    /// normalised, v is `row + v`. Rows are added while a frame is built, so the final texture
+    /// coordinate is only known once the frame is done ([`Atlas::normalize`]).
     pub fn uv(&self, row: usize, u: f32, v: f32) -> [f32; 2] {
-        let h = self.height().max(1) as f32;
         let u = if u.is_finite() { u.clamp(0.0, 1.0) } else { 0.0 };
         let v = if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.5 };
-        let y = row as f32 * ROW as f32 + 1.5 + v * (ROW as f32 - 3.0);
-        [(0.5 + u * (WIDTH as f32 - 1.0)) / WIDTH as f32, y / h]
+        [(0.5 + u * (WIDTH as f32 - 1.0)) / WIDTH as f32, row as f32 + v]
     }
 
     /// A texel of the solid row (for untextured geometry).
     pub fn solid_uv(&self) -> [f32; 2] {
         self.uv(0, 0.5, 0.5)
+    }
+
+    /// Turn a row-space coordinate into a texture coordinate for the atlas as it is now.
+    pub fn normalize(&self, uv: [f32; 2]) -> [f32; 2] {
+        let h = self.height().max(1) as f32;
+        let row = uv[1].floor().max(0.0);
+        let v = (uv[1] - row).clamp(0.0, 1.0);
+        let y = row * ROW as f32 + 1.5 + v * (ROW as f32 - 3.0);
+        [uv[0], y / h]
     }
 }
 
@@ -161,6 +173,7 @@ fn texel(key: RowKey, u: f32, v: f32) -> (f32, f32) {
 }
 
 /// A painted stroke's texel: `u` along (periodic), `y` across in -1..1.
+#[allow(clippy::too_many_arguments)]
 fn paint_texel(kind: BrushKind, rough: f32, bristles: f32, dryness: f32, grain: f32, variant: u32, u: f32, y: f32) -> (f32, f32) {
     let seed = hash2(kind as u32 + 11, variant);
     // Along the tile in stroke widths.
@@ -298,8 +311,12 @@ mod tests {
         assert_eq!(r1, r2);
         assert!(a.revision > rev);
         assert_eq!(a.pixels.len(), a.width() * a.height() * 4);
-        let uv = a.uv(r1, 0.5, 0.5);
+        let uv = a.normalize(a.uv(r1, 0.5, 0.5));
         assert!(uv[1] > 0.0 && uv[1] < 1.0);
+        // The solid row stays solid however many rows are added after it.
+        let solid = a.normalize(a.solid_uv());
+        let y = (solid[1] * a.height() as f32) as usize;
+        assert!(y < ROW);
     }
 
     #[test]

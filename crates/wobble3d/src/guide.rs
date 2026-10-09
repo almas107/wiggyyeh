@@ -535,6 +535,7 @@ fn loft_grid(curves: &[Vec<Vec3>], tension: f32) -> Option<Grid> {
         let steps = if k == m - 2 { LOFT_ROWS_PER_SPAN + 1 } else { LOFT_ROWS_PER_SPAN };
         for s in 0..steps {
             let t = s as f32 / LOFT_ROWS_PER_SPAN as f32;
+            #[allow(clippy::needless_range_loop)]
             for i in 0..LOFT_SAMPLES {
                 let p = |j: usize| rows[j][i];
                 let (p0, p1) = (p(k), p(k + 1));

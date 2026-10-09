@@ -11,10 +11,14 @@
 
 pub mod assist;
 pub mod camera;
+pub mod editor;
 pub mod guide;
+pub mod io;
+pub mod keys;
 pub mod math;
 pub mod model;
 pub mod noise;
+pub mod ops;
 pub mod raster;
 pub mod render;
 pub mod texture;

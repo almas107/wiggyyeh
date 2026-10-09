@@ -191,8 +191,8 @@ impl BrushKind {
         match self {
             BrushKind::Oil => Paint { roughness: 0.45, bristles: 0.7, dryness: 0.15, taper: 0.35, ..p },
             BrushKind::Gouache => Paint { roughness: 0.6, bristles: 0.25, dryness: 0.05, layers: 3, taper: 0.2, ..p },
-            BrushKind::DryBrush => Paint { roughness: 0.7, bristles: 0.9, dryness: 0.65, taper: 0.5, ..p },
-            BrushKind::Chalk => Paint { roughness: 0.5, bristles: 0.1, dryness: 0.5, grain: 0.8, taper: 0.15, ..p },
+            BrushKind::DryBrush => Paint { roughness: 0.6, bristles: 0.75, dryness: 0.4, taper: 0.5, ..p },
+            BrushKind::Chalk => Paint { roughness: 0.45, bristles: 0.1, dryness: 0.2, grain: 0.55, taper: 0.15, ..p },
             BrushKind::Ink => Paint { roughness: 0.35, bristles: 0.2, dryness: 0.1, taper: 0.8, ..p },
             BrushKind::Nib => Paint { taper: 0.3, ..p },
             _ => p,

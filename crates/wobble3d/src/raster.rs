@@ -201,8 +201,8 @@ fn post(cv: &mut Canvas, e: &Effects) {
                 let mut n = 0.0;
                 for y in by..(by + s).min(h) {
                     for x in bx..(bx + s).min(w) {
-                        for k in 0..4 {
-                            acc[k] += cv.px[y * w + x][k];
+                        for (a, v) in acc.iter_mut().zip(cv.px[y * w + x]) {
+                            *a += v;
                         }
                         n += 1.0;
                     }
