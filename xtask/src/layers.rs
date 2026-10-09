@@ -45,6 +45,8 @@ pub const TABLE: &[(&str, Class)] = &[
     ("adobe-assets", Class::Standalone),
     // Pen tablet input (the one isolated `unsafe` helper: AppKit interop on macOS).
     ("tablet", Class::Standalone),
+    // WobbleWorks 3D (crates/wobble3d): Feather-style 3D drawing, no UI and no workspace deps.
+    ("wobbleworks-3d", Class::Standalone),
     ("doc", Class::Layer(1)),
     ("ops", Class::Layer(2)),
     ("paint", Class::Layer(2)),
