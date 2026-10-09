@@ -47,6 +47,9 @@ pub const ORDER_BIAS: f32 = 1.5e-6;
 pub enum Tex {
     Atlas,
     Image(u64),
+    /// Cutout paint over a background image: the shape (alpha) from the atlas, the colour from
+    /// the image at the pixel's place on screen (see [`Frame::cover`]).
+    Cutout(u64),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -64,6 +67,10 @@ pub struct Frame {
     pub triangles: usize,
     /// The depth-buffer value of the orbit point (depth of field focuses there).
     pub focus_z: f32,
+    /// Where the background image sits on screen, as the image coordinates at the view's
+    /// corners (`u0, v0, u1, v1`): a pixel at fraction (x, y) of the view shows image
+    /// coordinates (u0 + (u1 − u0)·x, v0 + (v1 − v0)·y). Cutout paint samples it.
+    pub cover: [f32; 4],
 }
 
 /// View depth → reverse depth-buffer value in 0..1 (larger is nearer). Perspective uses
@@ -133,6 +140,10 @@ struct Builder<'a> {
     order: u32,
     /// The far end of the depth range.
     far: f32,
+    /// The background image Cutout paint shows (Render mode with a background image).
+    cut_with: Option<u64>,
+    /// The curve being built is Cutout paint.
+    cutting: bool,
 }
 
 fn premul(c: [f32; 4]) -> [u8; 4] {
@@ -240,6 +251,8 @@ impl<'a> Builder<'a> {
             pending_dabs: Vec::new(),
             order: 0,
             far,
+            cut_with: env.background_image.as_ref().filter(|_| env.render_mode).map(|im| im.id),
+            cutting: false,
         }
     }
 
@@ -251,7 +264,9 @@ impl<'a> Builder<'a> {
     fn flush_dabs(&mut self) {
         for (s, base, alpha, order) in std::mem::take(&mut self.pending_dabs) {
             self.order = order;
+            self.cutting = s.brush.material == Material::Cutout;
             self.dabs(&s, base, alpha);
+            self.cutting = false;
         }
         self.order = 0;
     }
@@ -265,6 +280,10 @@ impl<'a> Builder<'a> {
     }
 
     fn begin(&mut self, tex: Tex) {
+        let tex = match (tex, self.cutting, self.cut_with) {
+            (Tex::Atlas, true, Some(id)) => Tex::Cutout(id),
+            _ => tex,
+        };
         self.open = Some((tex, self.verts.len(), self.idx.len()));
     }
 
@@ -585,7 +604,7 @@ impl<'a> Builder<'a> {
         // Atlas coordinates were row-space while rows were being added.
         let mut is_atlas = vec![false; self.verts.len()];
         for it in &self.items {
-            if it.tex == Tex::Atlas
+            if matches!(it.tex, Tex::Atlas | Tex::Cutout(_))
                 && let Some(idx) = self.idx.get(it.i0..it.i1)
             {
                 for i in idx {
@@ -600,7 +619,7 @@ impl<'a> Builder<'a> {
                 v.uv = self.atlas.normalize(v.uv);
             }
         }
-        let mut frame = Frame::default();
+        let mut frame = Frame { cover: cover(self.env.background_image.as_deref(), self.view.viewport.width, self.view.viewport.height), ..Frame::default() };
         for it in &self.items {
             let need_new = frame.batches.last().is_none_or(|b: &Batch| b.tex != it.tex || b.vertices.len() > 60_000);
             if need_new {
@@ -806,6 +825,12 @@ fn wrap_u(run: &[Sample]) -> Vec<Sample> {
 
 impl<'a> Builder<'a> {
     fn stroke(&mut self, s: &Stroke, selected: bool) {
+        self.cutting = s.brush.material == Material::Cutout;
+        self.stroke_paint(s, selected);
+        self.cutting = false;
+    }
+
+    fn stroke_paint(&mut self, s: &Stroke, selected: bool) {
         if s.points.is_empty() {
             return;
         }
@@ -1116,6 +1141,12 @@ impl<'a> Builder<'a> {
     }
 
     fn ground_shadow(&mut self, s: &Stroke, alpha: f32) {
+        let cutting = std::mem::replace(&mut self.cutting, false);
+        self.ground_shadow_paint(s, alpha);
+        self.cutting = cutting;
+    }
+
+    fn ground_shadow_paint(&mut self, s: &Stroke, alpha: f32) {
         let l = self.light;
         if l.y < 0.05 {
             return;
@@ -1220,15 +1251,7 @@ impl<'a> Builder<'a> {
         if im.width == 0 || im.height == 0 {
             return;
         }
-        let (ia, va) = (im.width as f32 / im.height as f32, w / h);
-        // Cover: crop the image's longer side.
-        let (u0, u1, v0, v1) = if ia > va {
-            let k = va / ia;
-            (0.5 - k * 0.5, 0.5 + k * 0.5, 0.0, 1.0)
-        } else {
-            let k = ia / va;
-            (0.0, 1.0, 0.5 - k * 0.5, 0.5 + k * 0.5)
-        };
+        let [u0, v0, u1, v1] = cover(Some(im), w, h);
         self.begin(Tex::Image(im.id));
         let c = [255, 255, 255, 255];
         let far = self.far;
@@ -1459,6 +1482,23 @@ fn render_once(scene: &Scene, camera: &Camera, atlas: &mut Atlas, opts: &Options
 }
 
 /// Curves, built on every core (native) in chunks, then gathered for sorting.
+/// How an image covers a `w` × `h` view (cropping its longer side), as the image coordinates
+/// at the view's corners `[u0, v0, u1, v1]`; the whole image without one.
+fn cover(im: Option<&ImageResource>, w: f32, h: f32) -> [f32; 4] {
+    let Some(im) = im.filter(|im| im.width > 0 && im.height > 0 && w > 0.0 && h > 0.0) else { return [0.0, 0.0, 1.0, 1.0] };
+    let (ia, va) = (im.width as f32 / im.height as f32, w / h);
+    if !ia.is_finite() || !va.is_finite() {
+        return [0.0, 0.0, 1.0, 1.0];
+    }
+    if ia > va {
+        let k = va / ia;
+        [0.5 - k * 0.5, 0.0, 0.5 + k * 0.5, 1.0]
+    } else {
+        let k = ia / va;
+        [0.0, 0.5 - k * 0.5, 1.0, 0.5 + k * 0.5]
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_strokes(b: &mut Builder<'_>, strokes: &[(&Stroke, bool)], view: View, atlas: &Atlas, env: &Environment, boil: Boil, frame: u32, light: Vec3) {
     #[cfg(not(target_arch = "wasm32"))]

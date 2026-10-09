@@ -61,7 +61,8 @@ impl Textures {
 
     fn id(&self, tex: Tex) -> Option<egui::TextureId> {
         match tex {
-            Tex::Atlas => self.atlas.as_ref().map(|(_, _, h)| h.id()),
+            // Without the GPU path Cutout paint shows the background colour (its vertex colour).
+            Tex::Atlas | Tex::Cutout(_) => self.atlas.as_ref().map(|(_, _, h)| h.id()),
             Tex::Image(i) => self.images.get(&i).map(TextureHandle::id),
         }
     }
@@ -94,7 +95,7 @@ type CacheKey = (u64, [u32; 2]);
 type TexturesKey = (u64, Vec<u64>);
 
 /// Each boil frame's picture and triangle count.
-type Pictures = HashMap<u32, (Picture, usize)>;
+type Pictures = HashMap<u32, (Picture, usize, f32)>;
 
 /// A picture ready to draw: GPU data (depth-buffered) or egui meshes (painter's order).
 enum Picture {
@@ -300,14 +301,18 @@ impl Viewport {
                 Picture::Meshes(shapes(&f, &self.textures, rect.min))
             };
             if let Some((_, m)) = &mut self.cache {
-                m.insert(frame_index, (picture, f.triangles));
+                m.insert(frame_index, (picture, f.triangles, f.focus_z));
             }
         }
         let textures = self.gpu.is_some().then(|| self.gpu_textures(ed));
-        if let Some((picture, tris)) = self.cache.as_ref().and_then(|(_, m)| m.get(&frame_index)) {
+        if let Some((picture, tris, focus_z)) = self.cache.as_ref().and_then(|(_, m)| m.get(&frame_index)) {
             self.triangles = *tris;
+            let ppp = ctx.pixels_per_point();
             match (picture, &self.gpu, textures) {
-                (Picture::Gpu(p), Some(gpu), Some(t)) => gpu.show(&painter, rect, ctx.pixels_per_point(), p.clone(), t),
+                (Picture::Gpu(p), Some(gpu), Some(t)) => {
+                    let post = super::gpu::Post::of(&ed.scene.environment, *focus_z, frame_index, super::gpu::Gpu::size(rect, ppp));
+                    gpu.show(&painter, rect, ppp, p.clone(), t, post);
+                }
                 (Picture::Meshes(s), _, _) => painter.extend(s.iter().cloned()),
                 _ => {}
             }

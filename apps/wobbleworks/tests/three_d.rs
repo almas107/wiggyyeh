@@ -213,7 +213,8 @@ fn save_open_and_exports_go_through_the_platform() {
 
 /// Offscreen screenshot of the 3D mode through wgpu:
 /// `WOBBLE3D_SNAPSHOT=shot.png cargo test -p wobbleworks --test three_d snapshot -- --ignored`
-/// (`WOBBLE3D_RENDER=1` for render mode, `WOBBLE3D_WIDTH` for the window width).
+/// (`WOBBLE3D_RENDER=1` for render mode, `WOBBLE3D_EFFECTS` for effects as JSON,
+/// `WOBBLE3D_WIDTH` for the window width).
 #[test]
 #[ignore = "needs a GPU or software renderer; run on demand"]
 fn snapshot() {
@@ -260,6 +261,20 @@ fn snapshot() {
         }
         if std::env::var("WOBBLE3D_RENDER").is_ok() {
             r(ed, "env.set", json!({"render": true, "lighting": {"groundShadow": true}}));
+        }
+        if std::env::var("WOBBLE3D_CUTOUT").is_ok() {
+            // A stripy background image, and every curve made Cutout paint.
+            let (w, hgt) = (64u32, 64u32);
+            let rgba: Vec<u8> = (0..w * hgt).flat_map(|i| if (i % w) / 8 % 2 == 0 { [240, 90, 40, 255] } else { [40, 70, 200, 255] }).collect();
+            ed.set_background_image(Some(("stripes".into(), w, hgt, rgba))).unwrap();
+            r(ed, "select.all", json!(null));
+            r(ed, "brush.set", json!({"material": "cutout"}));
+            r(ed, "env.set", json!({"render": true}));
+        }
+        if let Ok(fx) = std::env::var("WOBBLE3D_EFFECTS") {
+            // e.g. `{"dof": 1.4, "bloom": 0.6, "grain": 0.4, "pixelate": 4}`
+            let fx: serde_json::Value = serde_json::from_str(&fx).unwrap();
+            r(ed, "env.set", json!({"render": true, "effects": fx}));
         }
         r(ed, "tool.set", json!({"tool": "select"}));
         r(ed, "select.set", json!({"ids": [ed.scene.strokes[2].id]}));

@@ -37,13 +37,13 @@ Status: **done**, **partial** (works, details differ), **open**.
 | Loft (curves in order, tension), primitives (cube, pyramid, sphere, tube; segments) | done | + plane primitive |
 | Draw on guide, on image resources (bounded flat guide), on OBJ models | done | + drawing in the air (toggle) |
 | Brush: type, colour, size 1–300 mm, opacity, pressure, injector, eyedropper, presets | done | 10 brush types (Feather's names are undocumented) |
-| Materials: Shadeless, Shaded, Glow, Cutout; patterns Dot, Line, Cross, Terrazzo, Stippled (intensity, angle, contrast) | done | Shown in Render mode |
+| Materials: Shadeless, Shaded, Glow, Cutout; patterns Dot, Line, Cross, Terrazzo, Stippled (intensity, angle, contrast) | done | Shown in Render mode; Cutout shows the background image (or colour) |
 | Assistance: Mirror X/Y/Z any combination, Draw Shape (line / curve / circle, hold to adjust, press-hold-drag circle), Stable Stroke | done | |
 | Erase (centre-line points) / Vacuum (whole curves); guides isolate what they cover | done | |
 | Selection: drag-select, deselect, resources; duplicate in place / by view / by mirror; delete | done | + click, box, circle, lasso, invert (Blender) |
 | Transform | done (Blender) | No joystick, by request: G / R / S modal, axis & plane constraints, typed numbers, snapping, gizmo |
 | Liquify: push, pinch, comb; size (screen), range, strength; undo all, compare, apply | done | |
-| Stage: groups (add above active, rename, visibility, isolate, select, duplicate, merge, reorder, move curves in), resources (three-state cube, rename, delete, opacity), environment (axes, grid, background colour and image, fog, lighting dir/colour/strength/from view, ground shadow, toon; glow, DOF, grain, pixelation, bloom) | done | DOF, grain, pixelation and bloom show in exports (the live view shows the rest) |
+| Stage: groups (add above active, rename, visibility, isolate, select, duplicate, merge, reorder, move curves in), resources (three-state cube, rename, delete, opacity), environment (axes, grid, background colour and image, fog, lighting dir/colour/strength/from view, ground shadow, toon; glow, DOF, grain, pixelation, bloom) | done | DOF, grain, pixelation and bloom show live (GPU post pass) and in exports |
 | Sequence: shots, play (0.5/1/2×; once / loop / swing), thirds grid, camera info | done | |
 | Stamp, Find Group, Lighten, import a note as groups | done | |
 | Export: PNG (1–4×, transparent), GIF (boil, 360° turntable), OBJ, glTF (.glb, vertex colours) | done | MP4 open (needs an encoder) |
@@ -76,10 +76,11 @@ all of it at once.
 ## Tests and looking at it
 
 ```sh
-cargo test -p wobbleworks-3d                     # core: 63 tests incl. a hostile-params hunt
+cargo test -p wobbleworks-3d                     # core: 70 tests incl. a hostile-params hunt
 cargo test -p wobbleworks --test three_d         # real egui input: draw, G X 2 Enter, orbit, guides
 cargo run -p wobbleworks-3d --example render -- out_dir [render|swatches]   # PNGs, no window
 WOBBLE3D_SNAPSHOT=shot.png cargo test -p wobbleworks --test three_d snapshot -- --ignored
+# also: WOBBLE3D_RENDER=1, WOBBLE3D_CUTOUT=1, WOBBLE3D_EFFECTS='{"dof": 1.4, "bloom": 0.6, "grain": 0.4}' 
 ```
 
 The screenshot needs a GPU or `mesa-vulkan-drivers`; Linux builds need `libasound2-dev`.
@@ -104,7 +105,10 @@ The screenshot needs a GPU or `mesa-vulkan-drivers`; Linux builds need `libasoun
   image, depth of field, Stamp, Find Group, Lighten, import note, brush previews, Shots overlays.
 - **2026-10-09, autosave:** the 3D note is autosaved with the app settings (eframe storage, every
   30 s and on exit, only when it changed) and comes back on the next start.
-- **Still open:** DOF / grain / pixelation / bloom in the live view (exports have them); MP4;
-  Cutout showing the background *image* (it shows the background colour); 3D commands over
+- **2026-10-09, stage D:** Render mode effects in the live view (a GPU post pass reading the
+  depth buffer: DOF, bloom, block-averaged pixelation, grain), sized like the exports; Cutout
+  paint shows the background image (`Tex::Cutout`, CPU and GPU). The WGSL is validated with
+  naga, including its WebGL2 GLSL translation (it caught a depth-texture read WebGL2 can't do).
+- **Still open:** MP4; 3D commands over
   the control channel / MCP (they run in-process through `Editor::run` today); Feather's
   undocumented brush type names.

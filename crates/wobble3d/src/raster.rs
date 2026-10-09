@@ -46,7 +46,10 @@ enum Pass {
     Blend,
 }
 
-fn sample(tex: &(u32, u32, &[u8]), u: f32, v: f32) -> [f32; 4] {
+/// A straight RGBA8 texture: width, height, pixels.
+type Image<'a> = (u32, u32, &'a [u8]);
+
+fn sample(tex: &Image<'_>, u: f32, v: f32) -> [f32; 4] {
     let (w, h, data) = (tex.0 as usize, tex.1 as usize, tex.2);
     if w == 0 || h == 0 || data.len() < w * h * 4 {
         return [1.0, 1.0, 1.0, 1.0];
@@ -77,8 +80,20 @@ fn sample(tex: &(u32, u32, &[u8]), u: f32, v: f32) -> [f32; 4] {
 }
 
 impl Canvas {
+    /// `screen`: Cutout paint takes its colour from this image at the pixel's place on screen
+    /// (with the frame's cover rectangle), its shape from `tex`.
     #[allow(clippy::too_many_arguments)]
-    fn tri(&mut self, pass: Pass, p: [[f32; 2]; 3], z: [f32; 3], solid: bool, uv: [[f32; 2]; 3], col: [[f32; 4]; 3], tex: Option<&(u32, u32, &[u8])>) {
+    fn tri(
+        &mut self,
+        pass: Pass,
+        p: [[f32; 2]; 3],
+        z: [f32; 3],
+        solid: bool,
+        uv: [[f32; 2]; 3],
+        col: [[f32; 4]; 3],
+        tex: Option<&(u32, u32, &[u8])>,
+        screen: Option<(&Image<'_>, [f32; 4])>,
+    ) {
         let area = (p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[2][0] - p[0][0]) * (p[1][1] - p[0][1]);
         if area.abs() < 1e-9 || !area.is_finite() {
             return;
@@ -107,6 +122,11 @@ impl Canvas {
                     for k in 0..4 {
                         c[k] *= s[k];
                     }
+                }
+                if let Some((img, [u0, v0, u1, v1])) = screen {
+                    let (fx, fy) = (cx / self.w as f32, cy / self.h as f32);
+                    let s = sample(img, u0 + (u1 - u0) * fx, v0 + (v1 - v0) * fy);
+                    c = [s[0] * c[3], s[1] * c[3], s[2] * c[3], s[3] * c[3]];
                 }
                 let zz = z[0] * w0 + z[1] * w1 + z[2] * w2;
                 let i = y * self.w + x;
@@ -156,9 +176,10 @@ pub fn rasterize(
     let atlas = (textures.atlas.width() as u32, textures.atlas.height() as u32, textures.atlas.pixels.as_slice());
     for pass in [Pass::Solid, Pass::Blend] {
         for b in &frame.batches {
-            let tex = match b.tex {
-                Tex::Atlas => Some(&atlas),
-                Tex::Image(id) => textures.images.get(&id),
+            let (tex, screen) = match b.tex {
+                Tex::Atlas => (Some(&atlas), None),
+                Tex::Image(id) => (textures.images.get(&id), None),
+                Tex::Cutout(id) => (Some(&atlas), textures.images.get(&id).map(|img| (img, frame.cover))),
             };
             for t in b.indices.chunks_exact(3) {
                 let (Some(a), Some(bb), Some(c)) = (b.vertices.get(t[0] as usize), b.vertices.get(t[1] as usize), b.vertices.get(t[2] as usize)) else {
@@ -169,7 +190,7 @@ pub fn rasterize(
                     continue;
                 }
                 let f = |v: [u8; 4]| [v[0] as f32 / 255.0, v[1] as f32 / 255.0, v[2] as f32 / 255.0, v[3] as f32 / 255.0];
-                cv.tri(pass, [a.pos, bb.pos, c.pos], [a.z, bb.z, c.z], solid, [a.uv, bb.uv, c.uv], [f(a.color), f(bb.color), f(c.color)], tex);
+                cv.tri(pass, [a.pos, bb.pos, c.pos], [a.z, bb.z, c.z], solid, [a.uv, bb.uv, c.uv], [f(a.color), f(bb.color), f(c.color)], tex, screen);
             }
         }
     }
@@ -328,7 +349,7 @@ mod tests {
         let frame = Frame {
             batches: vec![Batch { tex: Tex::Atlas, vertices: vec![v(0.0, 0.0), v(10.0, 0.0), v(0.0, 10.0)], indices: vec![0, 1, 2] }],
             triangles: 1,
-            focus_z: 0.0,
+            ..Frame::default()
         };
         let tex = Textures { atlas: &atlas, images: HashMap::new() };
         let pic = rasterize(&frame, &tex, 10, 10, Some(Rgba::WHITE), None).expect("raster");
@@ -344,7 +365,7 @@ mod tests {
         let tex = Textures { atlas: &atlas, images: HashMap::new() };
         assert!(rasterize(&Frame::default(), &tex, 0, 10, None, None).is_err());
         assert!(rasterize(&Frame::default(), &tex, 10, MAX_SIDE + 1, None, None).is_err());
-        let frame = Frame { batches: vec![Batch { tex: Tex::Image(77), vertices: vec![], indices: vec![0, 5, 9] }], triangles: 1, focus_z: 0.0 };
+        let frame = Frame { batches: vec![Batch { tex: Tex::Image(77), vertices: vec![], indices: vec![0, 5, 9] }], triangles: 1, ..Frame::default() };
         let pic =
             rasterize(&frame, &tex, 4, 4, None, Some(&Effects { grain: 1.0, pixelate: 2.0, bloom: 1.0, dof: 2.0, ..Effects::default() })).expect("raster");
         assert_eq!(pic.rgba.len(), 64);
@@ -385,5 +406,44 @@ mod order_tests {
             assert!(!red, "{kind:?}: the earlier red curve shows through ({p:?})");
             assert!(blue || kind.painterly(), "{kind:?}: the later blue curve is on top ({p:?})");
         }
+    }
+
+    /// Cutout paint in Render mode shows the background image under it (Feather: a cutout
+    /// "shows the background"), not the background colour and not the brush colour.
+    #[test]
+    fn cutout_paint_shows_the_background_image() {
+        let mut e = Editor::new();
+        e.set_viewport(200.0, 200.0);
+        e.run("env.set", &json!({"grid": false, "render": true})).expect("env");
+        e.run("boil.set", &json!({"enabled": false})).expect("boil");
+        e.run("camera.view", &json!({"view": "front"})).expect("view");
+        // A 2 × 1 image: red on the left, blue on the right.
+        let rgba = vec![255, 0, 0, 255, 0, 0, 255, 255];
+        e.scene.environment.background_image = Some(std::sync::Arc::new(crate::model::ImageResource {
+            id: 77,
+            name: "bg".into(),
+            width: 2,
+            height: 1,
+            rgba: std::sync::Arc::new(rgba.clone()),
+            xform: crate::math::Xform::default(),
+            opacity: 1.0,
+            state: crate::model::ResourceState::Visible,
+        }));
+        e.run("brush.set", &json!({"kind": "pen", "color": "#00ff00", "size": 60, "pressure": false, "material": "cutout"})).expect("brush");
+        e.run("stroke.draw", &json!({"points": (0..30).map(|i| [20.0 + i as f32 * 5.5, 100.0, 1.0]).collect::<Vec<_>>()})).expect("draw");
+        let f = e.render(0, false);
+        assert!(f.batches.iter().any(|b| b.tex == Tex::Cutout(77)), "cutout paint is marked");
+        let mut images = HashMap::new();
+        images.insert(77, (2u32, 1u32, rgba.as_slice()));
+        let tex = Textures { atlas: &e.atlas, images };
+        let pic = rasterize(&f, &tex, 200, 200, Some(crate::model::Rgba::WHITE), None).expect("raster");
+        let at = |x: usize, y: usize| pic.rgba[(y * 200 + x) * 4..(y * 200 + x) * 4 + 4].to_vec();
+        let (left, right) = (at(30, 100), at(170, 100));
+        assert!(left[0] > 200 && left[1] < 60 && left[2] < 60, "left shows red: {left:?}");
+        assert!(right[2] > 200 && right[1] < 60 && right[0] < 60, "right shows blue: {right:?}");
+        // Without Render mode the same curve is plain paint (no image lookup).
+        e.run("env.set", &json!({"render": false})).expect("env");
+        let f = e.render(0, false);
+        assert!(f.batches.iter().all(|b| !matches!(b.tex, Tex::Cutout(_))));
     }
 }
