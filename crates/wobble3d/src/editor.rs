@@ -3013,6 +3013,36 @@ impl Editor {
                 self.open(scene, cam);
                 ok
             }
+            "file.lighten" => {
+                let tol = f(p, "tolerance").unwrap_or(0.25);
+                let only = (!self.selection.is_empty() && b(p, "all") != Some(true)).then(|| self.selection.clone());
+                let before = self.scene.clone();
+                let n = ops::lighten(&mut self.scene, only.as_ref(), tol);
+                if n == 0 {
+                    return Ok(json!(0));
+                }
+                let after = std::mem::replace(&mut self.scene, before);
+                self.checkpoint("Lighten");
+                self.scene = after;
+                self.status = format!("Lightened: {n} points fewer");
+                self.changed();
+                Ok(json!(n))
+            }
+            "file.importNote" => {
+                let hex = s(p, "hex").ok_or("missing hex")?;
+                let bytes: Vec<u8> = (0..hex.len() / 2).filter_map(|i| hex.get(i * 2..i * 2 + 2).and_then(|b2| u8::from_str_radix(b2, 16).ok())).collect();
+                let (other, _) = crate::io::load(&bytes)?;
+                Ok(json!(self.import_note(&other, s(p, "name").unwrap_or("Imported"))?))
+            }
+            "info.groupAt" => {
+                let (x, y) = (need_f(p, "x")?, need_f(p, "y")?);
+                let view = self.view();
+                let name = ops::pick_stroke(&self.scene, &view, [x, y], 8.0, false)
+                    .and_then(|sid| self.scene.stroke(sid))
+                    .and_then(|st| self.scene.group(st.group))
+                    .map(|g| g.name.clone());
+                Ok(json!(name))
+            }
             "export.obj" => {
                 let (obj, mtl) = crate::io::export_obj(&self.scene, s(p, "mtl").unwrap_or("note.mtl"));
                 Ok(json!({"obj": obj, "mtl": mtl}))
@@ -3082,6 +3112,33 @@ impl Editor {
         }));
         self.changed();
         Ok(mid)
+    }
+
+    /// Bring another note's curves in as new groups (Feather: importing .feather files into a
+    /// note makes them editable groups). Returns the new group ids.
+    pub fn import_note(&mut self, other: &Scene, name: &str) -> Result<Vec<u64>, String> {
+        if self.scene.groups.len() + other.groups.len() > crate::model::GROUPS_MAX {
+            return Err("too many groups".into());
+        }
+        if self.scene.strokes.len() + other.strokes.len() > crate::model::STROKES_MAX {
+            return Err("too many curves".into());
+        }
+        self.checkpoint("Import note");
+        let mut made = Vec::new();
+        for g in &other.groups {
+            let gid = self.scene.alloc_id();
+            self.scene.groups.push(Group { id: gid, name: format!("{name}: {}", g.name).chars().take(120).collect(), visible: g.visible });
+            made.push(gid);
+            for st in other.strokes.iter().filter(|s| s.group == g.id) {
+                let id = self.scene.alloc_id();
+                let mut c = (**st).clone();
+                c.id = id;
+                c.group = gid;
+                self.scene.strokes.push(Arc::new(c));
+            }
+        }
+        self.changed();
+        Ok(made)
     }
 
     /// The background image (filling the view behind everything); `None` removes it.
@@ -3256,6 +3313,9 @@ const COMMANDS: &[(&str, &str)] = &[
     ("file.serialize", "the note as .wob3d bytes (hex)"),
     ("file.deserialize", "{hex} open .wob3d bytes"),
     ("export.obj", "{mtl?} the curves as OBJ tubes + MTL"),
+    ("file.lighten", "{tolerance?, all?} drop redundant curve points (the selection, or everything)"),
+    ("file.importNote", "{hex, name?} bring another .wob3d note in as new groups"),
+    ("info.groupAt", "{x, y} the group of the curve under a screen point (Feather's Find Group)"),
     ("keymap.rebind", "{action, chord} rebind a shortcut"),
     ("keymap.reset", "Blender defaults"),
     ("info", "the editor's state"),

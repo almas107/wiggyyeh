@@ -441,6 +441,61 @@ pub fn fill_curve(points: &[Vec3], view: &View, f: &Fill, seed: u32) -> Result<V
     Ok(segments.into_iter().map(|seg| seg.into_iter().map(to3).collect()).collect())
 }
 
+/// Feather's Lighten: drop curve points that sit within `tolerance` (a fraction of the
+/// curve's own width) of the line through their neighbours. Returns points removed.
+pub fn lighten(scene: &mut Scene, ids: Option<&HashSet<u64>>, tolerance: f32) -> usize {
+    let tol = if tolerance.is_finite() { tolerance.clamp(0.0, 2.0) } else { 0.25 };
+    let mut removed = 0usize;
+    for s in scene.strokes.iter_mut() {
+        if ids.is_some_and(|set| !set.contains(&s.id)) || s.points.len() < 3 {
+            continue;
+        }
+        let eps = s.brush.radius() * 2.0 * tol;
+        let keep = douglas_peucker(&s.points, eps);
+        if keep.len() < s.points.len() {
+            removed += s.points.len() - keep.len();
+            Arc::make_mut(s).points = keep;
+        }
+    }
+    removed
+}
+
+/// Douglas–Peucker in 3D, also keeping points where the pressure changes by more than 0.1.
+fn douglas_peucker(pts: &[crate::model::Point], eps: f32) -> Vec<crate::model::Point> {
+    let n = pts.len();
+    if n < 3 {
+        return pts.to_vec();
+    }
+    let mut keep = vec![false; n];
+    keep[0] = true;
+    keep[n - 1] = true;
+    let mut stack = vec![(0usize, n - 1)];
+    while let Some((a, b)) = stack.pop() {
+        if b <= a + 1 {
+            continue;
+        }
+        let (pa, pb) = (pts[a], pts[b]);
+        let ab = pb.p - pa.p;
+        let len2 = ab.length_sq();
+        let mut worst = (0.0f32, a);
+        for (k, m) in pts.iter().enumerate().take(b).skip(a + 1) {
+            let t = if len2 > 1e-12 { ((m.p - pa.p).dot(ab) / len2).clamp(0.0, 1.0) } else { 0.0 };
+            let d = m.p.distance(pa.p + ab * t);
+            let pr = (m.pressure - (pa.pressure + (pb.pressure - pa.pressure) * t)).abs();
+            let e = if pr > 0.1 { f32::INFINITY } else { d };
+            if e > worst.0 {
+                worst = (e, k);
+            }
+        }
+        if worst.0 > eps {
+            keep[worst.1] = true;
+            stack.push((a, worst.1));
+            stack.push((worst.1, b));
+        }
+    }
+    pts.iter().zip(keep).filter(|(_, k)| *k).map(|(p, _)| *p).collect()
+}
+
 /// Draw-on targets other than guides: the first active image (a bounded flat guide) or model.
 pub fn raycast_resources(scene: &Scene, origin: Vec3, dir: Vec3, only_active: bool) -> Option<(f32, Vec3, Vec3, u64)> {
     let mut best: Option<(f32, Vec3, Vec3, u64)> = None;
@@ -619,6 +674,18 @@ mod tests {
         assert!(fill_curve(&open, &v, &f, 1).is_err());
         assert!(fill_curve(&square, &v, &Fill { spacing: 1e-9, ..f }, 1).is_err());
         assert!(fill_curve(&square, &v, &Fill { spacing: f32::NAN, ..f }, 1).is_err());
+    }
+
+    #[test]
+    fn lighten_drops_redundant_points_only() {
+        let mut s = scene_with_line();
+        let before = s.strokes[0].points.len();
+        let n = lighten(&mut s, None, 0.25);
+        assert_eq!(n, before - 2, "a straight line keeps its ends");
+        let wavy: Vec<crate::model::Point> = (0..50).map(|i| crate::model::Point { p: v3(i as f32 * 0.02, (i as f32 * 0.5).sin() * 0.2, 0.0), pressure: 1.0, n: Vec3::ZERO }).collect();
+        s.strokes.push(Arc::new(Stroke { id: 11, group: 1, points: wavy, brush: Brush::default(), seed: 1 }));
+        lighten(&mut s, None, 0.25);
+        assert!(s.strokes[1].points.len() > 10, "curves keep their shape");
     }
 
     #[test]

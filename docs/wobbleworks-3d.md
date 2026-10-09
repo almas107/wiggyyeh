@@ -17,10 +17,14 @@ Clean-room: behaviour from the docs, paper and observation only.
 | UI | `apps/wobbleworks/src/space3d/` | Presentation only: panels, input mapping, egui meshes. Swapping the UI means rewriting this folder; nothing else changes. |
 | Shell | `apps/wobbleworks/src/shell.rs` | The 3D toggle, colour strip → 3D brush, pen pressure (PhotoCraft's stylus), sounds / Wob / juice from editor events, saved settings, file drops. |
 
-Rendering: the core tessellates the note for a camera and boil frame into depth-sorted screen
-triangles (painter's algorithm, chunked per curve). The egui shell draws them as meshes (works
-on native wgpu and WebGL2); `raster.rs` fills the same triangles on the CPU for exports and
-tests. A GPU path with a depth buffer is possible later behind the same `Frame` type.
+Rendering: the core tessellates the note for a camera and boil frame into screen triangles
+(`render.rs`, curves built on every core). Each vertex carries the depth of the surface it was
+drawn on at its own screen position (reverse-Z, `near / depth`) nudged by drawing order, and a
+"solid" flag. The view (`space3d/gpu.rs`, wgpu: native and WebGL2) draws solid paint with a
+depth buffer, then soft edges and see-through paint blended back to front, so **curves on a
+shared surface layer in drawing order** (Feather's reviews: colours bled through each other).
+`raster.rs` does the same two passes on the CPU for exports and tests; without wgpu the view
+falls back to depth-sorted egui meshes.
 
 ## Feather feature map
 
@@ -39,10 +43,12 @@ Status: **done**, **partial** (works, details differ), **open**.
 | Selection: drag-select, deselect, resources; duplicate in place / by view / by mirror; delete | done | + click, box, circle, lasso, invert (Blender) |
 | Transform | done (Blender) | No joystick, by request: G / R / S modal, axis & plane constraints, typed numbers, snapping, gizmo |
 | Liquify: push, pinch, comb; size (screen), range, strength; undo all, compare, apply | done | |
-| Stage: groups (add above active, rename, visibility, isolate, select, duplicate, merge, reorder, move curves in), resources (three-state cube, rename, delete, opacity), environment (axes, grid, background colour, fog, lighting dir/colour/strength/from view, ground shadow, toon; glow, DOF, grain, pixelation, bloom) | partial | Background *image* and DOF are not drawn yet; grain / pixelation / bloom show in exports |
-| Sequence: shots, play (0.5/1/2×; once / loop / swing) | done | Thirds grid and camera info overlay open |
+| Stage: groups (add above active, rename, visibility, isolate, select, duplicate, merge, reorder, move curves in), resources (three-state cube, rename, delete, opacity), environment (axes, grid, background colour and image, fog, lighting dir/colour/strength/from view, ground shadow, toon; glow, DOF, grain, pixelation, bloom) | done | DOF, grain, pixelation and bloom show in exports (the live view shows the rest) |
+| Sequence: shots, play (0.5/1/2×; once / loop / swing), thirds grid, camera info | done | |
+| Stamp, Find Group, Lighten, import a note as groups | done | |
 | Export: PNG (1–4×, transparent), GIF (boil, 360° turntable), OBJ, glTF (.glb, vertex colours) | done | MP4 open (needs an encoder) |
-| Clipboard (reference board), AR, Publish to Gallery | open | Gallery / AR are platform services |
+| Clipboard (reference board) | done (WobbleWorks) | The colour card's Reference tab: load an image, pick colours from it |
+| AR, Publish to Gallery | open | Platform services, out of scope for a desktop/web app |
 | Keyboard shortcuts | done (Blender) | Rebindable in the Keys tab |
 
 ## Better than Feather (from its App Store reviews)
@@ -53,6 +59,9 @@ Status: **done**, **partial** (works, details differ), **open**.
 - Draw Shape corrects only in its own tool: plain Draw never fights a deliberate line.
 - Left-handed layout; Ctrl+Z / right-click cancels; undo history panel with jumps.
 - Animation: every line boils; painterly brushes shimmer per frame; shots fly the camera.
+- Layered painting on a guide works (later strokes cover earlier ones exactly), and a Fill
+  tool (missing in Feather) fills closed curves with strokes in any brush.
+- Brush types are shown as rendered samples, not icons.
 - Never crash: every command is fuzzed with hostile params (`every_command_survives_hostile_params`).
 
 ## Painterly brushes (the Metaphor look without geometry nodes)
@@ -87,6 +96,13 @@ The screenshot needs a GPU or `mesa-vulkan-drivers`; Linux builds need `libasoun
   (Shift+A, X, Ctrl+M, M, `, F3, F, Shift+F, F2, right-click), navigator, exports, platform
   file dialogs (rfd native, picker + download on web), drops. PhotoCraft's shortcuts are held
   back while 3D shows. Native and wasm build; clippy clean.
-- **Still open:** background image and depth of field in the view; Clipboard board; MP4; thirds
-  grid / camera info in Shots; brush preview tiles drawn by the renderer; a GPU depth-buffer path
-  for very large scenes; per-axis scale handles on the gizmo's plane squares.
+- **2026-10-09, stage C:** painterly look (jagged frayed edges, dry-brush ends, scattered dabs
+  re-rolled per boil frame, colour jitter; "Metaphor look" and "Brushstrokes" presets), Fill,
+  speed (screen-space simplification, parallel build, cached noise, per-frame picture cache:
+  3000 curves × 150 points from ~430 ms to ~70 ms a frame on 4 cores; a still boiling view
+  costs nothing), depth-buffered GPU view with drawing order on shared surfaces, background
+  image, depth of field, Stamp, Find Group, Lighten, import note, brush previews, Shots overlays.
+- **Still open:** DOF / grain / pixelation / bloom in the live view (exports have them); MP4;
+  Cutout showing the background *image* (it shows the background colour); 3D commands over
+  the control channel / MCP (they run in-process through `Editor::run` today); Feather's
+  undocumented brush type names.

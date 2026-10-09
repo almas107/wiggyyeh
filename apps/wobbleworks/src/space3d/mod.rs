@@ -126,6 +126,9 @@ pub struct Space3d {
     pub show_thirds: bool,
     /// Shots: the camera's position, turn and lens over the view.
     pub show_camera_info: bool,
+    /// Find Group: the group of the curve under the pointer (Select tool), and when it was looked up.
+    pub hover_group: Option<String>,
+    hover_checked: (f64, [f32; 2]),
     frame_index: u32,
 }
 
@@ -254,6 +257,8 @@ impl Space3d {
             previews: previews::Previews::default(),
             show_thirds: false,
             show_camera_info: false,
+            hover_group: None,
+            hover_checked: (0.0, [0.0, 0.0]),
             frame_index: 0,
         }
     }
@@ -571,6 +576,12 @@ impl Space3d {
     /// Open, import or place a file by what it is.
     pub fn receive(&mut self, purpose: &str, name: &str, bytes: &[u8]) -> Result<(), String> {
         let lower = name.to_ascii_lowercase();
+        if purpose == "importNote" {
+            let (scene, _) = wobbleworks_3d::io::load(bytes)?;
+            let made = self.ed.import_note(&scene, crate::shell::file_name(name).trim_end_matches(".wob3d"))?;
+            self.ed.status = format!("Imported {} groups", made.len());
+            return Ok(());
+        }
         if purpose == "open" || lower.ends_with(".wob3d") {
             let (scene, cam) = wobbleworks_3d::io::load(bytes)?;
             self.ed.open(scene, cam);
@@ -595,6 +606,22 @@ impl Space3d {
         self.ed.add_image(crate::shell::file_name(name).as_str(), w, h, rgba)?;
         self.ed.status = "Image added: set it to draw-on in Resources to draw on it".into();
         Ok(())
+    }
+
+    /// Feather's Find Group: with the Select tool, the group of the curve under the pointer
+    /// shows in the status line (looked up at most five times a second).
+    fn find_group(&mut self, now: f64) {
+        use wobbleworks_3d::editor::Tool;
+        if !matches!(self.ed.tool, Tool::Select | Tool::Deselect | Tool::Injector | Tool::Eyedropper) || self.ed.is_busy() {
+            self.hover_group = None;
+            return;
+        }
+        let m = self.ed.mouse;
+        if now - self.hover_checked.0 < 0.2 || m == self.hover_checked.1 {
+            return;
+        }
+        self.hover_checked = (now, m);
+        self.hover_group = self.ed.run("info.groupAt", &json!({"x": m[0], "y": m[1]})).ok().and_then(|v| v.as_str().map(str::to_string));
     }
 
     /// Camera shots playback.
@@ -696,6 +723,7 @@ impl Space3d {
         if let Some(at) = menu {
             self.menu = Some((Menu::Context, at));
         }
+        self.find_group(now);
         panels::framing(self, ui, look, rect);
         if ui_shown {
             view::navigator(ui, &mut self.ed, look, rect);

@@ -119,6 +119,14 @@ fn file_menu(s: &mut Space3d, ui: &mut Ui) {
         s.pick("model", MODEL_EXTS);
         ui.close();
     }
+    if ui.button("Import note as groups…").on_hover_text("Bring another .wob3d note's curves in as new groups").clicked() {
+        s.pick("importNote", NOTE_EXTS);
+        ui.close();
+    }
+    if ui.button("Lighten note").on_hover_text("Drop curve points that add nothing: smaller files, faster drawing").clicked() {
+        s.run("file.lighten", json!({"all": true}));
+        ui.close();
+    }
     ui.separator();
     ui.horizontal(|ui| {
         ui.label("Image size");
@@ -1289,7 +1297,10 @@ pub fn status_line(s: &mut Space3d, ui: &mut Ui, look: &Look, rect: Rect) {
     if s.ed.in_modal() {
         return;
     }
-    let text = if s.ed.status.is_empty() { format!("{}  ·  {} curves", s.ed.tool.label(), s.ed.scene.strokes.len()) } else { s.ed.status.clone() };
+    let mut text = if s.ed.status.is_empty() { format!("{}  ·  {} curves", s.ed.tool.label(), s.ed.scene.strokes.len()) } else { s.ed.status.clone() };
+    if let Some(g) = &s.hover_group {
+        text = format!("Group: {g}   ·   {text}");
+    }
     let painter = ui.painter_at(rect);
     let pos = pos2(rect.min.x + 10.0, rect.max.y - 26.0);
     let galley = painter.layout_no_wrap(text, egui::FontId::proportional(13.0), look.t.ink);

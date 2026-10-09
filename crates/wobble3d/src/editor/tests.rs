@@ -341,3 +341,37 @@ fn stamp_drops_copies_where_you_click() {
     let s = v.project(first).expect("on screen");
     assert!((s.x - 200.0).abs() < 2.0 && (s.y - 200.0).abs() < 2.0, "{s:?}");
 }
+
+#[test]
+fn drawing_lands_on_active_images_and_models_and_notes_import_as_groups() {
+    let mut e = ed();
+    e.draw_in_air = false;
+    e.run("camera.view", &json!({"view": "front"})).expect("front");
+    // A model: a big square facing the camera at z = 0.5.
+    let obj = "v -2 -2 0.5\nv 2 -2 0.5\nv 2 2 0.5\nv -2 2 0.5\nf 1 2 3 4\n";
+    let mid = e.run("resource.addModel", &json!({"obj": obj})).expect("model").as_u64().expect("id");
+    e.run("resource.state", &json!({"id": mid, "state": "active"})).expect("draw on it");
+    let line: Vec<[f32; 2]> = (0..20).map(|i| [500.0 + i as f32 * 10.0, 400.0]).collect();
+    e.run("stroke.draw", &json!({"points": line.iter().map(|p| [p[0], p[1]]).collect::<Vec<_>>()})).expect("draw");
+    let st = e.scene.strokes.last().expect("stroke");
+    assert!(st.points.iter().all(|p| p.p.z.abs() < 1e-3), "the model was centred on the grid, so its face is at z = 0");
+    // An image resource limits drawing to its rectangle.
+    e.run("resource.state", &json!({"id": mid, "state": "hidden"})).expect("hide model");
+    let img = e.add_image("ref", 2, 2, vec![255; 16]).expect("image");
+    e.run("resource.state", &json!({"id": img, "state": "active"})).expect("draw on image");
+    let n = e.scene.strokes.len();
+    let off_image: Vec<[f32; 2]> = (0..10).map(|i| [5.0 + i as f32, 5.0]).collect();
+    e.run("stroke.draw", &json!({"points": off_image})).expect("draw outside");
+    assert_eq!(e.scene.strokes.len(), n, "nothing outside the image");
+    e.run("stroke.draw", &json!({"points": [[630, 390], [650, 410]]})).expect("draw on image");
+    assert_eq!(e.scene.strokes.len(), n + 1);
+    // Find Group, Lighten, Import.
+    let v = e.view();
+    let p = v.project(e.scene.strokes[0].points[3].p).expect("on screen");
+    assert_eq!(e.run("info.groupAt", &json!({"x": p.x, "y": p.y})).expect("group"), json!("Group 1"));
+    assert!(e.run("file.lighten", &json!({"all": true})).expect("lighten").as_u64().is_some());
+    let other = e.scene.clone();
+    let groups = e.import_note(&other, "Copy").expect("import");
+    assert_eq!(groups.len(), 1);
+    assert_eq!(e.scene.strokes.len(), (n + 1) * 2);
+}
