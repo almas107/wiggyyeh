@@ -10,6 +10,10 @@
 //!    on curved guides where their depths differ by more than any nudge could fix;
 //! 3. overlays (guides, the orbit point), back to front, where clearly in front of the paint.
 //!
+//! Clipping masks come first when a picture has any: the base groups' coverage is drawn into a
+//! mask texture (one channel per base, max blending), and clipped paint multiplies its colour by
+//! its base's channel at its pixel in every later pass.
+//!
 //! The target is then drawn into egui's pass, through the post-process pass in Render mode
 //! (depth of field from the depth buffer, bloom, pixelation and grain: the same effects as
 //! exports, so the live view matches them).
@@ -23,8 +27,10 @@ use eframe::egui_wgpu::{self, CallbackResources, CallbackTrait, RenderState, Scr
 use eframe::wgpu;
 use wobbleworks_3d::render::{Frame, Tex};
 
-/// Bytes per vertex: pos (2 × f32), uv (2 × f32), colour (4 × u8), z, zb, zo, solid (f32 each).
-const STRIDE: u64 = 36;
+/// Bytes per vertex: pos (2 × f32), uv (2 × f32), colour (4 × u8), z, solid, zb, zo (f32 each),
+/// clip and mask channels (4 × u8).
+const STRIDE: u64 = 40;
+const MASK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// Pictures kept on the GPU (one per boil frame).
 const KEEP: usize = 12;
 const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -39,15 +45,37 @@ struct VsIn {
     @location(4) solid: f32,
     @location(5) zb: f32,
     @location(6) zo: f32,
+    @location(7) cm: vec4<f32>,
 };
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
     @location(2) solid: f32,
+    // Clip and mask channels (0 = none, 1..4).
+    @location(3) cm: vec2<f32>,
 };
 @group(0) @binding(0) var tex: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
+@group(3) @binding(0) var mask_tex: texture_2d<f32>;
+
+// Clipped paint shows only where its base group's paint is (the mask channel at this pixel).
+fn clipped(c: vec4<f32>, i: VsOut) -> vec4<f32> {
+    let ch = i32(round(i.cm.x));
+    if (ch < 1 || ch > 4) {
+        return c;
+    }
+    let m = textureLoad(mask_tex, vec2<i32>(floor(i.pos.xy)), 0);
+    var k = m.x;
+    if (ch == 2) {
+        k = m.y;
+    } else if (ch == 3) {
+        k = m.z;
+    } else if (ch == 4) {
+        k = m.w;
+    }
+    return c * k;
+}
 
 fn vs_at(v: VsIn, z: f32) -> VsOut {
     var o: VsOut;
@@ -55,6 +83,7 @@ fn vs_at(v: VsIn, z: f32) -> VsOut {
     o.uv = v.uv;
     o.color = v.color;
     o.solid = v.solid;
+    o.cm = v.cm.xy * 255.0;
     return o;
 }
 
@@ -72,7 +101,7 @@ fn vs_at(v: VsIn, z: f32) -> VsOut {
 
 // Textures are premultiplied, vertex colours too: paint = texel * colour.
 @fragment fn fs_depth(i: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(tex, samp, i.uv) * i.color;
+    let c = clipped(textureSample(tex, samp, i.uv) * i.color, i);
     if (i.solid < 0.5 || c.a < 0.5) {
         discard;
     }
@@ -88,7 +117,17 @@ fn paint_out(c: vec4<f32>, solid: f32) -> vec4<f32> {
 }
 
 @fragment fn fs_paint(i: VsOut) -> @location(0) vec4<f32> {
-    return paint_out(textureSample(tex, samp, i.uv) * i.color, i.solid);
+    return paint_out(clipped(textureSample(tex, samp, i.uv) * i.color, i), i.solid);
+}
+
+// A base group's coverage into its mask channel (max-blended).
+@fragment fn fs_mask(i: VsOut) -> @location(0) vec4<f32> {
+    let ch = i32(round(i.cm.y));
+    let a = (textureSample(tex, samp, i.uv) * i.color).a;
+    if (ch < 1 || ch > 4) {
+        discard;
+    }
+    return vec4<f32>(f32(ch == 1), f32(ch == 2), f32(ch == 3), f32(ch == 4)) * a;
 }
 
 struct FullOut {
@@ -283,7 +322,7 @@ fn cut_paint(i: VsOut) -> vec4<f32> {
 }
 
 @fragment fn fs_paint_cut(i: VsOut) -> @location(0) vec4<f32> {
-    return paint_out(cut_paint(i), i.solid);
+    return paint_out(clipped(cut_paint(i), i), i.solid);
 }
 "#;
 
@@ -308,6 +347,8 @@ pub struct Prepared {
     pub draws: Vec<(Tex, u32, u32, bool)>,
     /// Where the background image sits on screen (for Cutout paint).
     pub cover: [f32; 4],
+    /// Some paint is a clipping mask's base (the mask pass runs).
+    pub masks: bool,
 }
 
 /// Turn a frame (vertex positions in points within a `w` × `h` viewport) into GPU data.
@@ -318,6 +359,7 @@ pub fn prepare(frame: &Frame, w: f32, h: f32, id: u64, revision: u64) -> Prepare
     let mut indices = Vec::new();
     let mut draws: Vec<(Tex, u32, u32, bool)> = Vec::new();
     let mut base = 0u32;
+    let mut masks = false;
     for b in &frame.batches {
         for v in &b.vertices {
             let x = v.pos[0] / w * 2.0 - 1.0;
@@ -330,6 +372,8 @@ pub fn prepare(frame: &Frame, w: f32, h: f32, id: u64, revision: u64) -> Prepare
             vertices.extend_from_slice(&(if v.solid { 1.0f32 } else { 0.0 }).to_le_bytes());
             vertices.extend_from_slice(&v.zb.to_le_bytes());
             vertices.extend_from_slice(&v.zo.to_le_bytes());
+            vertices.extend_from_slice(&[v.clip, v.mask, 0, 0]);
+            masks |= v.mask > 0;
         }
         let start = indices.len() as u32;
         indices.extend(b.indices.iter().map(|i| i + base));
@@ -341,7 +385,7 @@ pub fn prepare(frame: &Frame, w: f32, h: f32, id: u64, revision: u64) -> Prepare
         }
         base = base.saturating_add(b.vertices.len() as u32);
     }
-    Prepared { id, revision, vertices, indices, draws, cover: frame.cover }
+    Prepared { id, revision, vertices, indices, draws, cover: frame.cover, masks }
 }
 
 /// Textures the pictures use: the atlas and image resources, premultiplied RGBA8.
@@ -368,6 +412,7 @@ struct Picture {
     ibuf: wgpu::Buffer,
     draws: Vec<(Tex, u32, u32, bool)>,
     cover: [f32; 4],
+    masks: bool,
     used: u64,
 }
 
@@ -375,6 +420,9 @@ struct Target {
     size: [u32; 2],
     color: wgpu::TextureView,
     depth: wgpu::TextureView,
+    /// Clipping masks (one channel per base group) and their binding for the scene passes.
+    mask: wgpu::TextureView,
+    mask_bind: wgpu::BindGroup,
     bind: wgpu::BindGroup,
     /// The post-process inputs: the uniform and the depth buffer.
     post_bind: wgpu::BindGroup,
@@ -382,6 +430,8 @@ struct Target {
 }
 
 struct Resources {
+    mask: wgpu::RenderPipeline,
+    mask_bgl: wgpu::BindGroupLayout,
     depth: wgpu::RenderPipeline,
     paint: wgpu::RenderPipeline,
     over: wgpu::RenderPipeline,
@@ -469,6 +519,25 @@ impl Resources {
         });
         let layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("w3d"), bind_group_layouts: &[Some(&bgl)], immediate_size: 0 });
+        let mask_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("w3d_mask"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    multisampled: false,
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            }],
+        });
+        // The scene passes read the clipping masks (group 3).
+        let scene_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("w3d_scene"),
+            bind_group_layouts: &[Some(&bgl), None, None, Some(&mask_bgl)],
+            immediate_size: 0,
+        });
         let vertex = Some(wgpu::VertexBufferLayout {
             array_stride: STRIDE,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -480,6 +549,7 @@ impl Resources {
                 wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 24, shader_location: 4 },
                 wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 28, shader_location: 5 },
                 wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 32, shader_location: 6 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Unorm8x4, offset: 36, shader_location: 7 },
             ],
         });
         let premul = wgpu::BlendState {
@@ -507,7 +577,7 @@ impl Resources {
         });
         let cut_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("w3d_cut"),
-            bind_group_layouts: &[Some(&bgl), Some(&bgl), Some(&cut_bgl)],
+            bind_group_layouts: &[Some(&bgl), Some(&bgl), Some(&cut_bgl), Some(&mask_bgl)],
             immediate_size: 0,
         });
         let cut_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -556,9 +626,35 @@ impl Resources {
             })
         };
         // Only the depth prepass writes depth (and no colour).
-        let depth = scene("w3d_depth", &module, &layout, ("vs_back", "fs_depth"), true, wgpu::CompareFunction::Greater, None);
-        let paint = scene("w3d_paint", &module, &layout, ("vs", "fs_paint"), false, wgpu::CompareFunction::GreaterEqual, Some(premul));
-        let over = scene("w3d_over", &module, &layout, ("vs_over", "fs_paint"), false, wgpu::CompareFunction::Greater, Some(premul));
+        let depth = scene("w3d_depth", &module, &scene_layout, ("vs_back", "fs_depth"), true, wgpu::CompareFunction::Greater, None);
+        let paint = scene("w3d_paint", &module, &scene_layout, ("vs", "fs_paint"), false, wgpu::CompareFunction::GreaterEqual, Some(premul));
+        let over = scene("w3d_over", &module, &scene_layout, ("vs_over", "fs_paint"), false, wgpu::CompareFunction::Greater, Some(premul));
+        let max_blend = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Max };
+        let mask = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("w3d_mask"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs"),
+                buffers: std::slice::from_ref(&vertex),
+                compilation_options: Default::default(),
+            },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_mask"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: MASK,
+                    blend: Some(wgpu::BlendState { color: max_blend, alpha: max_blend }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         let paint_cut = scene("w3d_paint_cut", &cut_module, &cut_layout, ("vs", "fs_paint_cut"), false, wgpu::CompareFunction::GreaterEqual, Some(premul));
         let full = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("w3d_full"),
@@ -633,6 +729,8 @@ impl Resources {
         });
         let linear_out = target_format.is_srgb();
         Resources {
+            mask,
+            mask_bgl,
             depth,
             paint,
             over,
@@ -677,6 +775,13 @@ impl Resources {
             .create_view(&wgpu::TextureViewDescriptor::default());
         let depth = make(DEPTH, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, "w3d_depth")
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let mask = make(MASK, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, "w3d_mask")
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mask_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("w3d_mask"),
+            layout: &self.mask_bgl,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&mask) }],
+        });
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("w3d_target"),
             layout: &self.bgl,
@@ -693,7 +798,7 @@ impl Resources {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&depth) },
             ],
         });
-        self.target = Some(Target { size, color, depth, bind, post_bind, shows: None });
+        self.target = Some(Target { size, color, depth, mask, mask_bind, bind, post_bind, shows: None });
     }
 
     fn bind_for(&self, tex: Tex) -> Option<&wgpu::BindGroup> {
@@ -775,7 +880,7 @@ fn upload(res: &mut Resources, device: &wgpu::Device, queue: &wgpu::Queue, p: &P
         {
             res.pictures.remove(&old);
         }
-        res.pictures.insert(p.id, Picture { revision: p.revision, vbuf, ibuf, draws: p.draws.clone(), cover: p.cover, used: res.tick });
+        res.pictures.insert(p.id, Picture { revision: p.revision, vbuf, ibuf, draws: p.draws.clone(), cover: p.cover, masks: p.masks, used: res.tick });
     }
     let tick = res.tick;
     if let Some(pic) = res.pictures.get_mut(&p.id) {
@@ -798,6 +903,35 @@ fn draw_offscreen(res: &mut Resources, device: &wgpu::Device, queue: &wgpu::Queu
         let bytes: Vec<u8> = v.iter().flat_map(|f| f.to_le_bytes()).collect();
         queue.write_buffer(&res.cut_buf, 0, &bytes);
     }
+    if let Some(pic) = res.pictures.get(&id) {
+        // Clipping masks: cleared every picture (a picture without bases reads none).
+        let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("w3d_mask"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target.mask,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        if pic.masks {
+            rp.set_vertex_buffer(0, pic.vbuf.slice(..));
+            rp.set_index_buffer(pic.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+            rp.set_pipeline(&res.mask);
+            for (tex, start, count, over) in &pic.draws {
+                let Some(bind) = res.bind_for(*tex) else { continue };
+                if *over {
+                    continue;
+                }
+                rp.set_bind_group(0, bind, &[]);
+                rp.draw_indexed(*start..start + count, 0, 0..1);
+            }
+        }
+    }
     {
         let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("w3d_scene"),
@@ -819,6 +953,7 @@ fn draw_offscreen(res: &mut Resources, device: &wgpu::Device, queue: &wgpu::Queu
         if let Some(pic) = res.pictures.get(&id) {
             rp.set_vertex_buffer(0, pic.vbuf.slice(..));
             rp.set_index_buffer(pic.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+            rp.set_bind_group(3, &target.mask_bind, &[]);
             #[derive(PartialEq)]
             enum Pass {
                 Depth,
@@ -900,7 +1035,7 @@ mod tests {
 
     #[test]
     fn frames_flatten_into_one_buffer_with_draws_per_texture() {
-        let v = |x: f32| Vtx { pos: [x, 10.0], uv: [0.0, 0.0], color: [255, 0, 0, 255], z: 0.5, zb: 0.49, zo: 0.48, solid: true };
+        let v = |x: f32| Vtx { pos: [x, 10.0], uv: [0.0, 0.0], color: [255, 0, 0, 255], z: 0.5, zb: 0.49, zo: 0.48, solid: true, clip: 0, mask: 2 };
         let frame = Frame {
             batches: vec![
                 Batch { tex: Tex::Atlas, layer: 1, vertices: vec![v(0.0), v(10.0), v(20.0)], indices: vec![0, 1, 2] },
@@ -915,6 +1050,8 @@ mod tests {
         assert_eq!(p.vertices.len(), 12 * STRIDE as usize);
         assert_eq!(p.indices, vec![0, 1, 2, 3, 4, 5, 8, 7, 6, 9, 10, 11]);
         assert_eq!(p.draws, vec![(Tex::Atlas, 0, 6, false), (Tex::Image(4), 6, 3, false), (Tex::Atlas, 9, 3, true)]);
+        assert!(p.masks, "a mask vertex turns the mask pass on");
+        assert_eq!(&p.vertices[36..40], &[0, 2, 0, 0]);
         // The pushed-back depths ride along after the solid flag.
         assert_eq!(f32::from_le_bytes([p.vertices[28], p.vertices[29], p.vertices[30], p.vertices[31]]), 0.49);
         // x = 0 → -1, x = 20 → 1 in NDC.

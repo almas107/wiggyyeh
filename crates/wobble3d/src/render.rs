@@ -33,6 +33,10 @@ pub struct Vtx {
     /// clearly in front of the paint, not over paint lying on them.
     pub zo: f32,
     pub solid: bool,
+    /// Clipping mask channel (1..=4) this paint is clipped to, 0 for none.
+    pub clip: u8,
+    /// Clipping mask channel (1..=4) this paint's coverage is written to, 0 for none.
+    pub mask: u8,
 }
 
 /// How far apart (relative depth) two things may be and still count as the same surface:
@@ -167,6 +171,10 @@ struct Builder<'a> {
     order: u32,
     /// The [`layer`] of what is being built.
     layer: u8,
+    /// Clipping masks of the groups ([`Scene::clip_roles`]) and the current curve's.
+    roles: &'a std::collections::HashMap<u64, (u8, u8)>,
+    clip: u8,
+    mask: u8,
     /// The far end of the depth range.
     far: f32,
     /// The background image Cutout paint shows (Render mode with a background image).
@@ -264,7 +272,15 @@ enum Paint {
 }
 
 impl<'a> Builder<'a> {
-    fn new(view: View, atlas: &'a Atlas, env: &'a Environment, boil: Boil, frame: u32, light: Vec3) -> Builder<'a> {
+    fn new(
+        view: View,
+        atlas: &'a Atlas,
+        env: &'a Environment,
+        boil: Boil,
+        frame: u32,
+        light: Vec3,
+        roles: &'a std::collections::HashMap<u64, (u8, u8)>,
+    ) -> Builder<'a> {
         let far = (view.half_height * view.f * 400.0).max(view.near * 10.0);
         Builder {
             view,
@@ -280,6 +296,9 @@ impl<'a> Builder<'a> {
             pending_dabs: Vec::new(),
             order: 0,
             layer: layer::PAINT,
+            roles,
+            clip: 0,
+            mask: 0,
             far,
             cut_with: env.background_image.as_ref().filter(|_| env.render_mode).map(|im| im.id),
             cutting: false,
@@ -295,9 +314,11 @@ impl<'a> Builder<'a> {
         for (s, base, alpha, order) in std::mem::take(&mut self.pending_dabs) {
             self.order = order;
             self.cutting = s.brush.material == Material::Cutout;
+            (self.clip, self.mask) = self.roles.get(&s.group).copied().unwrap_or((0, 0));
             self.dabs(&s, base, alpha);
             self.cutting = false;
         }
+        (self.clip, self.mask) = (0, 0);
         self.order = 0;
     }
 
@@ -366,7 +387,7 @@ impl<'a> Builder<'a> {
     /// A vertex at view depth `depth` (turned into a depth-buffer value when the item closes).
     fn vtx(&mut self, x: f32, y: f32, depth: f32, uv: [f32; 2], color: [u8; 4]) -> u32 {
         let base = self.open.map_or(0, |(_, v0, _)| v0);
-        self.verts.push(Vtx { pos: [x, y], uv, color, z: depth, zb: 0.0, zo: 0.0, solid: false });
+        self.verts.push(Vtx { pos: [x, y], uv, color, z: depth, zb: 0.0, zo: 0.0, solid: false, clip: self.clip, mask: self.mask });
         (self.verts.len() - 1 - base) as u32
     }
 
@@ -931,8 +952,10 @@ fn wrap_u(run: &[Sample]) -> Vec<Sample> {
 impl<'a> Builder<'a> {
     fn stroke(&mut self, s: &Stroke, selected: bool) {
         self.cutting = s.brush.material == Material::Cutout;
+        (self.clip, self.mask) = self.roles.get(&s.group).copied().unwrap_or((0, 0));
         self.stroke_paint(s, selected);
         self.cutting = false;
+        (self.clip, self.mask) = (0, 0);
     }
 
     fn stroke_paint(&mut self, s: &Stroke, selected: bool) {
@@ -1563,7 +1586,8 @@ fn render_once(scene: &Scene, camera: &Camera, atlas: &mut Atlas, opts: &Options
         }
     }
     let atlas: &Atlas = atlas;
-    let mut b = Builder::new(view, atlas, env, boil, frame, light);
+    let roles = scene.clip_roles();
+    let mut b = Builder::new(view, atlas, env, boil, frame, light, &roles);
     b.layer = layer::UNDER;
     if let Some(bg) = &env.background_image {
         b.backdrop(bg);
@@ -1626,7 +1650,7 @@ fn build_strokes(b: &mut Builder<'_>, strokes: &[(&Stroke, bool)], view: View, a
             .par_chunks(32)
             .enumerate()
             .map(|(c, chunk)| {
-                let mut part = Builder::new(view, atlas, env, boil, frame, light);
+                let mut part = Builder::new(view, atlas, env, boil, frame, light, b.roles);
                 for (i, (s, sel)) in chunk.iter().enumerate() {
                     part.order = (c * 32 + i + 1) as u32;
                     part.stroke(s, *sel);

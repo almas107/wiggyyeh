@@ -36,6 +36,8 @@ struct Canvas {
     px: Vec<[f32; 4]>,
     /// Reverse depth of the solid paint at each pixel (0 = nothing; larger is nearer).
     zbuf: Vec<f32>,
+    /// Clipping masks: the coverage of each base group (channels 1..=4) at each pixel.
+    mask: Vec<[f32; 4]>,
 }
 
 /// Paint at least this opaque counts as solid (depth-tested and written).
@@ -43,6 +45,8 @@ pub const SOLID_ALPHA: f32 = 0.5;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pass {
+    /// Clipping-mask bases' coverage, into their channels.
+    Mask,
     /// Solid paint's depth, pushed back by the surface tolerance; no colour.
     Depth,
     /// Under-paint and paint, in order, where on or in front of the nearest surface.
@@ -97,6 +101,7 @@ impl Canvas {
         solid: bool,
         uv: [[f32; 2]; 3],
         col: [[f32; 4]; 3],
+        (clip, mask): (u8, u8),
         tex: Option<&(u32, u32, &[u8])>,
         screen: Option<(&Image<'_>, [f32; 4])>,
     ) {
@@ -136,9 +141,22 @@ impl Canvas {
                 }
                 let zz = z[0] * w0 + z[1] * w1 + z[2] * w2;
                 let i = y * self.w + x;
+                if pass == Pass::Mask {
+                    if let Some(m) = self.mask.get_mut(i).and_then(|m| m.get_mut(usize::from(mask).wrapping_sub(1))) {
+                        *m = m.max(c[3].clamp(0.0, 1.0));
+                    }
+                    continue;
+                }
+                if clip > 0 {
+                    let m = self.mask.get(i).and_then(|m| m.get(usize::from(clip) - 1)).copied().unwrap_or(0.0);
+                    for v in &mut c {
+                        *v *= m;
+                    }
+                }
                 let (Some(d), Some(zbuf)) = (self.px.get_mut(i), self.zbuf.get_mut(i)) else { continue };
                 let strong = solid && c[3] >= SOLID_ALPHA;
                 match pass {
+                    Pass::Mask => {}
                     Pass::Depth => {
                         let back = zb[0] * w0 + zb[1] * w1 + zb[2] * w2;
                         if strong && back > *zbuf {
@@ -186,9 +204,13 @@ pub fn rasterize(
         let f = c.to_f32();
         [f[0] * f[3], f[1] * f[3], f[2] * f[3], f[3]]
     });
-    let mut cv = Canvas { w, h, px: vec![bg; w * h], zbuf: vec![0.0; w * h] };
+    let clipping = frame.batches.iter().any(|b| b.vertices.iter().any(|v| v.mask > 0));
+    let mut cv = Canvas { w, h, px: vec![bg; w * h], zbuf: vec![0.0; w * h], mask: if clipping { vec![[0.0; 4]; w * h] } else { Vec::new() } };
     let atlas = (textures.atlas.width() as u32, textures.atlas.height() as u32, textures.atlas.pixels.as_slice());
-    for pass in [Pass::Depth, Pass::Paint, Pass::Over] {
+    for pass in [Pass::Mask, Pass::Depth, Pass::Paint, Pass::Over] {
+        if pass == Pass::Mask && !clipping {
+            continue;
+        }
         for b in &frame.batches {
             let over = b.layer == crate::render::layer::OVER;
             if (pass == Pass::Paint && over) || (pass == Pass::Over && !over) {
@@ -204,12 +226,25 @@ pub fn rasterize(
                     continue;
                 };
                 let solid = a.solid && bb.solid && c.solid;
-                if pass == Pass::Depth && !solid {
+                if (pass == Pass::Depth && !solid) || (pass == Pass::Mask && !(1..=4).contains(&a.mask)) {
                     continue;
                 }
+                // A clipped curve with no base this frame (none drawn) shows nothing.
+                let clip = if (1..=4).contains(&a.clip) { a.clip } else { 0 };
                 let f = |v: [u8; 4]| [v[0] as f32 / 255.0, v[1] as f32 / 255.0, v[2] as f32 / 255.0, v[3] as f32 / 255.0];
                 let zb = if pass == Pass::Over { [a.zo, bb.zo, c.zo] } else { [a.zb, bb.zb, c.zb] };
-                cv.tri(pass, [a.pos, bb.pos, c.pos], [a.z, bb.z, c.z], zb, solid, [a.uv, bb.uv, c.uv], [f(a.color), f(bb.color), f(c.color)], tex, screen);
+                cv.tri(
+                    pass,
+                    [a.pos, bb.pos, c.pos],
+                    [a.z, bb.z, c.z],
+                    zb,
+                    solid,
+                    [a.uv, bb.uv, c.uv],
+                    [f(a.color), f(bb.color), f(c.color)],
+                    (clip, a.mask),
+                    tex,
+                    screen,
+                );
             }
         }
     }
@@ -364,7 +399,7 @@ mod tests {
     fn a_triangle_fills_with_premultiplied_over() {
         let atlas = Atlas::default();
         let uv = atlas.solid_uv();
-        let v = |x: f32, y: f32| Vtx { pos: [x, y], uv, color: [128, 0, 0, 128], z: 0.5, zb: 0.5, zo: 0.5, solid: false };
+        let v = |x: f32, y: f32| Vtx { pos: [x, y], uv, color: [128, 0, 0, 128], z: 0.5, zb: 0.5, zo: 0.5, solid: false, clip: 0, mask: 0 };
         let frame = Frame {
             batches: vec![Batch { tex: Tex::Atlas, layer: 1, vertices: vec![v(0.0, 0.0), v(10.0, 0.0), v(0.0, 10.0)], indices: vec![0, 1, 2] }],
             triangles: 1,

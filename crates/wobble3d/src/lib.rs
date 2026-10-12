@@ -23,5 +23,6 @@ pub mod noise;
 pub mod ops;
 pub mod raster;
 pub mod render;
+pub mod showcase;
 pub mod texture;
 pub mod transform;

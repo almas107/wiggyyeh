@@ -98,6 +98,11 @@ fn file_menu(s: &mut Space3d, ui: &mut Ui) {
         s.name = None;
         ui.close();
     }
+    if ui.button("Open the showcase").on_hover_text("A garden scene made with every 3D feature, one group per feature").clicked() {
+        s.run("file.showcase", Value::Null);
+        s.name = None;
+        ui.close();
+    }
     if ui.button(s.tip("Open…", "file.open")).clicked() {
         s.pick("open", NOTE_EXTS);
         ui.close();
@@ -328,6 +333,9 @@ const TOOLS: &[(Tool, &str, &str, &str)] = &[
     (Tool::Liquify, "droplet", "Liquify the selected curves: push, pinch, comb", "tool.liquify"),
     (Tool::Injector, "wand-sparkles", "Injector: take a whole brush from a curve", "tool.injector"),
     (Tool::Eyedropper, "pipette", "Eyedropper: take a colour from a curve or image", "tool.eyedropper"),
+    (Tool::Fill, "paint-bucket", "Fill: click inside a closed shape to paint it, under its lines", "tool.fill"),
+    (Tool::LassoFill, "lasso-select", "Lasso Fill: drag a loop to paint its inside on the guide", "tool.lassoFill"),
+    (Tool::Shapes, "rectangle-horizontal", "Shapes: drag out a rectangle, ellipse, polygon, star or line (Shift: even; Alt: from the centre)", "tool.shapes"),
 ];
 
 /// The toolbar (Blender's T panel with Feather's tools).
@@ -630,7 +638,14 @@ pub fn context_bar(s: &mut Space3d, ui: &mut Ui, look: &Look) {
                     if ui.add(egui::Slider::new(&mut n, 3.0..=64.0).step_by(1.0).text("Segments")).changed() {
                         s.run("guide.segments", json!({"value": n as u64}));
                     }
-                    ui.label(RichText::new("G / R / S to place it").color(look.t.dim));
+                    ui.label(RichText::new("Drag it, or G / R / S, to place it").color(look.t.dim));
+                    if ui
+                        .button("Make solid")
+                        .on_hover_text("Also paint it as a solid object in the brush colour (you can draw on it and move it like any curve)")
+                        .clicked()
+                    {
+                        s.run("guide.solid", Value::Null);
+                    }
                     if widgets::button(ui, look, "Done", true, true).on_hover_text("Use it as the guide (Enter)").clicked() {
                         s.run("guide.done", Value::Null);
                     }
@@ -683,6 +698,49 @@ pub fn context_bar(s: &mut Space3d, ui: &mut Ui, look: &Look) {
                     return;
                 }
                 Session::None => {}
+            }
+            if s.ed.tool == Tool::Shapes {
+                ui.label(RichText::new("Shape").strong());
+                for k in wobbleworks_3d::editor::ShapeKind::ALL {
+                    if ui.selectable_label(s.ed.shape_kind == k, k.label()).clicked() {
+                        s.run("shape.set", json!({"kind": k.name()}));
+                    }
+                }
+                if matches!(s.ed.shape_kind, wobbleworks_3d::editor::ShapeKind::Polygon | wobbleworks_3d::editor::ShapeKind::Star) {
+                    let mut n = s.ed.shape_sides as f32;
+                    if ui.add(egui::Slider::new(&mut n, 3.0..=12.0).step_by(1.0).text("Sides")).changed() {
+                        s.run("shape.set", json!({"sides": n as u64}));
+                    }
+                }
+                let mut filled = s.ed.shape_filled;
+                if ui.checkbox(&mut filled, "Filled").on_hover_text("Fill it with the brush colour (off: draw its outline with the brush)").changed() {
+                    s.run("shape.set", json!({"filled": filled}));
+                }
+                ui.separator();
+            }
+            if matches!(s.ed.tool, Tool::Fill | Tool::LassoFill) {
+                ui.label(
+                    RichText::new(if s.ed.tool == Tool::Fill {
+                        "Click inside a closed shape: it fills under its lines"
+                    } else {
+                        "Drag a loop: its inside fills on the guide"
+                    })
+                    .color(look.t.dim),
+                );
+                ui.separator();
+            }
+            if matches!(s.ed.tool, Tool::Draw) {
+                let mut quick = s.ed.quick_shape;
+                if ui
+                    .checkbox(&mut quick, "Hold to snap")
+                    .on_hover_text(
+                        "Rest the pen at the end of a stroke: it snaps to a clean line, rectangle, polygon, circle or ellipse; keep holding and move to adjust",
+                    )
+                    .changed()
+                {
+                    s.run("assist.set", json!({"quickShape": quick}));
+                }
+                ui.separator();
             }
             // Guides.
             for (label, tool, action) in [("Draw guide", "guide", "tool.guide"), ("Bend", "bend", "guide.bend"), ("Loft", "loft", "")] {
@@ -753,8 +811,11 @@ pub fn context_bar(s: &mut Space3d, ui: &mut Ui, look: &Look) {
                         let t = if s.ed.tool == Tool::Stamp { "select" } else { "stamp" };
                         s.run("tool.set", json!({"tool": t}));
                     }
+                    if ui.button("Fill").on_hover_text("Fill the selected closed curves with a solid surface in the brush colour").clicked() {
+                        s.run("fill.selection", json!({}));
+                    }
                     if ui
-                        .button("Fill")
+                        .button("Hatch")
                         .on_hover_text("Fill the selected closed curves with strokes in the current brush (a painterly brush paints a panel)")
                         .clicked()
                     {
@@ -870,7 +931,20 @@ fn groups(s: &mut Space3d, ui: &mut Ui, look: &Look) {
             if resp.secondary_clicked() {
                 s.run("group.isolate", json!({"id": g.id}));
             }
-            let mut text = RichText::new(format!("{}{}  ({count})", g.name, if isolated { "  [solo]" } else { "" }));
+            // Clipping mask (Photoshop's Alt+click between layers): this group paints only on
+            // the group below. The bottom group has nothing to clip to.
+            if row + 1 < n {
+                let (cr, cresp) = ui.allocate_exact_size(vec2(18.0, 22.0), egui::Sense::click());
+                let tint = if g.clip { look.t.ink } else { crate::theme::mix(look.t.dim, look.t.paper, 0.5) };
+                photocraft_ui_egui::icons::paint(ui, cr, "link", 14.0, tint);
+                let tip = if g.clip { "Clipped to the group below (click to release)" } else { "Clip to the group below: paint only on its paint" };
+                if cresp.on_hover_text(tip).clicked() {
+                    s.run("group.clip", json!({"id": g.id}));
+                }
+            } else {
+                ui.add_space(22.0);
+            }
+            let mut text = RichText::new(format!("{}{}{}  ({count})", if g.clip { "  " } else { "" }, g.name, if isolated { "  [solo]" } else { "" }));
             if sel > 0 {
                 text = text.color(if sel == count { Color32::from_rgb(0x2f, 0xa8, 0x55) } else { Color32::from_rgb(0x7f, 0xc8, 0x8f) });
             }

@@ -487,6 +487,10 @@ pub struct Group {
     pub id: u64,
     pub name: String,
     pub visible: bool,
+    /// Clipping mask (Photoshop's Create Clipping Mask): this group's paint shows only where
+    /// the nearest unclipped group below it has paint.
+    #[serde(default)]
+    pub clip: bool,
 }
 
 /// Feather's resource states (the cube icon).
@@ -719,7 +723,7 @@ impl Default for Scene {
     fn default() -> Self {
         Scene {
             strokes: Vec::new(),
-            groups: vec![Group { id: 1, name: "Group 1".into(), visible: true }],
+            groups: vec![Group { id: 1, name: "Group 1".into(), visible: true, clip: false }],
             active_group: 1,
             isolated: None,
             guides: Vec::new(),
@@ -796,7 +800,7 @@ impl Scene {
     pub fn repair(&mut self) {
         if self.groups.is_empty() {
             let id = self.alloc_id();
-            self.groups.push(Group { id, name: "Group 1".into(), visible: true });
+            self.groups.push(Group { id, name: "Group 1".into(), visible: true, clip: false });
         }
         self.groups.truncate(GROUPS_MAX);
         let max_id = self
@@ -883,6 +887,35 @@ impl Scene {
         e.grain = c(e.grain, 1.0);
         e.pixelate = c(e.pixelate, 32.0);
         e.bloom = c(e.bloom, 1.0);
+    }
+
+    /// Clipping masks for rendering: group id → (clip channel, mask channel), channels 1..=4.
+    /// A base group (unclipped, with clipped groups right above it) writes its coverage into
+    /// its mask channel; the clipped groups above it show only there. Bases past the fourth
+    /// leave their clipped groups unclipped.
+    pub fn clip_roles(&self) -> std::collections::HashMap<u64, (u8, u8)> {
+        let mut out = std::collections::HashMap::new();
+        let mut channel = 0u8;
+        let mut base: Option<(u64, u8)> = None;
+        for g in &self.groups {
+            if g.clip {
+                let Some((bid, ch)) = base else { continue };
+                let ch = if ch == 0 && channel < 4 {
+                    channel += 1;
+                    base = Some((bid, channel));
+                    out.entry(bid).or_insert((0, 0)).1 = channel;
+                    channel
+                } else {
+                    ch
+                };
+                if ch > 0 {
+                    out.insert(g.id, (ch, 0));
+                }
+            } else {
+                base = Some((g.id, 0));
+            }
+        }
+        out
     }
 
     /// Bounding box of every visible stroke.

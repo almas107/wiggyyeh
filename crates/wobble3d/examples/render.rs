@@ -19,6 +19,9 @@ fn main() -> Result<(), String> {
     if std::env::args().nth(2).as_deref() == Some("panel") {
         return panel(&out);
     }
+    if std::env::args().nth(2).as_deref() == Some("showcase") {
+        return showcase(&out);
+    }
     let mut e = Editor::new();
     e.set_viewport(960.0, 640.0);
     e.run("env.set", &json!({"render": render_mode, "lighting": {"groundShadow": true}}))?;
@@ -68,6 +71,31 @@ fn main() -> Result<(), String> {
 }
 
 /// Every brush kind as a big S-curve, seen straight on.
+/// The showcase note from its starting view, Render mode, and each of its shots.
+fn showcase(out: &str) -> Result<(), String> {
+    let mut e = Editor::new();
+    e.set_viewport(1280.0, 800.0);
+    wobbleworks_3d::showcase::build(&mut e)?;
+    let mut views = vec![("showcase".to_string(), e.camera, false), ("showcase-render".to_string(), e.camera, true)];
+    for (i, shot) in e.scene.sequence.shots.iter().enumerate() {
+        views.push((format!("showcase-shot{}", i + 1), shot.camera, false));
+    }
+    for (name, cam, render) in views {
+        e.camera = cam;
+        e.set_viewport(1280.0, 800.0);
+        e.run("env.set", &json!({"render": render}))?;
+        let f = e.render(0, false);
+        let tex = Textures { atlas: &e.atlas, images: HashMap::new() };
+        let bg = e.scene.environment.background;
+        let effects = if render { Some(e.scene.environment.effects) } else { None };
+        let pic = rasterize(&f, &tex, 1280, 800, Some(bg), effects.as_ref())?;
+        let path = format!("{out}/{name}.png");
+        image::save_buffer(&path, &pic.rgba, pic.width, pic.height, image::ColorType::Rgba8).map_err(|e| e.to_string())?;
+        println!("{path}");
+    }
+    Ok(())
+}
+
 fn swatches(out: &str) -> Result<(), String> {
     let mut e = Editor::new();
     e.set_viewport(1200.0, 700.0);

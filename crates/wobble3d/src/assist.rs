@@ -167,17 +167,28 @@ pub fn recognize(raw: &[[f32; 2]]) -> Option<Shape> {
     if let Some(poly) = polygon(&pts, length, closed) {
         return Some(poly);
     }
-    if chord < length * 0.2
-        && let Some((c, r)) = fit_circle(&pts)
-    {
-        let resid = pts.iter().map(|p| (dist(*p, c) - r).abs()).sum::<f32>() / pts.len() as f32;
-        let turn = length / (std::f32::consts::TAU * r);
-        if resid < r * 0.14 && (0.75..1.5).contains(&turn) {
-            let start = (a[1] - c[1]).atan2(a[0] - c[0]);
-            return Some(Shape::Circle { c, r, start });
+    if chord < length * 0.2 {
+        // An ellipse that is nearly round is a circle; a stretched one stays an ellipse.
+        if let Some(Shape::Ellipse { c, rx, ry, .. }) = ellipse(&pts)
+            && rx.max(ry) / rx.min(ry).max(1e-3) < 1.12
+        {
+            let r = (rx + ry) * 0.5;
+            let turn = length / (std::f32::consts::TAU * r);
+            if (0.75..1.5).contains(&turn) {
+                let start = (a[1] - c[1]).atan2(a[0] - c[0]);
+                return Some(Shape::Circle { c, r, start });
+            }
         }
         if let Some(e) = ellipse(&pts) {
             return Some(e);
+        }
+        if let Some((c, r)) = fit_circle(&pts) {
+            let resid = pts.iter().map(|p| (dist(*p, c) - r).abs()).sum::<f32>() / pts.len() as f32;
+            let turn = length / (std::f32::consts::TAU * r);
+            if resid < r * 0.14 && (0.75..1.5).contains(&turn) {
+                let start = (a[1] - c[1]).atan2(a[0] - c[0]);
+                return Some(Shape::Circle { c, r, start });
+            }
         }
     }
     // Smooth curve through the middle of the stroke.

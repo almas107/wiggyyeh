@@ -239,6 +239,9 @@ struct Live {
     kind: LiveKind,
     /// Stabilised screen samples (x, y, pressure).
     raw: Vec<[f32; 3]>,
+    /// The pen's own positions (before Stable Stroke rounds the corners): shapes are
+    /// recognised from these.
+    pen: Vec<[f32; 2]>,
     stab: Stabilizer,
     /// The curve being drawn and pieces already finished (where the pen left the guide).
     stroke: Vec<Point>,
@@ -957,6 +960,7 @@ impl Editor {
         self.live = Some(Live {
             kind,
             raw: Vec::new(),
+            pen: vec![[x, y]],
             stab,
             stroke: Vec::new(),
             pieces: Vec::new(),
@@ -1045,6 +1049,9 @@ impl Editor {
             live.moved = true;
         }
         live.last = [x, y];
+        if !live.adjusting && live.pen.len() < PARAM_POINTS_MAX {
+            live.pen.push([x, y]);
+        }
         match live.kind {
             LiveKind::Draw | LiveKind::Guide | LiveKind::Bend => {
                 if live.adjusting {
@@ -1111,7 +1118,7 @@ impl Editor {
         if !applies || live.adjusting || t - live.last_move_t < HOLD_SECONDS {
             return;
         }
-        let pts: Vec<[f32; 2]> = live.raw.iter().map(|q| [q[0], q[1]]).collect();
+        let pts: Vec<[f32; 2]> = live.pen.clone();
         let short = pts.windows(2).map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt()).sum::<f32>() < 6.0;
         let quick_only = live.kind == LiveKind::Draw && !shape_tool;
         live.shape = if short && !live.moved && !quick_only {
@@ -1163,8 +1170,7 @@ impl Editor {
                         _ => self.tool == Tool::DrawShape,
                     };
                     if correct {
-                        let pts: Vec<[f32; 2]> = live.raw.iter().map(|q| [q[0], q[1]]).collect();
-                        live.shape = recognize(&pts);
+                        live.shape = recognize(&live.pen);
                     }
                     // Post-processing (smooth, subdivide, simplify, trim) on what was drawn.
                     if live.shape.is_none() && self.feel.post {
@@ -2096,7 +2102,7 @@ impl Editor {
         let gid = self.scene.alloc_id();
         let at = self.scene.groups.iter().position(|g| g.id == self.scene.active_group).map_or(self.scene.groups.len(), |i| i + 1);
         let name = name.map(str::to_string).unwrap_or_else(|| format!("Group {}", self.scene.groups.len() + 1));
-        self.scene.groups.insert(at, Group { id: gid, name, visible: true });
+        self.scene.groups.insert(at, Group { id: gid, name, visible: true, clip: false });
         self.scene.active_group = gid;
         self.changed();
         Ok(gid)
@@ -2357,6 +2363,16 @@ impl Editor {
                     let pr = c.get(3).map_or(1.0, |v| *v as f32);
                     pts.push(Point { p: pos, pressure: if pr.is_finite() { pr.clamp(0.0, 1.0) } else { 1.0 }, n: Vec3::ZERO });
                 }
+                // Lying on a surface: flat tape faces it and paint layers on it in order.
+                if let Some(n) = vec3(p, "normal") {
+                    let n = n.normalized();
+                    if !n.is_finite() || n.length() < 0.5 {
+                        return Err("normal must be a non-zero [x, y, z]".into());
+                    }
+                    for q in &mut pts {
+                        q.n = n;
+                    }
+                }
                 if pts.is_empty() {
                     return Err("a curve needs at least one point".into());
                 }
@@ -2421,6 +2437,7 @@ impl Editor {
                 let live = Live {
                     kind: LiveKind::Select,
                     raw: vec![[x, y, 1.0]],
+                    pen: vec![[x, y]],
                     stab: Stabilizer::default(),
                     stroke: Vec::new(),
                     pieces: Vec::new(),
@@ -2876,6 +2893,20 @@ impl Editor {
                 self.changed();
                 Ok(json!(v))
             }
+            "group.clip" => {
+                let gid = id(p, "id").unwrap_or(self.scene.active_group);
+                let i = self.group_index(gid)?;
+                if i == 0 {
+                    return Err("the bottom group has nothing below it to clip to".into());
+                }
+                let v = b(p, "clip").unwrap_or_else(|| !self.scene.groups.get(i).is_some_and(|g| g.clip));
+                self.checkpoint(if v { "Clipping mask" } else { "Release clipping mask" });
+                if let Some(g) = self.scene.groups.get_mut(i) {
+                    g.clip = v;
+                }
+                self.changed();
+                Ok(json!(v))
+            }
             "group.hideActive" => self.run_inner("group.visible", &json!({"visible": false})),
             "group.showAll" => {
                 self.checkpoint("Show all groups");
@@ -2918,7 +2949,7 @@ impl Editor {
                 let src: Vec<Group> = self.scene.groups.iter().filter(|g| set.contains(&g.id)).cloned().collect();
                 for g in src {
                     let nid = self.scene.alloc_id();
-                    self.scene.groups.push(Group { id: nid, name: format!("{} copy", g.name), visible: g.visible });
+                    self.scene.groups.push(Group { id: nid, name: format!("{} copy", g.name), visible: g.visible, clip: g.clip });
                     let members: HashSet<u64> = self.scene.strokes.iter().filter(|s| s.group == g.id).map(|s| s.id).collect();
                     let made = ops::duplicate(&mut self.scene, &members, |q| q, |n| n);
                     for st in self.scene.strokes.iter_mut().filter(|s| made.contains(&s.id)) {
@@ -2936,7 +2967,7 @@ impl Editor {
                 }
                 self.checkpoint("Merge groups");
                 let nid = self.scene.alloc_id();
-                self.scene.groups.push(Group { id: nid, name: "Merged".into(), visible: true });
+                self.scene.groups.push(Group { id: nid, name: "Merged".into(), visible: true, clip: false });
                 for st in self.scene.strokes.iter_mut().filter(|s| set.contains(&s.group)) {
                     Arc::make_mut(st).group = nid;
                 }
@@ -3302,6 +3333,11 @@ impl Editor {
                 self.new_note();
                 ok
             }
+            "file.showcase" => {
+                crate::showcase::build(self)?;
+                self.dirty = false;
+                Ok(json!({"strokes": self.scene.strokes.len(), "groups": self.scene.groups.len()}))
+            }
             "file.serialize" => {
                 let bytes = crate::io::save(&self.scene, &self.camera)?;
                 Ok(json!({"hex": bytes.iter().map(|x| format!("{x:02x}")).collect::<String>(), "bytes": bytes.len()}))
@@ -3430,7 +3466,7 @@ impl Editor {
         let mut made = Vec::new();
         for g in &other.groups {
             let gid = self.scene.alloc_id();
-            self.scene.groups.push(Group { id: gid, name: format!("{name}: {}", g.name).chars().take(120).collect(), visible: g.visible });
+            self.scene.groups.push(Group { id: gid, name: format!("{name}: {}", g.name).chars().take(120).collect(), visible: g.visible, clip: g.clip });
             made.push(gid);
             for st in other.strokes.iter().filter(|s| s.group == g.id) {
                 let id = self.scene.alloc_id();
@@ -3564,7 +3600,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("preset.add", "{name?} save the brush as a preset"),
     ("preset.load", "{id}"),
     ("preset.delete", "{ids}"),
-    ("stroke.add", "{points: [[x,y,z,pressure?]…]} add a curve in world space"),
+    ("stroke.add", "{points: [[x,y,z,pressure?]…], normal?: [x,y,z]} add a curve in world space (normal: the surface it lies on)"),
     ("stroke.draw", "{points: [[x,y,pressure?]…]} draw with the current tool through screen points"),
     ("select.all", "select every visible curve"),
     ("select.none", "clear the selection"),
@@ -3618,6 +3654,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("group.activate", "{id}"),
     ("group.rename", "{id?, name}"),
     ("group.visible", "{id?, visible?}"),
+    ("group.clip", "{id?, clip?} clip a group to the group below it (its paint shows only on that group's paint), or release it"),
     ("group.hideActive", "hide the active group"),
     ("group.showAll", "show every group"),
     ("group.isolate", "{id|null} show only one group"),
@@ -3661,6 +3698,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("shot.move", "{id, index}"),
     ("sequence.set", "{speed, mode: once|loop|swing, secondsPerShot}"),
     ("file.new", "start a new note"),
+    ("file.showcase", "open the showcase note: a garden scene made with every 3D feature, one group per feature"),
     ("file.serialize", "the note as .wob3d bytes (hex)"),
     ("file.deserialize", "{hex} open .wob3d bytes"),
     ("export.obj", "{mtl?} the curves as OBJ tubes + MTL"),

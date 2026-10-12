@@ -315,6 +315,7 @@ impl Space3d {
             "feel": self.ed.feel,
             "drawInAir": self.ed.draw_in_air,
             "guideShape": self.ed.guide_shape,
+            "quickShape": self.ed.quick_shape,
             "exportScale": self.export_scale,
             "keymap": self.ed.keymap,
         })
@@ -353,6 +354,9 @@ impl Space3d {
         }
         if let Some(b) = flag("drawInAir") {
             self.ed.draw_in_air = b;
+        }
+        if let Some(b) = flag("quickShape") {
+            self.ed.quick_shape = b;
         }
         if let Some(b) = flag("guideShape") {
             self.ed.guide_shape = b;

@@ -291,6 +291,16 @@ fn snapshot() {
         }
         r(ed, "tool.set", json!({"tool": "select"}));
         r(ed, "select.set", json!({"ids": [ed.scene.strokes[2].id]}));
+        if std::env::var("WOBBLE3D_SHOWCASE").is_ok() {
+            r(ed, "file.showcase", json!(null));
+            if std::env::var("WOBBLE3D_RENDER").is_ok() {
+                r(ed, "env.set", json!({"render": true}));
+            }
+        }
+    }
+    if let Ok(theme) = std::env::var("WOBBLE3D_THEME") {
+        let t = wobbleworks::theme::PRESETS.iter().find(|(n, _)| *n == theme).map(|p| p.1).unwrap();
+        h.state_mut().set_theme(t);
     }
     h.run_steps(8);
     h.render().unwrap().save(&out).unwrap();

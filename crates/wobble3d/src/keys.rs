@@ -55,6 +55,10 @@ const DEFAULTS: &[(&str, &str, &str, &str, &str)] = &[
     ("tool.liquify", "Liquify", "K", "tool.set", r#"{"tool":"liquify"}"#),
     ("tool.injector", "Injector (sample a whole brush)", "I", "tool.set", r#"{"tool":"injector"}"#),
     ("tool.eyedropper", "Eyedropper (sample a colour)", "Shift+I", "tool.set", r#"{"tool":"eyedropper"}"#),
+    ("tool.fill", "Fill (paint bucket)", "Shift+G", "tool.set", r#"{"tool":"fill"}"#),
+    ("tool.lassoFill", "Lasso Fill", "Shift+L", "tool.set", r#"{"tool":"lassofill"}"#),
+    ("tool.shapes", "Shapes (rectangle, ellipse, polygon, star, line)", "U", "tool.set", r#"{"tool":"shapes"}"#),
+    ("guide.solid", "Make the guide a solid object", "Ctrl+Alt+S", "guide.solid", "null"),
     // Selection.
     ("select.all", "Select all", "A", "select.all", "null"),
     ("select.none", "Select none", "Alt+A", "select.none", "null"),

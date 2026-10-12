@@ -641,3 +641,34 @@ fn holding_the_pen_snaps_a_rough_rectangle_clean() {
     e.run("assist.set", &json!({"quickShape": false})).expect("off");
     assert!(!e.quick_shape);
 }
+
+/// Clipping masks: a group clipped to the group below shows its paint only on that group's
+/// paint; releasing the mask shows all of it. The bottom group cannot clip.
+#[test]
+fn clipped_groups_paint_only_on_the_group_below() {
+    let mut e = front_ed();
+    e.run("brush.set", &json!({"color": "#ff0000"})).expect("red");
+    e.run("fill.lasso", &json!({"points": pts(&circle(200.0, 150.0, 60.0, 48))})).expect("base");
+    assert!(e.run("group.clip", &json!({})).is_err(), "nothing below the bottom group");
+    let g2 = e.run("group.new", &json!({"name": "shading"})).expect("group").as_u64().expect("id");
+    e.run("brush.set", &json!({"kind": "marker", "color": "#0000ff", "size": 60, "pressure": false})).expect("blue");
+    e.run("stroke.draw", &json!({"points": pts(&(0..40).map(|i| [60.0 + i as f32 * 7.0, 150.0]).collect::<Vec<_>>())})).expect("band");
+    let blue = |p: [u8; 4]| p[2] > 200 && p[0] < 60;
+    assert!(blue(pixel(&mut e, 80, 150)), "unclipped: the band shows outside the circle");
+    assert_eq!(e.run("group.clip", &json!({"id": g2})).expect("clip"), json!(true));
+    assert!(blue(pixel(&mut e, 200, 150)), "on the circle: blue");
+    let out = pixel(&mut e, 80, 150);
+    assert!(out[0] > 200 && out[1] > 200 && out[2] > 200, "off the circle: nothing ({out:?})");
+    let red = pixel(&mut e, 200, 110);
+    assert!(red[0] > 200 && red[2] < 60, "the base shows where the clipped band isn't ({red:?})");
+    // Release: the band shows everywhere again. Undo brings the clip back.
+    e.run("group.clip", &json!({"id": g2, "clip": false})).expect("release");
+    assert!(blue(pixel(&mut e, 80, 150)));
+    e.run("edit.undo", &Value::Null).expect("undo");
+    assert!(!blue(pixel(&mut e, 80, 150)));
+    // Saved with the note.
+    let hex = e.run("file.serialize", &Value::Null).expect("save");
+    let mut f = Editor::new();
+    f.run("file.deserialize", &json!({"hex": hex.get("hex").cloned().unwrap_or(Value::Null)})).expect("load");
+    assert!(f.scene.groups.iter().any(|g| g.clip));
+}
