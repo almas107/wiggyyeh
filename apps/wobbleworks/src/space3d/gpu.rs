@@ -2,10 +2,13 @@
 //! order, and solid paint hides what is behind it exactly (no sorting artefacts).
 //!
 //! Each picture (one per boil frame) is drawn into an offscreen colour + reverse-Z depth target
-//! in two passes, the same as `wobbleworks_3d::raster` does on the CPU:
-//! 1. solid paint (fully opaque curves, at least half covered texels) with depth test + write;
-//! 2. soft edges and see-through paint (translucent curves, glow, guides, the grid) blended
-//!    back to front, depth-tested against the solid paint.
+//! in three passes, the same as `wobbleworks_3d::raster` does on the CPU:
+//! 1. depth only: solid paint (fully opaque curves, at least half covered texels), pushed back
+//!    by `SURFACE_TOL`, so the buffer holds the nearest surface;
+//! 2. what lies under the paint, then the paint in drawing order, blended, wherever it is on
+//!    that surface or in front of it: later curves cover earlier ones on a shared surface, even
+//!    on curved guides where their depths differ by more than any nudge could fix;
+//! 3. overlays (guides, the orbit point), back to front, where clearly in front of the paint.
 //!
 //! The target is then drawn into egui's pass, through the post-process pass in Render mode
 //! (depth of field from the depth buffer, bloom, pixelation and grain: the same effects as
@@ -20,8 +23,8 @@ use eframe::egui_wgpu::{self, CallbackResources, CallbackTrait, RenderState, Scr
 use eframe::wgpu;
 use wobbleworks_3d::render::{Frame, Tex};
 
-/// Bytes per vertex: pos (2 × f32), uv (2 × f32), colour (4 × u8), z (f32), solid (f32).
-const STRIDE: u64 = 28;
+/// Bytes per vertex: pos (2 × f32), uv (2 × f32), colour (4 × u8), z, zb, zo, solid (f32 each).
+const STRIDE: u64 = 36;
 /// Pictures kept on the GPU (one per boil frame).
 const KEEP: usize = 12;
 const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -34,6 +37,8 @@ struct VsIn {
     @location(2) color: vec4<f32>,
     @location(3) z: f32,
     @location(4) solid: f32,
+    @location(5) zb: f32,
+    @location(6) zo: f32,
 };
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -44,30 +49,46 @@ struct VsOut {
 @group(0) @binding(0) var tex: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
 
-@vertex fn vs(v: VsIn) -> VsOut {
+fn vs_at(v: VsIn, z: f32) -> VsOut {
     var o: VsOut;
-    o.pos = vec4<f32>(v.pos, v.z, 1.0);
+    o.pos = vec4<f32>(v.pos, z, 1.0);
     o.uv = v.uv;
     o.color = v.color;
     o.solid = v.solid;
     return o;
 }
 
+// The paint at its depth (pass 2), pushed back for the depth prepass (pass 1), and pushed back
+// twice as far for overlays (pass 3: in front only).
+@vertex fn vs(v: VsIn) -> VsOut {
+    return vs_at(v, v.z);
+}
+@vertex fn vs_back(v: VsIn) -> VsOut {
+    return vs_at(v, v.zb);
+}
+@vertex fn vs_over(v: VsIn) -> VsOut {
+    return vs_at(v, v.zo);
+}
+
 // Textures are premultiplied, vertex colours too: paint = texel * colour.
-@fragment fn fs_solid(i: VsOut) -> @location(0) vec4<f32> {
+@fragment fn fs_depth(i: VsOut) -> @location(0) vec4<f32> {
     let c = textureSample(tex, samp, i.uv) * i.color;
     if (i.solid < 0.5 || c.a < 0.5) {
         discard;
     }
-    return vec4<f32>(c.rgb / c.a, 1.0);
+    return vec4<f32>(0.0);
 }
 
-@fragment fn fs_blend(i: VsOut) -> @location(0) vec4<f32> {
-    let c = textureSample(tex, samp, i.uv) * i.color;
-    if (i.solid > 0.5 && c.a >= 0.5) {
-        discard;
+// Solid paint covers fully (a half-covered texel counts as covered); the rest blends.
+fn paint_out(c: vec4<f32>, solid: f32) -> vec4<f32> {
+    if (solid > 0.5 && c.a >= 0.5) {
+        return vec4<f32>(c.rgb / c.a, 1.0);
     }
     return c;
+}
+
+@fragment fn fs_paint(i: VsOut) -> @location(0) vec4<f32> {
+    return paint_out(textureSample(tex, samp, i.uv) * i.color, i.solid);
 }
 
 struct FullOut {
@@ -261,20 +282,8 @@ fn cut_paint(i: VsOut) -> vec4<f32> {
     return img * a;
 }
 
-@fragment fn fs_solid_cut(i: VsOut) -> @location(0) vec4<f32> {
-    let c = cut_paint(i);
-    if (i.solid < 0.5 || c.a < 0.5) {
-        discard;
-    }
-    return vec4<f32>(c.rgb / c.a, 1.0);
-}
-
-@fragment fn fs_blend_cut(i: VsOut) -> @location(0) vec4<f32> {
-    let c = cut_paint(i);
-    if (i.solid > 0.5 && c.a >= 0.5) {
-        discard;
-    }
-    return c;
+@fragment fn fs_paint_cut(i: VsOut) -> @location(0) vec4<f32> {
+    return paint_out(cut_paint(i), i.solid);
 }
 "#;
 
@@ -295,7 +304,8 @@ pub struct Prepared {
     pub revision: u64,
     pub vertices: Vec<u8>,
     pub indices: Vec<u32>,
-    pub draws: Vec<(Tex, u32, u32)>,
+    /// (texture, first index, index count, overlay): overlays are drawn in the last pass.
+    pub draws: Vec<(Tex, u32, u32, bool)>,
     /// Where the background image sits on screen (for Cutout paint).
     pub cover: [f32; 4],
 }
@@ -306,7 +316,7 @@ pub fn prepare(frame: &Frame, w: f32, h: f32, id: u64, revision: u64) -> Prepare
     let total: usize = frame.batches.iter().map(|b| b.vertices.len()).sum();
     let mut vertices = Vec::with_capacity(total * STRIDE as usize);
     let mut indices = Vec::new();
-    let mut draws: Vec<(Tex, u32, u32)> = Vec::new();
+    let mut draws: Vec<(Tex, u32, u32, bool)> = Vec::new();
     let mut base = 0u32;
     for b in &frame.batches {
         for v in &b.vertices {
@@ -318,13 +328,16 @@ pub fn prepare(frame: &Frame, w: f32, h: f32, id: u64, revision: u64) -> Prepare
             vertices.extend_from_slice(&v.color);
             vertices.extend_from_slice(&v.z.to_le_bytes());
             vertices.extend_from_slice(&(if v.solid { 1.0f32 } else { 0.0 }).to_le_bytes());
+            vertices.extend_from_slice(&v.zb.to_le_bytes());
+            vertices.extend_from_slice(&v.zo.to_le_bytes());
         }
         let start = indices.len() as u32;
         indices.extend(b.indices.iter().map(|i| i + base));
         let count = indices.len() as u32 - start;
+        let over = b.layer == wobbleworks_3d::render::layer::OVER;
         match draws.last_mut() {
-            Some((t, s, c)) if *t == b.tex && *s + *c == start => *c += count,
-            _ => draws.push((b.tex, start, count)),
+            Some((t, s, c, o)) if *t == b.tex && *o == over && *s + *c == start => *c += count,
+            _ => draws.push((b.tex, start, count, over)),
         }
         base = base.saturating_add(b.vertices.len() as u32);
     }
@@ -353,7 +366,7 @@ struct Picture {
     revision: u64,
     vbuf: wgpu::Buffer,
     ibuf: wgpu::Buffer,
-    draws: Vec<(Tex, u32, u32)>,
+    draws: Vec<(Tex, u32, u32, bool)>,
     cover: [f32; 4],
     used: u64,
 }
@@ -369,11 +382,11 @@ struct Target {
 }
 
 struct Resources {
-    solid: wgpu::RenderPipeline,
-    blend: wgpu::RenderPipeline,
+    depth: wgpu::RenderPipeline,
+    paint: wgpu::RenderPipeline,
+    over: wgpu::RenderPipeline,
     full: wgpu::RenderPipeline,
-    solid_cut: wgpu::RenderPipeline,
-    blend_cut: wgpu::RenderPipeline,
+    paint_cut: wgpu::RenderPipeline,
     cut_buf: wgpu::Buffer,
     cut_bind: wgpu::BindGroup,
     post: wgpu::RenderPipeline,
@@ -465,6 +478,8 @@ impl Resources {
                 wgpu::VertexAttribute { format: wgpu::VertexFormat::Unorm8x4, offset: 16, shader_location: 2 },
                 wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 20, shader_location: 3 },
                 wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 24, shader_location: 4 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 28, shader_location: 5 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32, offset: 32, shader_location: 6 },
             ],
         });
         let premul = wgpu::BlendState {
@@ -509,14 +524,14 @@ impl Resources {
         let scene = |label: &str,
                      module: &wgpu::ShaderModule,
                      layout: &wgpu::PipelineLayout,
-                     fs: &str,
+                     (vs, fs): (&str, &str),
                      write: bool,
                      compare: wgpu::CompareFunction,
                      blend: Option<wgpu::BlendState>| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(layout),
-                vertex: wgpu::VertexState { module, entry_point: Some("vs"), buffers: std::slice::from_ref(&vertex), compilation_options: Default::default() },
+                vertex: wgpu::VertexState { module, entry_point: Some(vs), buffers: std::slice::from_ref(&vertex), compilation_options: Default::default() },
                 primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH,
@@ -529,17 +544,22 @@ impl Resources {
                 fragment: Some(wgpu::FragmentState {
                     module,
                     entry_point: Some(fs),
-                    targets: &[Some(wgpu::ColorTargetState { format: COLOR, blend, write_mask: wgpu::ColorWrites::ALL })],
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: COLOR,
+                        blend,
+                        write_mask: if write { wgpu::ColorWrites::empty() } else { wgpu::ColorWrites::ALL },
+                    })],
                     compilation_options: Default::default(),
                 }),
                 multiview_mask: None,
                 cache: None,
             })
         };
-        let solid = scene("w3d_solid", &module, &layout, "fs_solid", true, wgpu::CompareFunction::Greater, None);
-        let blend = scene("w3d_blend", &module, &layout, "fs_blend", false, wgpu::CompareFunction::GreaterEqual, Some(premul));
-        let solid_cut = scene("w3d_solid_cut", &cut_module, &cut_layout, "fs_solid_cut", true, wgpu::CompareFunction::Greater, None);
-        let blend_cut = scene("w3d_blend_cut", &cut_module, &cut_layout, "fs_blend_cut", false, wgpu::CompareFunction::GreaterEqual, Some(premul));
+        // Only the depth prepass writes depth (and no colour).
+        let depth = scene("w3d_depth", &module, &layout, ("vs_back", "fs_depth"), true, wgpu::CompareFunction::Greater, None);
+        let paint = scene("w3d_paint", &module, &layout, ("vs", "fs_paint"), false, wgpu::CompareFunction::GreaterEqual, Some(premul));
+        let over = scene("w3d_over", &module, &layout, ("vs_over", "fs_paint"), false, wgpu::CompareFunction::Greater, Some(premul));
+        let paint_cut = scene("w3d_paint_cut", &cut_module, &cut_layout, ("vs", "fs_paint_cut"), false, wgpu::CompareFunction::GreaterEqual, Some(premul));
         let full = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("w3d_full"),
             layout: Some(&layout),
@@ -613,11 +633,11 @@ impl Resources {
         });
         let linear_out = target_format.is_srgb();
         Resources {
-            solid,
-            blend,
+            depth,
+            paint,
+            over,
             full,
-            solid_cut,
-            blend_cut,
+            paint_cut,
             cut_buf,
             cut_bind,
             post,
@@ -799,16 +819,28 @@ fn draw_offscreen(res: &mut Resources, device: &wgpu::Device, queue: &wgpu::Queu
         if let Some(pic) = res.pictures.get(&id) {
             rp.set_vertex_buffer(0, pic.vbuf.slice(..));
             rp.set_index_buffer(pic.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-            for (pipeline, cut_pipeline) in [(&res.solid, &res.solid_cut), (&res.blend, &res.blend_cut)] {
-                for (tex, start, count) in &pic.draws {
+            #[derive(PartialEq)]
+            enum Pass {
+                Depth,
+                Paint,
+                Over,
+            }
+            for pass in [Pass::Depth, Pass::Paint, Pass::Over] {
+                for (tex, start, count, over) in &pic.draws {
+                    if (pass == Pass::Paint && *over) || (pass == Pass::Over && !*over) {
+                        continue;
+                    }
                     let Some(bind) = res.bind_for(*tex) else { continue };
-                    if let Tex::Cutout(image) = tex {
-                        let Some(image) = res.images.get(image) else { continue };
-                        rp.set_pipeline(cut_pipeline);
-                        rp.set_bind_group(1, image, &[]);
-                        rp.set_bind_group(2, &res.cut_bind, &[]);
-                    } else {
-                        rp.set_pipeline(pipeline);
+                    match (&pass, tex) {
+                        (Pass::Paint, Tex::Cutout(image)) => {
+                            let Some(image) = res.images.get(image) else { continue };
+                            rp.set_pipeline(&res.paint_cut);
+                            rp.set_bind_group(1, image, &[]);
+                            rp.set_bind_group(2, &res.cut_bind, &[]);
+                        }
+                        (Pass::Depth, _) => rp.set_pipeline(&res.depth),
+                        (Pass::Paint, _) => rp.set_pipeline(&res.paint),
+                        (Pass::Over, _) => rp.set_pipeline(&res.over),
                     }
                     rp.set_bind_group(0, bind, &[]);
                     rp.draw_indexed(*start..start + count, 0, 0..1);
@@ -868,20 +900,23 @@ mod tests {
 
     #[test]
     fn frames_flatten_into_one_buffer_with_draws_per_texture() {
-        let v = |x: f32| Vtx { pos: [x, 10.0], uv: [0.0, 0.0], color: [255, 0, 0, 255], z: 0.5, solid: true };
+        let v = |x: f32| Vtx { pos: [x, 10.0], uv: [0.0, 0.0], color: [255, 0, 0, 255], z: 0.5, zb: 0.49, zo: 0.48, solid: true };
         let frame = Frame {
             batches: vec![
-                Batch { tex: Tex::Atlas, vertices: vec![v(0.0), v(10.0), v(20.0)], indices: vec![0, 1, 2] },
-                Batch { tex: Tex::Atlas, vertices: vec![v(0.0), v(10.0), v(20.0)], indices: vec![0, 1, 2] },
-                Batch { tex: Tex::Image(4), vertices: vec![v(0.0), v(10.0), v(20.0)], indices: vec![2, 1, 0] },
+                Batch { tex: Tex::Atlas, layer: 1, vertices: vec![v(0.0), v(10.0), v(20.0)], indices: vec![0, 1, 2] },
+                Batch { tex: Tex::Atlas, layer: 1, vertices: vec![v(0.0), v(10.0), v(20.0)], indices: vec![0, 1, 2] },
+                Batch { tex: Tex::Image(4), layer: 1, vertices: vec![v(0.0), v(10.0), v(20.0)], indices: vec![2, 1, 0] },
+                Batch { tex: Tex::Atlas, layer: 2, vertices: vec![v(0.0), v(10.0), v(20.0)], indices: vec![0, 1, 2] },
             ],
             triangles: 3,
             ..Frame::default()
         };
         let p = prepare(&frame, 20.0, 20.0, 1, 1);
-        assert_eq!(p.vertices.len(), 9 * STRIDE as usize);
-        assert_eq!(p.indices, vec![0, 1, 2, 3, 4, 5, 8, 7, 6]);
-        assert_eq!(p.draws, vec![(Tex::Atlas, 0, 6), (Tex::Image(4), 6, 3)]);
+        assert_eq!(p.vertices.len(), 12 * STRIDE as usize);
+        assert_eq!(p.indices, vec![0, 1, 2, 3, 4, 5, 8, 7, 6, 9, 10, 11]);
+        assert_eq!(p.draws, vec![(Tex::Atlas, 0, 6, false), (Tex::Image(4), 6, 3, false), (Tex::Atlas, 9, 3, true)]);
+        // The pushed-back depths ride along after the solid flag.
+        assert_eq!(f32::from_le_bytes([p.vertices[28], p.vertices[29], p.vertices[30], p.vertices[31]]), 0.49);
         // x = 0 → -1, x = 20 → 1 in NDC.
         let f = |o: usize| f32::from_le_bytes([p.vertices[o], p.vertices[o + 1], p.vertices[o + 2], p.vertices[o + 3]]);
         assert_eq!(f(0), -1.0);

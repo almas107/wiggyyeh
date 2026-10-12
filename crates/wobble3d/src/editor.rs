@@ -21,6 +21,9 @@ use crate::render::{self, Frame, Options};
 use crate::texture::Atlas;
 use crate::transform::{self, Delta, GizmoKind, Handle, Modal, Mode, Part};
 
+mod fills;
+pub use fills::{ShapeKind, shape_corners};
+
 pub const UNDO_MAX: usize = 256;
 /// How long the pen must rest for Draw Shape's hold-to-adjust (seconds).
 pub const HOLD_SECONDS: f64 = 0.45;
@@ -49,10 +52,16 @@ pub enum Tool {
     /// Feather's Stamp: each click (or step of a drag) drops a copy of the selection on the
     /// guide under the pointer.
     Stamp,
+    /// The paint bucket: click inside a closed shape to fill it (under its lines).
+    Fill,
+    /// Drag a loop: the inside fills with the brush colour on the guide.
+    LassoFill,
+    /// Drag out a rectangle, ellipse, polygon, star or line: filled or as an outline.
+    Shapes,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 14] = [
+    pub const ALL: [Tool; 17] = [
         Tool::Draw,
         Tool::DrawShape,
         Tool::Erase,
@@ -67,6 +76,9 @@ impl Tool {
         Tool::Injector,
         Tool::Eyedropper,
         Tool::Stamp,
+        Tool::Fill,
+        Tool::LassoFill,
+        Tool::Shapes,
     ];
 
     pub fn name(self) -> &'static str {
@@ -85,6 +97,9 @@ impl Tool {
             Tool::Injector => "injector",
             Tool::Eyedropper => "eyedropper",
             Tool::Stamp => "stamp",
+            Tool::Fill => "fill",
+            Tool::LassoFill => "lassofill",
+            Tool::Shapes => "shapes",
         }
     }
 
@@ -104,6 +119,9 @@ impl Tool {
             Tool::Injector => "Injector",
             Tool::Eyedropper => "Eyedropper",
             Tool::Stamp => "Stamp",
+            Tool::Fill => "Fill",
+            Tool::LassoFill => "Lasso Fill",
+            Tool::Shapes => "Shapes",
         }
     }
 
@@ -113,7 +131,7 @@ impl Tool {
 
     /// Tools that draw or erase (Feather: choosing them drops the selection).
     fn paints(self) -> bool {
-        matches!(self, Tool::Draw | Tool::DrawShape | Tool::Erase | Tool::Vacuum)
+        matches!(self, Tool::Draw | Tool::DrawShape | Tool::Erase | Tool::Vacuum | Tool::Fill | Tool::LassoFill | Tool::Shapes)
     }
 }
 
@@ -195,6 +213,8 @@ pub enum Event {
     GuideClosed,
     GuideSaved,
     Selected(usize),
+    /// A fill, filled shape or solid was made.
+    Filled,
     Transformed,
     Sampled,
     Error(String),
@@ -208,6 +228,10 @@ enum LiveKind {
     Erase,
     Select,
     Liquify,
+    /// Lasso Fill's loop.
+    Lasso,
+    /// A Shapes drag.
+    Shape,
 }
 
 #[derive(Debug, Clone)]
@@ -232,6 +256,8 @@ struct Live {
 struct ModalState {
     modal: Modal,
     base: Scene,
+    /// Started by dragging (a gizmo handle or the thing itself): letting go confirms it.
+    drag: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -293,6 +319,14 @@ pub struct Editor {
     pub feel: crate::feel::StrokeFeel,
     /// Draw Shape also corrects guide and bend strokes.
     pub guide_shape: bool,
+    /// Hold to snap (Apple Pencil's QuickShape) in plain Draw too: rest the pen at the end of a
+    /// stroke and it becomes a clean line, rectangle, polygon, circle, ellipse or arc, then
+    /// keep holding and move to adjust it.
+    pub quick_shape: bool,
+    /// The Shapes tool: what it draws, how many sides (polygon, star) and whether it fills.
+    pub shape_kind: ShapeKind,
+    pub shape_sides: u32,
+    pub shape_filled: bool,
     /// With no guide, draw on the plane through the orbit point facing the view (Feather needs a
     /// guide; WobbleWorks lets you sketch straight away).
     pub draw_in_air: bool,
@@ -326,6 +360,9 @@ pub struct Editor {
     recent_guide: Option<Arc<Guide>>,
     /// Where the last stamp went while dragging the Stamp tool.
     stamp_from: Option<[f32; 2]>,
+    /// Pressed on something already selected (or the primitive being placed): dragging past a
+    /// few pixels moves it, letting go puts it down.
+    tweak_from: Option<[f32; 2]>,
 }
 
 impl Default for Editor {
@@ -401,6 +438,10 @@ impl Editor {
             stable: 0.3,
             feel: crate::feel::StrokeFeel::default(),
             guide_shape: true,
+            quick_shape: true,
+            shape_kind: ShapeKind::Rect,
+            shape_sides: 5,
+            shape_filled: true,
             draw_in_air: true,
             pin_orbit: false,
             show_orbit: true,
@@ -427,6 +468,7 @@ impl Editor {
             primitive: None,
             recent_guide: None,
             stamp_from: None,
+            tweak_from: None,
         }
     }
 
@@ -622,6 +664,50 @@ impl Editor {
         }
     }
 
+    /// What an orbit drag starting at a screen point turns about: the nearest thing drawn
+    /// under the pointer (a curve, guide, image or model), else the selection, else nothing
+    /// (the orbit point).
+    pub fn orbit_pivot(&self, x: f32, y: f32) -> Option<Vec3> {
+        if !(x.is_finite() && y.is_finite()) {
+            return None;
+        }
+        let view = self.view();
+        let (o, d) = view.ray(x, y);
+        let mut best: Option<(f32, Vec3)> = ops::raycast_resources(&self.scene, o, d, false).map(|(t, p, _, _)| (t, p));
+        for g in &self.scene.guides {
+            if self.scene.guide_state(g.id) == ResourceState::Hidden {
+                continue;
+            }
+            if let Some(h) = g.raycast(o, d)
+                && best.is_none_or(|(t, _)| h.t < t)
+            {
+                best = Some((h.t, o + d * h.t));
+            }
+        }
+        const NEAR_PX: f32 = 12.0;
+        let mut near: Option<(f32, Vec3)> = None;
+        for st in self.scene.strokes.iter().filter(|s| self.scene.group_shown(s.group)) {
+            for p in &st.points {
+                let Some(q) = view.project(p.p) else { continue };
+                if (q.x - x).powi(2) + (q.y - y).powi(2) <= NEAR_PX * NEAR_PX && near.is_none_or(|(dd, _)| q.depth < dd) {
+                    near = Some((q.depth, p.p));
+                }
+            }
+        }
+        let along = |p: Vec3| (p - o).dot(d);
+        match (best, near) {
+            (Some((t, p)), Some((_, q))) => Some(if along(q) < t { q } else { p }),
+            (Some((_, p)), None) | (None, Some((_, p))) => Some(p),
+            (None, None) => {
+                if self.has_selection() {
+                    self.pivot_point()
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- drawing targets
 
     /// Where a screen point lands: on the active guide, an active image or model, or (when
@@ -660,7 +746,7 @@ impl Editor {
 
     fn new_stroke(&mut self, points: Vec<Point>) -> Stroke {
         let id = self.scene.alloc_id();
-        let mut st = Stroke { id, group: self.scene.active_group, points, brush: self.brush, seed: hash(id as u32 ^ 0x5eed_0001) };
+        let mut st = Stroke { id, group: self.scene.active_group, points, brush: self.brush, seed: hash(id as u32 ^ 0x5eed_0001), tris: Vec::new() };
         st.sanitize();
         st
     }
@@ -701,7 +787,14 @@ impl Editor {
         let maps = if self.mirror_on { mirror_maps(self.mirror_axes) } else { Vec::new() };
         let mut out = Vec::new();
         for (k, c) in curves.into_iter().filter(|c| !c.is_empty()).enumerate() {
-            let base = Stroke { id: u64::MAX - k as u64, group: self.scene.active_group, points: c.clone(), brush: self.brush, seed: 0x1234 + k as u32 };
+            let base = Stroke {
+                id: u64::MAX - k as u64,
+                group: self.scene.active_group,
+                points: c.clone(),
+                brush: self.brush,
+                seed: 0x1234 + k as u32,
+                tris: Vec::new(),
+            };
             for (j, m) in maps.iter().enumerate() {
                 let pts = c.iter().map(|p| Point { p: reflect(p.p, *m), pressure: p.pressure, n: reflect(p.n, *m) }).collect();
                 out.push(Stroke { id: u64::MAX - 100 - (k * 8 + j) as u64, points: pts, ..base.clone() });
@@ -775,10 +868,33 @@ impl Editor {
             self.modal_confirm();
             return;
         }
+        self.tweak_from = None;
         // Gizmo handles first.
         if let Some(h) = self.gizmo_parts().and_then(|parts| transform::pick(&parts, [x, y])) {
             self.start_modal_from_handle(h, [x, y]);
             return;
+        }
+        // Press on what is selected and drag: it moves with the pointer (no G needed). The
+        // Primitives tool takes any guide, image or model under the pointer.
+        if matches!(self.tool, Tool::Select | Tool::Primitive) && !mods.ctrl && !mods.shift {
+            let view = self.view();
+            let on_selected = ops::pick_stroke(&self.scene, &view, [x, y], 6.0, false).is_some_and(|h| self.selection.contains(&h));
+            let resource = if on_selected { None } else { ops::pick_resource(&self.scene, &view, [x, y]) };
+            if self.tool == Tool::Primitive
+                && let Some(r) = resource
+                && !self.selected_resources.contains(&r)
+            {
+                self.selection.clear();
+                self.selected_resources = [r].into();
+                self.events.push(Event::Selected(1));
+                self.touch();
+            }
+            if on_selected || resource.is_some_and(|r| self.selected_resources.contains(&r)) {
+                self.tweak_from = Some([x, y]);
+                if self.tool == Tool::Primitive {
+                    return;
+                }
+            }
         }
         let kind = match self.tool {
             Tool::Draw | Tool::DrawShape => {
@@ -803,7 +919,7 @@ impl Editor {
                 return;
             }
             Tool::Primitive => {
-                // Clicking a resource selects it so G / R / S move the primitive.
+                // Pressing a guide, image or model selected it above; dragging moves it.
                 return;
             }
             Tool::Injector | Tool::Eyedropper => {
@@ -818,6 +934,18 @@ impl Editor {
                 self.stamp_from = Some([x, y]);
                 return;
             }
+            Tool::Fill => {
+                match self.fill_at(x, y) {
+                    Ok(_) => self.status = "Filled".into(),
+                    Err(e) => {
+                        self.error(e);
+                    }
+                }
+                self.touch();
+                return;
+            }
+            Tool::LassoFill => LiveKind::Lasso,
+            Tool::Shapes => LiveKind::Shape,
         };
         // Shift while drawing toggles the stabilizer (Grease Pencil's Shift-LMB).
         let stable = match (mods.shift, self.stable > 0.0) {
@@ -856,7 +984,12 @@ impl Editor {
                     l.raw.push([x, y, 1.0]);
                 }
             }
-            LiveKind::Liquify => {}
+            LiveKind::Liquify | LiveKind::Shape => {}
+            LiveKind::Lasso => {
+                if let Some(l) = &mut self.live {
+                    l.raw.push([x, y, 1.0]);
+                }
+            }
         }
         self.touch();
     }
@@ -880,6 +1013,18 @@ impl Editor {
         self.mouse = [x, y];
         self.time = t;
         let pressure = self.feel.pressure(pressure);
+        if let Some(from) = self.tweak_from
+            && self.modal.is_none()
+            && ((x - from[0]).powi(2) + (y - from[1]).powi(2)).sqrt() > 4.0
+        {
+            self.tweak_from = None;
+            self.live = None;
+            if self.start_modal(Mode::Grab, from).is_ok()
+                && let Some(m) = &mut self.modal
+            {
+                m.drag = true;
+            }
+        }
         if let Some(m) = &mut self.modal {
             m.modal.mouse = [x, y];
             m.modal.snap = mods.ctrl;
@@ -927,6 +1072,18 @@ impl Editor {
                 }
                 self.touch();
             }
+            LiveKind::Lasso => {
+                if moved && let Some(l) = &mut self.live {
+                    l.raw.push([x, y, 1.0]);
+                }
+                self.touch();
+            }
+            LiveKind::Shape => {
+                if let Some(l) = &mut self.live {
+                    l.mods = mods;
+                }
+                self.touch();
+            }
             LiveKind::Liquify => {
                 let view = self.view();
                 let delta = [x - prev[0], y - prev[1]];
@@ -944,9 +1101,10 @@ impl Editor {
         self.time = t;
         let shape_tool = self.tool == Tool::DrawShape;
         let guide_shape = self.guide_shape;
+        let quick = self.quick_shape;
         let Some(live) = &mut self.live else { return };
         let applies = match live.kind {
-            LiveKind::Draw => shape_tool,
+            LiveKind::Draw => shape_tool || (quick && live.moved),
             LiveKind::Guide | LiveKind::Bend => shape_tool || guide_shape,
             _ => false,
         };
@@ -955,24 +1113,38 @@ impl Editor {
         }
         let pts: Vec<[f32; 2]> = live.raw.iter().map(|q| [q[0], q[1]]).collect();
         let short = pts.windows(2).map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt()).sum::<f32>() < 6.0;
-        live.shape = if short && !live.moved {
+        let quick_only = live.kind == LiveKind::Draw && !shape_tool;
+        live.shape = if short && !live.moved && !quick_only {
             // Press, hold, then drag: a circle sized by the drag.
             Some(Shape::Circle { c: live.down, r: 1.0, start: 0.0 })
         } else {
-            recognize(&pts)
+            recognize(&pts).filter(|sh| !quick_only || !matches!(sh, Shape::Curve { .. }) || close_to(&pts, &sh.points()))
         };
-        if live.shape.is_some() {
-            live.adjusting = true;
-            if live.kind == LiveKind::Draw {
-                self.reproject_live();
-            }
-            self.touch();
+        let Some(sh) = live.shape else { return };
+        live.adjusting = true;
+        let draw = live.kind == LiveKind::Draw;
+        self.status = format!("Snapped to a {}: keep holding and move to adjust", sh.name());
+        if draw {
+            self.reproject_live();
         }
+        self.touch();
     }
 
     pub fn pointer_up(&mut self, x: f32, y: f32, t: f64, mods: Mods) {
         self.time = t;
         self.stamp_from = None;
+        self.tweak_from = None;
+        if self.modal.as_ref().is_some_and(|m| m.drag) {
+            if let Some(m) = &mut self.modal
+                && x.is_finite()
+                && y.is_finite()
+            {
+                m.modal.mouse = [x, y];
+            }
+            self.apply_modal();
+            self.modal_confirm();
+            return;
+        }
         let (x, y) = if x.is_finite() && y.is_finite() { (x, y) } else { (self.mouse[0], self.mouse[1]) };
         let Some(mut live) = self.live.take() else { return };
         match live.kind {
@@ -1046,6 +1218,22 @@ impl Editor {
                 }
             }
             LiveKind::Select => self.finish_select(&live, x, y, mods),
+            LiveKind::Lasso => {
+                let outline: Vec<[f32; 2]> = live.raw.iter().map(|q| [q[0], q[1]]).collect();
+                if outline.len() >= 3
+                    && let Err(e) = self.fill_outline(&outline, "Lasso Fill")
+                {
+                    self.error(e);
+                }
+            }
+            LiveKind::Shape => {
+                let (a, b) = shape_corners(live.down, [x, y], self.shape_kind, mods);
+                if live.moved
+                    && let Err(e) = self.make_shape(a, b, self.shape_filled)
+                {
+                    self.error(e);
+                }
+            }
             LiveKind::Liquify => {
                 if self.undo.last().is_some_and(|(_, s)| s.strokes == self.scene.strokes) {
                     self.undo.pop();
@@ -1573,7 +1761,7 @@ impl Editor {
         let pivot = self.pivot_point().ok_or("select something to transform first")?;
         self.live = None;
         let modal = Modal::new(mode, pivot, self.orient(), mouse);
-        self.modal = Some(ModalState { modal, base: self.scene.clone() });
+        self.modal = Some(ModalState { modal, base: self.scene.clone(), drag: false });
         self.touch();
         Ok(())
     }
@@ -1581,7 +1769,7 @@ impl Editor {
     fn start_modal_from_handle(&mut self, h: Handle, mouse: [f32; 2]) {
         let Some(pivot) = self.pivot_point() else { return };
         let modal = h.start(pivot, self.orient(), mouse, self.gizmo_local);
-        self.modal = Some(ModalState { modal, base: self.scene.clone() });
+        self.modal = Some(ModalState { modal, base: self.scene.clone(), drag: true });
         self.touch();
     }
 
@@ -1716,6 +1904,23 @@ impl Editor {
                 }
                 LiveKind::Select if self.select_mode == SelectMode::Lasso => {
                     o.polyline = live.raw.iter().map(|q| [q[0], q[1]]).collect();
+                }
+                LiveKind::Lasso => {
+                    o.polyline = live.raw.iter().map(|q| [q[0], q[1]]).collect();
+                    if let Some(f) = o.polyline.first().copied() {
+                        o.polyline.push(f);
+                    }
+                }
+                LiveKind::Shape if live.moved => {
+                    let (a, b) = shape_corners(live.down, live.last, self.shape_kind, live.mods);
+                    if let Ok(mut outline) = self.shape_outline(a, b) {
+                        if self.shape_kind != ShapeKind::Line
+                            && let Some(f) = outline.first().copied()
+                        {
+                            outline.push(f);
+                        }
+                        o.polyline = outline;
+                    }
                 }
                 _ => {}
             }
@@ -1914,6 +2119,9 @@ impl Editor {
     }
 
     fn run_inner(&mut self, cmd: &str, p: &Value) -> Result<Value, String> {
+        if let Some(out) = self.run_fill(cmd, p) {
+            return out;
+        }
         let ok = Ok(Value::Null);
         match cmd {
             // ---- camera
@@ -3021,6 +3229,9 @@ impl Editor {
                 if let Some(v) = b(p, "pinOrbit") {
                     self.pin_orbit = v;
                 }
+                if let Some(v) = b(p, "quickShape") {
+                    self.quick_shape = v;
+                }
                 self.touch();
                 ok
             }
@@ -3293,6 +3504,22 @@ impl Editor {
 }
 
 /// The colour of an image resource at a world point on it.
+/// Every point of a hand-drawn stroke lies near the corrected shape (QuickShape in plain Draw
+/// only snaps a held stroke to a curve when it already is one; a scribble stays a scribble).
+fn close_to(drawn: &[[f32; 2]], shape: &[[f32; 2]]) -> bool {
+    let length: f32 = drawn.windows(2).map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt()).sum();
+    let tol = (length * 0.05).max(6.0);
+    drawn.iter().all(|p| {
+        shape.windows(2).any(|w| {
+            let (a, b) = (w[0], w[1]);
+            let (abx, aby) = (b[0] - a[0], b[1] - a[1]);
+            let l2 = abx * abx + aby * aby;
+            let t = if l2 > 1e-9 { (((p[0] - a[0]) * abx + (p[1] - a[1]) * aby) / l2).clamp(0.0, 1.0) } else { 0.0 };
+            ((p[0] - a[0] - abx * t).powi(2) + (p[1] - a[1] - aby * t).powi(2)).sqrt() <= tol
+        })
+    })
+}
+
 fn image_colour(im: &ImageResource, p: Vec3) -> Option<Rgba> {
     let c = im.corners();
     let (ex, ey) = (c[1] - c[0], c[3] - c[0]);
@@ -3324,7 +3551,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("camera.viewport", "{width, height} the 3D view's size in pixels"),
     (
         "tool.set",
-        "{tool: draw|shape|erase|vacuum|select|deselect|guide|bend|loft|primitive|liquify|injector|eyedropper|stamp, mode?: brush|box|circle|lasso, cycle?}",
+        "{tool: draw|shape|erase|vacuum|select|deselect|guide|bend|loft|primitive|liquify|injector|eyedropper|stamp|fill|lassofill|shapes, mode?: brush|box|circle|lasso, cycle?}",
     ),
     ("tool.toggleMode", "Draw ↔ Select (Tab)"),
     (
@@ -3352,7 +3579,13 @@ const COMMANDS: &[(&str, &str)] = &[
     ("edit.delete", "delete the selection"),
     ("edit.duplicate", "{mode: inplace|move|view|mirror}"),
     ("edit.flip", "{axis: x|y|z} mirror the selection about the pivot"),
-    ("edit.fill", "{spacing?, angle?, zigzag?, jitter?} fill the selected closed curves with strokes in the current brush"),
+    ("edit.fill", "{spacing?, angle?, zigzag?, jitter?} fill the selected closed curves with strokes in the current brush (hatching)"),
+    ("fill.at", "{x, y} paint bucket: fill the closed shape around a screen point, under its lines"),
+    ("fill.lasso", "{points: [[x,y]…]} fill the inside of a screen loop on the guide (Lasso Fill)"),
+    ("fill.shape", "{kind: rect|ellipse|polygon|star|line, x0, y0, x1, y1, sides?, filled?} draw a shape between two screen corners"),
+    ("shape.set", "{kind?, sides?, filled?} the Shapes tool's shape"),
+    ("fill.selection", "fill each selected closed curve with a solid surface in the brush colour"),
+    ("guide.solid", "{id?} a solid, painted copy of a guide's surface (make a primitive a coloured object)"),
     ("transform.start", "{mode: grab|rotate|scale, x?, y?} start a Blender-style modal transform"),
     ("transform.axis", "{axis: x|y|z, plane?} constrain (again: local, again: free)"),
     ("transform.type", "{text} type an exact amount"),
@@ -3418,7 +3651,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "feel.set",
         "{pressureGamma 0.25–4, pressureMin 0–0.9, post, smooth 0–2, smoothIterations 0–10, smoothThickness 0–1, thicknessIterations 0–10, subdivide 0–3, simplify 0–1, trim, reset} Grease Pencil-style stroke feel",
     ),
-    ("assist.set", "{guideShape, drawInAir, showOrbit, pinOrbit}"),
+    (
+        "assist.set",
+        "{guideShape, drawInAir, showOrbit, pinOrbit, quickShape} quickShape: hold the pen still at the end of a Draw stroke to snap it to a line, rectangle, polygon, circle or ellipse",
+    ),
     ("shot.add", "{after?} add a camera shot of the current view"),
     ("shot.go", "{id}"),
     ("shot.delete", "{ids}"),

@@ -111,6 +111,12 @@ pub struct Viewport {
     /// one again is cheap.
     cache: Option<(CacheKey, Pictures)>,
     nav: Option<(NavMode, Pos2)>,
+    /// What the orbit drag turns about (the thing under the pointer when it began).
+    orbit_pivot: Option<wobbleworks_3d::math::Vec3>,
+    /// Right button pressed here: a drag orbits, a click (no drag) opens the context menu.
+    right_click: Option<Pos2>,
+    /// Orbit drags turn about what is under the pointer (else about the orbit point).
+    pub orbit_about_pointer: bool,
     /// The primary button went down in the viewport (and goes to the editor until it lifts).
     drawing: bool,
     /// Alt+middle click: snap when released without dragging.
@@ -134,15 +140,24 @@ impl Default for Viewport {
             textures: Textures::default(),
             cache: None,
             nav: None,
+            orbit_pivot: None,
+            right_click: None,
+            orbit_about_pointer: true,
             drawing: false,
             alt_click: None,
-            emulate_mmb: false,
+            emulate_mmb: true,
             rect: Rect::NOTHING,
             gpu: None,
             gpu_textures: None,
             cache_origin: Pos2::ZERO,
             triangles: 0,
         }
+    }
+}
+
+impl Viewport {
+    fn pivot_at(&self, ed: &Editor, mode: NavMode, x: f32, y: f32) -> Option<wobbleworks_3d::math::Vec3> {
+        (mode == NavMode::Orbit && self.orbit_about_pointer).then(|| ed.orbit_pivot(x, y)).flatten()
     }
 }
 
@@ -182,6 +197,7 @@ impl Viewport {
                             if modifiers.alt {
                                 self.alt_click = Some(*pos);
                             }
+                            self.orbit_pivot = self.pivot_at(ed, mode, x, y);
                             self.nav = Some((mode, *pos));
                         }
                         (PointerButton::Middle, false) => {
@@ -194,6 +210,7 @@ impl Viewport {
                         }
                         (PointerButton::Primary, true) if over_us(*pos) => {
                             if self.emulate_mmb && modifiers.alt && !ed.in_modal() {
+                                self.orbit_pivot = self.pivot_at(ed, NavMode::Orbit, x, y);
                                 self.nav = Some((NavMode::Orbit, *pos));
                             } else {
                                 self.drawing = true;
@@ -209,8 +226,27 @@ impl Viewport {
                                 ed.pointer_up(x, y, t, m);
                             }
                         }
-                        (PointerButton::Secondary, true) if over_us(*pos) && !ed.cancel() => {
-                            context_menu = Some(*pos);
+                        // Right drag orbits (Shift pans, Ctrl zooms), a right click opens the menu:
+                        // pen and laptop users rarely have a middle button.
+                        (PointerButton::Secondary, true) if over_us(*pos) && !ed.cancel() && self.nav.is_none() => {
+                            let mode = if modifiers.shift {
+                                NavMode::Pan
+                            } else if modifiers.command || modifiers.ctrl {
+                                NavMode::Zoom
+                            } else {
+                                NavMode::Orbit
+                            };
+                            self.orbit_pivot = self.pivot_at(ed, mode, x, y);
+                            self.right_click = Some(*pos);
+                            self.nav = Some((mode, *pos));
+                        }
+                        (PointerButton::Secondary, false) => {
+                            if let Some(start) = self.right_click.take() {
+                                self.nav = None;
+                                if start.distance(*pos) < 4.0 {
+                                    context_menu = Some(*pos);
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -219,7 +255,10 @@ impl Viewport {
                     if let Some((mode, last)) = self.nav {
                         let d = *pos - last;
                         match mode {
-                            NavMode::Orbit => ed.camera.orbit(d.x, d.y),
+                            NavMode::Orbit => match self.orbit_pivot {
+                                Some(p) => ed.camera.orbit_about(p, d.x, d.y),
+                                None => ed.camera.orbit(d.x, d.y),
+                            },
                             NavMode::Pan => ed.camera.pan(d.x, d.y),
                             NavMode::Zoom => ed.camera.zoom((-d.y * 0.01).exp()),
                             NavMode::Lens => {
@@ -250,6 +289,7 @@ impl Viewport {
                 }
                 Event::PointerGone => {
                     self.nav = None;
+                    self.right_click = None;
                 }
                 _ => {}
             }

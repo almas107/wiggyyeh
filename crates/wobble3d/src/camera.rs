@@ -201,6 +201,23 @@ impl Camera {
         self.sanitize();
     }
 
+    /// Orbit like [`Camera::orbit`], but about `pivot` (the thing under the pointer when the drag
+    /// began) instead of the orbit point: the pivot stays put on screen, so what you grabbed
+    /// turns in place instead of swinging out of view.
+    pub fn orbit_about(&mut self, pivot: Vec3, dx: f32, dy: f32) {
+        if !pivot.is_finite() {
+            self.orbit(dx, dy);
+            return;
+        }
+        let before = self.view();
+        self.orbit(dx, dy);
+        let after = self.view();
+        let rel = self.target - pivot;
+        let (a, b, c) = (rel.dot(before.right), rel.dot(before.up), rel.dot(before.back));
+        self.target = pivot + after.right * a + after.up * b + after.back * c;
+        self.sanitize();
+    }
+
     /// Pan by a screen drag: the scene follows the pointer.
     pub fn pan(&mut self, dx: f32, dy: f32) {
         if !(dx.is_finite() && dy.is_finite()) {
@@ -354,6 +371,22 @@ impl View {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn orbiting_about_a_point_keeps_it_still_on_screen() {
+        let mut c = Camera::default();
+        c.sanitize();
+        let pivot = v3(1.5, 0.4, -0.8);
+        let at = c.view().project(pivot).expect("visible");
+        for (dx, dy) in [(40.0, 0.0), (0.0, 30.0), (-25.0, 12.0)] {
+            c.orbit_about(pivot, dx, dy);
+            let now = c.view().project(pivot).expect("still visible");
+            assert!((now.x - at.x).abs() < 0.05 && (now.y - at.y).abs() < 0.05, "{now:?} vs {at:?}");
+        }
+        assert!((c.yaw - (30.0 - 15.0 * 0.35)).abs() < 1e-3);
+        c.orbit_about(v3(f32::NAN, 0.0, 0.0), 10.0, 0.0);
+        assert!(c.target.is_finite());
+    }
 
     #[test]
     fn projects_and_unprojects_consistently() {

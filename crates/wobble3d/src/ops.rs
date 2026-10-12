@@ -44,10 +44,43 @@ fn candidates<'a>(scene: &'a Scene, active_only: bool) -> impl Iterator<Item = &
     scene.strokes.iter().filter(move |s| scene.group_shown(s.group) && (!active_only || s.group == scene.active_group))
 }
 
+/// Whether a screen point is over a fill (Fill, Lasso Fill, Shapes): the depth there, of the
+/// nearest of its triangles covering the point.
+pub fn fill_hit(view: &View, s: &Stroke, at: [f32; 2]) -> Option<f32> {
+    if !s.is_fill() {
+        return None;
+    }
+    let sp = screen_points(view, s);
+    let mut best: Option<f32> = None;
+    for t in &s.tris {
+        let (Some(Some(a)), Some(Some(b)), Some(Some(c))) = (sp.get(t[0] as usize), sp.get(t[1] as usize), sp.get(t[2] as usize)) else { continue };
+        let cr = |o: &(f32, f32, f32), p: &(f32, f32, f32), q: [f32; 2]| (p.0 - o.0) * (q[1] - o.1) - (p.1 - o.1) * (q[0] - o.0);
+        let (d0, d1, d2) = (cr(a, b, at), cr(b, c, at), cr(c, a, at));
+        let inside = (d0 >= 0.0 && d1 >= 0.0 && d2 >= 0.0) || (d0 <= 0.0 && d1 <= 0.0 && d2 <= 0.0);
+        if inside {
+            let depth = (a.2 + b.2 + c.2) / 3.0;
+            if best.is_none_or(|d| depth < d) {
+                best = Some(depth);
+            }
+        }
+    }
+    best
+}
+
 /// The nearest curve within `radius` pixels of a screen point (front-most when tied).
 pub fn pick_stroke(scene: &Scene, view: &View, at: [f32; 2], radius: f32, active_only: bool) -> Option<u64> {
     let mut best: Option<(f32, f32, u64)> = None;
     for s in candidates(scene, active_only) {
+        if s.is_fill() {
+            // Inside a fill counts as close; a line right beside the pointer still wins.
+            if let Some(depth) = fill_hit(view, s, at) {
+                let d = radius * 0.75;
+                if best.is_none_or(|(bd, bz, _)| d < bd - 0.5 || (d < bd + 0.5 && depth < bz)) {
+                    best = Some((d, depth, s.id));
+                }
+            }
+            continue;
+        }
         let sp = screen_points(view, s);
         let single = sp.len() == 1;
         for (i, w) in sp.windows(2).enumerate() {
@@ -76,7 +109,9 @@ pub fn strokes_near(scene: &Scene, view: &View, at: [f32; 2], radius: f32) -> Ve
     let mut out = Vec::new();
     for s in candidates(scene, false) {
         let sp = screen_points(view, s);
-        let hit = if sp.len() == 1 {
+        let hit = if s.is_fill() {
+            fill_hit(view, s, at).is_some() || sp.iter().flatten().any(|a| ((at[0] - a.0).powi(2) + (at[1] - a.1).powi(2)).sqrt() <= radius)
+        } else if sp.len() == 1 {
             sp[0].is_some_and(|a| ((at[0] - a.0).powi(2) + (at[1] - a.1).powi(2)).sqrt() <= radius)
         } else {
             sp.windows(2).enumerate().any(|(i, w)| match (w[0], w[1]) {
@@ -121,7 +156,8 @@ pub fn erase_points(scene: &mut Scene, view: &View, at: [f32; 2], radius: f32) -
     let mut out: Vec<Arc<Stroke>> = Vec::with_capacity(scene.strokes.len());
     let strokes = std::mem::take(&mut scene.strokes);
     for s in strokes {
-        if !scene.group_shown(s.group) {
+        // Fills go whole (Vacuum), not point by point.
+        if !scene.group_shown(s.group) || s.is_fill() {
             out.push(s);
             continue;
         }
@@ -443,7 +479,7 @@ pub fn lighten(scene: &mut Scene, ids: Option<&HashSet<u64>>, tolerance: f32) ->
     let tol = if tolerance.is_finite() { tolerance.clamp(0.0, 2.0) } else { 0.25 };
     let mut removed = 0usize;
     for s in scene.strokes.iter_mut() {
-        if ids.is_some_and(|set| !set.contains(&s.id)) || s.points.len() < 3 {
+        if ids.is_some_and(|set| !set.contains(&s.id)) || s.points.len() < 3 || s.is_fill() {
             continue;
         }
         let eps = s.brush.radius() * 2.0 * tol;
@@ -574,6 +610,7 @@ mod tests {
             points: (0..21).map(|i| Point { p: v3(i as f32 * 0.1 - 1.0, 0.0, 0.0), pressure: 1.0, n: Vec3::ZERO }).collect(),
             brush: Brush::default(),
             seed: 3,
+            tris: Vec::new(),
         }));
         s.next_id = 11;
         s
@@ -678,7 +715,7 @@ mod tests {
         assert_eq!(n, before - 2, "a straight line keeps its ends");
         let wavy: Vec<crate::model::Point> =
             (0..50).map(|i| crate::model::Point { p: v3(i as f32 * 0.02, (i as f32 * 0.5).sin() * 0.2, 0.0), pressure: 1.0, n: Vec3::ZERO }).collect();
-        s.strokes.push(Arc::new(Stroke { id: 11, group: 1, points: wavy, brush: Brush::default(), seed: 1 }));
+        s.strokes.push(Arc::new(Stroke { id: 11, group: 1, points: wavy, brush: Brush::default(), seed: 1, tris: Vec::new() }));
         lighten(&mut s, None, 0.25);
         assert!(s.strokes[1].points.len() > 10, "curves keep their shape");
     }

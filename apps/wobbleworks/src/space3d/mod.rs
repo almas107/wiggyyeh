@@ -309,6 +309,7 @@ impl Space3d {
             "brush": self.show_brush,
             "side": self.show_side,
             "emulateMmb": self.view.emulate_mmb,
+            "orbitAboutPointer": self.view.orbit_about_pointer,
             "holdBoil": self.hold_boil_while_drawing,
             "stable": self.ed.stable,
             "feel": self.ed.feel,
@@ -336,6 +337,9 @@ impl Space3d {
         }
         if let Some(b) = flag("emulateMmb") {
             self.view.emulate_mmb = b;
+        }
+        if let Some(b) = flag("orbitAboutPointer") {
+            self.view.orbit_about_pointer = b;
         }
         if let Some(b) = flag("holdBoil") {
             self.hold_boil_while_drawing = b;

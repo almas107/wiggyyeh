@@ -271,6 +271,8 @@ fn view_menu(s: &mut Space3d, ui: &mut Ui) {
         s.run("assist.set", json!({"showOrbit": orbit}));
     }
     ui.checkbox(&mut s.view.emulate_mmb, "Emulate 3-button mouse (Alt+drag orbits)");
+    ui.checkbox(&mut s.view.orbit_about_pointer, "Orbit around what's under the pointer")
+        .on_hover_text("Right drag, middle drag and Alt+drag turn the view about the curve or guide you grabbed");
     ui.checkbox(&mut s.left_handed, "Left-handed layout");
     ui.checkbox(&mut s.show_tools, "Toolbar");
     ui.checkbox(&mut s.show_brush, "Brush panel");

@@ -116,6 +116,27 @@ pub fn base_kind(t: &Theme) -> ThemeKind {
     if t.dark { ThemeKind::Studio } else { ThemeKind::StudioLight }
 }
 
+/// The look to switch to when PhotoCraft's theme was changed to `kind` (its title bar's sun / moon
+/// button, Window › Theme, Preferences): dark kinds pick Midnight Snack, light ones the last light
+/// look. Classic is where the toggle lands from the light layout, so it flips dark and light.
+pub fn toggled(kind: ThemeKind, current: &Theme, light: &Theme) -> Theme {
+    let dark = match kind {
+        ThemeKind::Pro | ThemeKind::ProMedium | ThemeKind::Studio => true,
+        ThemeKind::StudioLight => false,
+        ThemeKind::Classic => !current.dark,
+    };
+    if dark == current.dark {
+        return *current;
+    }
+    if dark {
+        PRESETS.iter().find(|(_, t)| t.dark).map_or(*current, |(_, t)| *t)
+    } else if light.dark {
+        BUBBLEGUM
+    } else {
+        *light
+    }
+}
+
 /// PhotoCraft tokens in WobbleWorks colours.
 pub fn tokens(t: &Theme) -> Tokens {
     let mut k = Tokens::for_kind(base_kind(t));
@@ -215,6 +236,10 @@ mod tests {
             assert!((lum(t.ink) - lum(t.card)).abs() > 120.0, "{name}: ink on card");
             assert!((lum(t.ink) - lum(t.paper)).abs() > 100.0, "{name}: ink on paper");
             assert_eq!(t.dark, lum(t.card) < 128.0, "{name}: dark flag");
+            // The title bar's sun / moon button flips between dark and light from every look.
+            let flipped = toggled(base_kind(t).next(), t, &PRESETS[1].1);
+            assert_ne!(flipped.dark, t.dark, "{name}: the toggle flips dark mode");
+            assert_eq!(toggled(base_kind(&flipped).next(), &flipped, &PRESETS[1].1).dark, t.dark, "{name}: and back");
         }
     }
 

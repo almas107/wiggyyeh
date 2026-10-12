@@ -68,6 +68,8 @@ pub struct WobbleApp {
     /// PhotoCraft's editor, which owns the engine session.
     pub app: PhotocraftApp,
     pub theme: Theme,
+    /// The light look the dark-mode toggle goes back to.
+    pub light_theme: Theme,
     /// Boiling outlines (off holds the UI still).
     pub boiling: bool,
     /// Redraw PhotoCraft's boxes and lines by hand (off shows them as PhotoCraft draws them).
@@ -146,6 +148,7 @@ impl WobbleApp {
         let mut w = Self {
             app: PhotocraftApp::new(Session::new(), services),
             theme,
+            light_theme: theme,
             boiling: true,
             hand_drawn: true,
             pixel_font: true,
@@ -656,6 +659,9 @@ impl WobbleApp {
     /// canvas surround, and the icons all follow on the next frame.
     pub fn set_theme(&mut self, t: Theme) {
         self.theme = t;
+        if !t.dark {
+            self.light_theme = t;
+        }
         self.app.ui.theme = theme::base_kind(&t);
         self.style_canvas();
         if let Ok(mut s) = self.icons.lock() {
@@ -949,6 +955,10 @@ impl WobbleApp {
                         self.audio.play(Sound::Pop);
                         self.juice.splat(now, at, &[crate::space3d::ORANGE, self.theme.cool], 16);
                     }
+                    E::Filled => {
+                        self.audio.play(Sound::Pop);
+                        self.juice.splat(now, at, &[fg, crate::theme::mix(fg, Color32::WHITE, 0.4)], 22);
+                    }
                     E::GuideClosed | E::Selected(_) | E::Sampled => self.audio.play(Sound::Click),
                     E::GuideSaved => self.audio.play(Sound::Chime),
                     E::Error(_) => self.audio.play(Sound::Boing),
@@ -1024,6 +1034,12 @@ impl eframe::App for WobbleApp {
         self.app.logic(ctx, frame);
         if !held.is_empty() {
             ctx.input_mut(|i| i.events.extend(held));
+        }
+        // PhotoCraft's own theme switches (the sun / moon button in the title bar, Window ›
+        // Theme, Preferences) pick WobbleWorks' dark or light look instead of being undone below.
+        if self.app.ui.theme != theme::base_kind(&self.theme) {
+            let t = theme::toggled(self.app.ui.theme, &self.theme, &self.light_theme);
+            self.set_theme(t);
         }
         // PhotoCraft (re)applies its own theme on its first frame and when preferences change.
         if !theme::is_applied(ctx, &self.theme) {

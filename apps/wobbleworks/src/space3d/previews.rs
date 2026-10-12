@@ -48,7 +48,7 @@ pub fn picture(atlas: &mut Atlas, kind: BrushKind, b: &Brush) -> Option<Vec<u8>>
     let mut scene = Scene::default();
     scene.environment.show_grid = false;
     scene.boil.enabled = false;
-    scene.strokes.push(Arc::new(Stroke { id: 1, group: 1, points, brush, seed: 7 }));
+    scene.strokes.push(Arc::new(Stroke { id: 1, group: 1, points, brush, seed: 7, tris: Vec::new() }));
     let mut cam = Camera { viewport: Viewport { width: SIZE[0] as f32, height: SIZE[1] as f32 }, distance: 1.5, ..Camera::default() };
     cam.snap(PerfectView::Front);
     let none = HashSet::new();

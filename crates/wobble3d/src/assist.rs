@@ -83,7 +83,28 @@ pub enum Shape {
         r: f32,
         start: f32,
     },
+    /// An ellipse: radii along its own axes, turned by `rot` (radians).
+    Ellipse {
+        c: [f32; 2],
+        rx: f32,
+        ry: f32,
+        rot: f32,
+        start: f32,
+    },
+    /// Straight sides through corners: a rectangle (square-cornered, snapped level when close),
+    /// a triangle or any polygon, or an open zigzag. `base` is the shape as recognised and
+    /// `grab` where the pen rested, so holding and dragging scales it about its middle.
+    Poly {
+        pts: [[f32; 2]; POLY_MAX],
+        base: [[f32; 2]; POLY_MAX],
+        n: u8,
+        closed: bool,
+        grab: [f32; 2],
+    },
 }
+
+/// Most corners a recognised polygon keeps.
+pub const POLY_MAX: usize = 8;
 
 fn dist(a: [f32; 2], b: [f32; 2]) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
@@ -142,6 +163,10 @@ pub fn recognize(raw: &[[f32; 2]]) -> Option<Shape> {
     if chord > 1.0 && dev <= (chord * 0.06).max(4.0) {
         return Some(Shape::Line { a, b });
     }
+    let closed = chord < length * 0.15;
+    if let Some(poly) = polygon(&pts, length, closed) {
+        return Some(poly);
+    }
     if chord < length * 0.2
         && let Some((c, r)) = fit_circle(&pts)
     {
@@ -150,6 +175,9 @@ pub fn recognize(raw: &[[f32; 2]]) -> Option<Shape> {
         if resid < r * 0.14 && (0.75..1.5).contains(&turn) {
             let start = (a[1] - c[1]).atan2(a[0] - c[0]);
             return Some(Shape::Circle { c, r, start });
+        }
+        if let Some(e) = ellipse(&pts) {
+            return Some(e);
         }
     }
     // Smooth curve through the middle of the stroke.
@@ -167,9 +195,190 @@ pub fn recognize(raw: &[[f32; 2]]) -> Option<Shape> {
     Some(Shape::Curve { a, mid, b })
 }
 
+/// Corners of a stroke: where its direction turns sharply (over about 12 px each side),
+/// strongest first, at most `POLY_MAX`.
+fn corners(pts: &[[f32; 2]], closed: bool) -> Vec<usize> {
+    // Resample every 3 px so turning is measured over distance, not over pointer samples.
+    let mut rs: Vec<[f32; 2]> = Vec::new();
+    for p in pts {
+        if rs.last().is_none_or(|l| dist(*l, *p) >= 3.0) {
+            rs.push(*p);
+        }
+    }
+    let n = rs.len();
+    if n < 8 {
+        return Vec::new();
+    }
+    const K: usize = 4;
+    let angle = |i: usize| -> f32 {
+        let (pa, pb) = if closed { (rs[(i + n - K) % n], rs[(i + K) % n]) } else { (rs[i.saturating_sub(K)], rs[(i + K).min(n - 1)]) };
+        let p = rs[i];
+        let (ax, ay, bx, by) = (p[0] - pa[0], p[1] - pa[1], pb[0] - p[0], pb[1] - p[1]);
+        let (la, lb) = ((ax * ax + ay * ay).sqrt(), (bx * bx + by * by).sqrt());
+        if la < 1e-3 || lb < 1e-3 {
+            return 0.0;
+        }
+        ((ax * bx + ay * by) / (la * lb)).clamp(-1.0, 1.0).acos()
+    };
+    let turn: Vec<f32> = (0..n).map(angle).collect();
+    let mut found: Vec<(f32, usize)> = Vec::new();
+    let range = if closed { 0..n } else { K..n.saturating_sub(K) };
+    for i in range {
+        let t = turn[i];
+        if t < 0.75 {
+            continue;
+        }
+        let peak = (1..=K).all(|k| {
+            let l = if closed { turn[(i + n - k) % n] } else { turn.get(i.wrapping_sub(k)).copied().unwrap_or(0.0) };
+            let r = if closed { turn[(i + k) % n] } else { turn.get(i + k).copied().unwrap_or(0.0) };
+            t >= l && t > r
+        });
+        if peak {
+            found.push((t, i));
+        }
+    }
+    found.sort_by(|a, b| b.0.total_cmp(&a.0));
+    found.truncate(POLY_MAX);
+    let mut idx: Vec<usize> = found.into_iter().map(|(_, i)| i).collect();
+    idx.sort_unstable();
+    // Map back to the caller's points (nearest original sample).
+    idx.into_iter()
+        .filter_map(|i| {
+            let q = rs[i];
+            pts.iter().enumerate().min_by(|a, b| dist(*a.1, q).total_cmp(&dist(*b.1, q))).map(|(j, _)| j)
+        })
+        .collect()
+}
+
+/// A polygon through a stroke's corners, when every side between them is nearly straight.
+fn polygon(pts: &[[f32; 2]], length: f32, closed: bool) -> Option<Shape> {
+    let cs = corners(pts, closed);
+    let (a, b) = (*pts.first()?, *pts.last()?);
+    // Closed: the corners (the start is just somewhere on a side). Open: start, corners, end.
+    let mut ix: Vec<usize> = Vec::new();
+    if !closed {
+        ix.push(0);
+    }
+    ix.extend(cs.iter().copied().filter(|&i| closed || (i > 0 && i + 1 < pts.len())));
+    if !closed {
+        ix.push(pts.len() - 1);
+    }
+    let corners_n = if closed { ix.len() } else { ix.len().saturating_sub(2) };
+    if (closed && !(3..=POLY_MAX).contains(&ix.len())) || (!closed && (corners_n == 0 || ix.len() > POLY_MAX)) {
+        return None;
+    }
+    let mut verts: Vec<[f32; 2]> = ix.iter().filter_map(|&i| pts.get(i).copied()).collect();
+    // Every point lies near a side, and sides are straight for their length (a smooth wave
+    // between its crests is not a zigzag).
+    let _ = length;
+    let m = verts.len();
+    let side_count = if closed { m } else { m - 1 };
+    let near_side = |p: [f32; 2]| {
+        (0..side_count).any(|k| {
+            let (a, b) = (verts[k], verts[(k + 1) % m]);
+            seg_dist(p, a, b) <= (dist(a, b) * 0.045).max(3.5)
+        })
+    };
+    if !pts.iter().all(|p| near_side(*p)) {
+        return None;
+    }
+    if closed && m == 4 {
+        verts = square_up(&verts);
+    }
+    let _ = (a, b);
+    let mut arr = [[0.0f32; 2]; POLY_MAX];
+    for (slot, v) in arr.iter_mut().zip(&verts) {
+        *slot = *v;
+    }
+    Some(Shape::Poly { pts: arr, base: arr, n: verts.len() as u8, closed, grab: b })
+}
+
+/// Four rough corners → a true rectangle (right angles), level with the screen when it was
+/// drawn within 6° of level.
+fn square_up(v: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    let n = v.len();
+    // The rectangle's angle: side directions folded into one quarter turn (×4 trick).
+    let (mut sx, mut sy) = (0.0f32, 0.0f32);
+    for k in 0..n {
+        let (p, q) = (v[k], v[(k + 1) % n]);
+        let a = (q[1] - p[1]).atan2(q[0] - p[0]);
+        let w = dist(p, q);
+        sx += (4.0 * a).cos() * w;
+        sy += (4.0 * a).sin() * w;
+    }
+    let mut theta = sy.atan2(sx) / 4.0;
+    if theta.abs() < 6f32.to_radians() {
+        theta = 0.0;
+    }
+    let (u, w) = ([theta.cos(), theta.sin()], [-theta.sin(), theta.cos()]);
+    let c = [v.iter().map(|p| p[0]).sum::<f32>() / n as f32, v.iter().map(|p| p[1]).sum::<f32>() / n as f32];
+    let pu: Vec<f32> = v.iter().map(|p| (p[0] - c[0]) * u[0] + (p[1] - c[1]) * u[1]).collect();
+    let pw: Vec<f32> = v.iter().map(|p| (p[0] - c[0]) * w[0] + (p[1] - c[1]) * w[1]).collect();
+    // Half sizes: the average reach of the corners on each axis.
+    let hu = pu.iter().map(|x| x.abs()).sum::<f32>() / n as f32;
+    let hw = pw.iter().map(|x| x.abs()).sum::<f32>() / n as f32;
+    v.iter()
+        .zip(pu.iter().zip(&pw))
+        .map(|(_, (a, b))| {
+            let (su, sw) = (hu * a.signum(), hw * b.signum());
+            [c[0] + u[0] * su + w[0] * sw, c[1] + u[1] * su + w[1] * sw]
+        })
+        .collect()
+}
+
+/// An ellipse through a closed stroke (principal axes of its points), when it fits well.
+fn ellipse(pts: &[[f32; 2]]) -> Option<Shape> {
+    let n = pts.len() as f32;
+    if n < 8.0 {
+        return None;
+    }
+    let c = [pts.iter().map(|p| p[0]).sum::<f32>() / n, pts.iter().map(|p| p[1]).sum::<f32>() / n];
+    let (mut sxx, mut syy, mut sxy) = (0.0f32, 0.0f32, 0.0f32);
+    for p in pts {
+        let (x, y) = (p[0] - c[0], p[1] - c[1]);
+        sxx += x * x;
+        syy += y * y;
+        sxy += x * y;
+    }
+    let rot = 0.5 * (2.0 * sxy).atan2(sxx - syy);
+    let (cs, sn) = (rot.cos(), rot.sin());
+    let local = |p: [f32; 2]| {
+        let (x, y) = (p[0] - c[0], p[1] - c[1]);
+        (x * cs + y * sn, -x * sn + y * cs)
+    };
+    // Radii from the spread along each axis (a uniform ellipse has variance r² / 2).
+    let (mut vx, mut vy) = (0.0f32, 0.0f32);
+    for p in pts {
+        let (x, y) = local(*p);
+        vx += x * x;
+        vy += y * y;
+    }
+    let (rx, ry) = ((2.0 * vx / n).sqrt(), (2.0 * vy / n).sqrt());
+    if !(rx.is_finite() && ry.is_finite()) || rx < 2.0 || ry < 2.0 {
+        return None;
+    }
+    let resid = pts
+        .iter()
+        .map(|p| {
+            let (x, y) = local(*p);
+            ((x / rx).powi(2) + (y / ry).powi(2)).sqrt() - 1.0
+        })
+        .map(f32::abs)
+        .sum::<f32>()
+        / n;
+    if resid > 0.12 {
+        return None;
+    }
+    let a = pts[0];
+    let (x, y) = local(a);
+    let start = (y / ry).atan2(x / rx);
+    Some(Shape::Ellipse { c, rx, ry, rot, start })
+}
+
 impl Shape {
     /// Hold-to-adjust: a line's end follows the pen, a curve bends through it, a circle's size
-    /// follows its distance from the centre.
+    /// follows its distance from the centre, an ellipse and a polygon grow or shrink about their
+    /// middle as the pen moves away from or towards it.
     pub fn adjust(&mut self, pen: [f32; 2]) {
         if !(pen[0].is_finite() && pen[1].is_finite()) {
             return;
@@ -178,6 +387,37 @@ impl Shape {
             Shape::Line { b, .. } => *b = pen,
             Shape::Curve { mid, .. } => *mid = pen,
             Shape::Circle { c, r, .. } => *r = dist(*c, pen).max(1.0),
+            Shape::Ellipse { c, rx, ry, .. } => {
+                let k = dist(*c, pen).max(1.0) / rx.max(*ry).max(1.0);
+                *rx = (*rx * k).max(1.0);
+                *ry = (*ry * k).max(1.0);
+            }
+            Shape::Poly { pts, base, n, grab, .. } => {
+                let m = usize::from(*n).min(POLY_MAX).max(1);
+                let c = [base[..m].iter().map(|p| p[0]).sum::<f32>() / m as f32, base[..m].iter().map(|p| p[1]).sum::<f32>() / m as f32];
+                let d0 = dist(c, *grab);
+                if d0 < 1.0 {
+                    return;
+                }
+                let k = (dist(c, pen) / d0).clamp(0.05, 50.0);
+                for (p, b) in pts.iter_mut().zip(base.iter()).take(m) {
+                    *p = [c[0] + (b[0] - c[0]) * k, c[1] + (b[1] - c[1]) * k];
+                }
+            }
+        }
+    }
+
+    /// Which kind of shape, for the status line.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Shape::Line { .. } => "line",
+            Shape::Curve { .. } => "curve",
+            Shape::Circle { .. } => "circle",
+            Shape::Ellipse { .. } => "ellipse",
+            Shape::Poly { n: 4, closed: true, .. } => "rectangle",
+            Shape::Poly { n: 3, closed: true, .. } => "triangle",
+            Shape::Poly { closed: true, .. } => "polygon",
+            Shape::Poly { .. } => "straight lines",
         }
     }
 
@@ -213,6 +453,34 @@ impl Shape {
                         [c[0] + r * a.cos(), c[1] + r * a.sin()]
                     })
                     .collect()
+            }
+            Shape::Ellipse { c, rx, ry, rot, start } => {
+                let n = ((std::f32::consts::TAU * rx.max(ry) / 3.0).ceil() as usize).clamp(12, 4000);
+                let (cs, sn) = (rot.cos(), rot.sin());
+                (0..=n)
+                    .map(|i| {
+                        let a = start + std::f32::consts::TAU * i as f32 / n as f32;
+                        let (x, y) = (rx * a.cos(), ry * a.sin());
+                        [c[0] + x * cs - y * sn, c[1] + x * sn + y * cs]
+                    })
+                    .collect()
+            }
+            Shape::Poly { pts, n, closed, .. } => {
+                let m = usize::from(n).min(POLY_MAX);
+                let mut out = Vec::new();
+                let sides = if closed { m } else { m.saturating_sub(1) };
+                for k in 0..sides {
+                    let (a, b) = (pts[k], pts[(k + 1) % m]);
+                    let steps = ((dist(a, b) / 3.0).ceil() as usize).clamp(1, 4000);
+                    for i in 0..steps {
+                        let t = i as f32 / steps as f32;
+                        out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+                    }
+                }
+                if let Some(last) = if closed { pts.first() } else { pts.get(m.saturating_sub(1)) } {
+                    out.push(*last);
+                }
+                out
             }
         }
     }
@@ -278,6 +546,66 @@ mod tests {
         assert!(dist(mid, [150.0, 50.0]) < 6.0);
         assert!(recognize(&[]).is_none());
         assert!(recognize(&[[1.0, 1.0], [1.0, 1.0]]).is_none());
+    }
+
+    /// A wobbly hand-drawn rectangle becomes a clean one: square corners, level, each corner
+    /// within a few pixels of where it was drawn.
+    #[test]
+    fn rough_rectangles_triangles_and_ovals_are_cleaned_up() {
+        let corners = [[100.0, 100.0], [300.0, 104.0], [302.0, 220.0], [98.0, 216.0]];
+        let mut pts = Vec::new();
+        for k in 0..4 {
+            let (a, b): ([f32; 2], [f32; 2]) = (corners[k], corners[(k + 1) % 4]);
+            for i in 0..30 {
+                let t = i as f32 / 30.0;
+                pts.push([a[0] + (b[0] - a[0]) * t + ((i * 7 + k) % 3) as f32 - 1.0, a[1] + (b[1] - a[1]) * t + ((i * 5) % 3) as f32 - 1.0]);
+            }
+        }
+        pts.push([101.0, 102.0]);
+        let shape = recognize(&pts).expect("shape");
+        assert_eq!(shape.name(), "rectangle", "{shape:?}");
+        let Shape::Poly { pts: r, .. } = shape else { panic!() };
+        for k in 0..4 {
+            let (a, b, c) = (r[k], r[(k + 1) % 4], r[(k + 2) % 4]);
+            let dot = (b[0] - a[0]) * (c[0] - b[0]) + (b[1] - a[1]) * (c[1] - b[1]);
+            assert!(dot.abs() < 1e-2, "square corner {k}: {r:?}");
+            assert!(corners.iter().any(|q| dist(*q, a) < 6.0), "corner {a:?} stays near a drawn one");
+        }
+        // Level: within 6° of level snaps level.
+        assert!((r[0][1] - r[1][1]).abs() < 1e-3 || (r[0][0] - r[1][0]).abs() < 1e-3, "{r:?}");
+        // Closed outline back to the start.
+        let out = shape.points();
+        assert!(dist(out[0], *out.last().expect("pts")) < 1e-3);
+
+        let tri: Vec<[f32; 2]> = [[0.0, 0.0], [200.0, 0.0], [100.0, 170.0], [0.0, 0.0]]
+            .windows(2)
+            .flat_map(|w| (0..40).map(move |i| [w[0][0] + (w[1][0] - w[0][0]) * i as f32 / 40.0, w[0][1] + (w[1][1] - w[0][1]) * i as f32 / 40.0]))
+            .chain([[1.0, 1.0]])
+            .collect();
+        assert_eq!(recognize(&tri).map(|s| s.name()), Some("triangle"));
+
+        let oval: Vec<[f32; 2]> = (0..=80)
+            .map(|i| {
+                let a = i as f32 / 80.0 * std::f32::consts::TAU;
+                [300.0 + 150.0 * a.cos(), 200.0 + 60.0 * a.sin()]
+            })
+            .collect();
+        match recognize(&oval) {
+            Some(Shape::Ellipse { rx, ry, .. }) => assert!((rx.max(ry) - 150.0).abs() < 8.0 && (rx.min(ry) - 60.0).abs() < 6.0, "{rx} {ry}"),
+            other => panic!("{other:?}"),
+        }
+
+        // An L: two straight sides.
+        let ell: Vec<[f32; 2]> = (0..40).map(|i| [50.0, 50.0 + i as f32 * 4.0]).chain((1..40).map(|i| [50.0 + i as f32 * 4.0, 206.0])).collect();
+        let mut s = recognize(&ell).expect("L");
+        assert_eq!(s.name(), "straight lines");
+        // Hold and drag away from the middle: it grows.
+        let before = s.points();
+        s.adjust([400.0, 400.0]);
+        let after = s.points();
+        let span = |v: &[[f32; 2]]| v.iter().map(|p| p[0]).fold(f32::MIN, f32::max) - v.iter().map(|p| p[0]).fold(f32::MAX, f32::min);
+        assert!(span(&after) > span(&before) * 1.5);
+        s.adjust([f32::NAN, 0.0]);
     }
 
     #[test]

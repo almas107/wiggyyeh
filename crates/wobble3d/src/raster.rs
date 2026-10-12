@@ -1,8 +1,9 @@
 //! A CPU rasteriser for [`crate::render::Frame`]s: exports (PNG, GIF, turntables) and tests.
-//! It draws what the GPU view draws, the same way: first the solid paint with a depth buffer
-//! (so on a shared surface the later curve wins), then soft edges and see-through paint blended
-//! back to front over it with the depth test. Then the render-mode effects that need the whole
-//! picture (bloom, grain, pixelation).
+//! It draws what the GPU view draws, the same way: a depth prepass of the solid paint (pushed
+//! back by [`crate::render::SURFACE_TOL`]), then everything under and on the nearest surface in
+//! the frame's order (paint in drawing order, so on a shared surface the later curve wins, even
+//! on curved guides), then the overlays (guides) where they are clearly in front. Then the
+//! render-mode effects that need the whole picture (bloom, grain, pixelation).
 
 use std::collections::HashMap;
 
@@ -42,8 +43,12 @@ pub const SOLID_ALPHA: f32 = 0.5;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pass {
-    Solid,
-    Blend,
+    /// Solid paint's depth, pushed back by the surface tolerance; no colour.
+    Depth,
+    /// Under-paint and paint, in order, where on or in front of the nearest surface.
+    Paint,
+    /// Overlays, where clearly in front of the nearest surface.
+    Over,
 }
 
 /// A straight RGBA8 texture: width, height, pixels.
@@ -88,6 +93,7 @@ impl Canvas {
         pass: Pass,
         p: [[f32; 2]; 3],
         z: [f32; 3],
+        zb: [f32; 3],
         solid: bool,
         uv: [[f32; 2]; 3],
         col: [[f32; 4]; 3],
@@ -130,18 +136,26 @@ impl Canvas {
                 }
                 let zz = z[0] * w0 + z[1] * w1 + z[2] * w2;
                 let i = y * self.w + x;
-                let (Some(d), Some(zb)) = (self.px.get_mut(i), self.zbuf.get_mut(i)) else { continue };
+                let (Some(d), Some(zbuf)) = (self.px.get_mut(i), self.zbuf.get_mut(i)) else { continue };
                 let strong = solid && c[3] >= SOLID_ALPHA;
                 match pass {
-                    Pass::Solid => {
-                        if strong && zz > *zb {
-                            let a = c[3].max(1e-6);
-                            *d = [(c[0] / a).clamp(0.0, 1.0), (c[1] / a).clamp(0.0, 1.0), (c[2] / a).clamp(0.0, 1.0), 1.0];
-                            *zb = zz;
+                    Pass::Depth => {
+                        let back = zb[0] * w0 + zb[1] * w1 + zb[2] * w2;
+                        if strong && back > *zbuf {
+                            *zbuf = back;
                         }
                     }
-                    Pass::Blend => {
-                        if strong || zz < *zb * (1.0 - 1e-6) {
+                    Pass::Paint | Pass::Over => {
+                        // Paint: on the nearest surface (within the tolerance) or in front.
+                        // Overlays: `zb` holds their depth pushed back twice as far, so they
+                        // show only clearly in front of it.
+                        let test = if pass == Pass::Over { zb[0] * w0 + zb[1] * w1 + zb[2] * w2 } else { zz };
+                        if test < *zbuf {
+                            continue;
+                        }
+                        if strong {
+                            let a = c[3].max(1e-6);
+                            *d = [(c[0] / a).clamp(0.0, 1.0), (c[1] / a).clamp(0.0, 1.0), (c[2] / a).clamp(0.0, 1.0), 1.0];
                             continue;
                         }
                         let inv = 1.0 - c[3].clamp(0.0, 1.0);
@@ -174,8 +188,12 @@ pub fn rasterize(
     });
     let mut cv = Canvas { w, h, px: vec![bg; w * h], zbuf: vec![0.0; w * h] };
     let atlas = (textures.atlas.width() as u32, textures.atlas.height() as u32, textures.atlas.pixels.as_slice());
-    for pass in [Pass::Solid, Pass::Blend] {
+    for pass in [Pass::Depth, Pass::Paint, Pass::Over] {
         for b in &frame.batches {
+            let over = b.layer == crate::render::layer::OVER;
+            if (pass == Pass::Paint && over) || (pass == Pass::Over && !over) {
+                continue;
+            }
             let (tex, screen) = match b.tex {
                 Tex::Atlas => (Some(&atlas), None),
                 Tex::Image(id) => (textures.images.get(&id), None),
@@ -186,11 +204,12 @@ pub fn rasterize(
                     continue;
                 };
                 let solid = a.solid && bb.solid && c.solid;
-                if pass == Pass::Solid && !solid {
+                if pass == Pass::Depth && !solid {
                     continue;
                 }
                 let f = |v: [u8; 4]| [v[0] as f32 / 255.0, v[1] as f32 / 255.0, v[2] as f32 / 255.0, v[3] as f32 / 255.0];
-                cv.tri(pass, [a.pos, bb.pos, c.pos], [a.z, bb.z, c.z], solid, [a.uv, bb.uv, c.uv], [f(a.color), f(bb.color), f(c.color)], tex, screen);
+                let zb = if pass == Pass::Over { [a.zo, bb.zo, c.zo] } else { [a.zb, bb.zb, c.zb] };
+                cv.tri(pass, [a.pos, bb.pos, c.pos], [a.z, bb.z, c.z], zb, solid, [a.uv, bb.uv, c.uv], [f(a.color), f(bb.color), f(c.color)], tex, screen);
             }
         }
     }
@@ -345,9 +364,9 @@ mod tests {
     fn a_triangle_fills_with_premultiplied_over() {
         let atlas = Atlas::default();
         let uv = atlas.solid_uv();
-        let v = |x: f32, y: f32| Vtx { pos: [x, y], uv, color: [128, 0, 0, 128], z: 0.5, solid: false };
+        let v = |x: f32, y: f32| Vtx { pos: [x, y], uv, color: [128, 0, 0, 128], z: 0.5, zb: 0.5, zo: 0.5, solid: false };
         let frame = Frame {
-            batches: vec![Batch { tex: Tex::Atlas, vertices: vec![v(0.0, 0.0), v(10.0, 0.0), v(0.0, 10.0)], indices: vec![0, 1, 2] }],
+            batches: vec![Batch { tex: Tex::Atlas, layer: 1, vertices: vec![v(0.0, 0.0), v(10.0, 0.0), v(0.0, 10.0)], indices: vec![0, 1, 2] }],
             triangles: 1,
             ..Frame::default()
         };
@@ -365,7 +384,8 @@ mod tests {
         let tex = Textures { atlas: &atlas, images: HashMap::new() };
         assert!(rasterize(&Frame::default(), &tex, 0, 10, None, None).is_err());
         assert!(rasterize(&Frame::default(), &tex, 10, MAX_SIDE + 1, None, None).is_err());
-        let frame = Frame { batches: vec![Batch { tex: Tex::Image(77), vertices: vec![], indices: vec![0, 5, 9] }], triangles: 1, ..Frame::default() };
+        let frame =
+            Frame { batches: vec![Batch { tex: Tex::Image(77), layer: 1, vertices: vec![], indices: vec![0, 5, 9] }], triangles: 1, ..Frame::default() };
         let pic =
             rasterize(&frame, &tex, 4, 4, None, Some(&Effects { grain: 1.0, pixelate: 2.0, bloom: 1.0, dof: 2.0, ..Effects::default() })).expect("raster");
         assert_eq!(pic.rgba.len(), 64);
@@ -405,6 +425,81 @@ mod order_tests {
             let blue = p[2] > 150 && p[0] < 100;
             assert!(!red, "{kind:?}: the earlier red curve shows through ({p:?})");
             assert!(blue || kind.painterly(), "{kind:?}: the later blue curve is on top ({p:?})");
+        }
+    }
+
+    /// Paint laid over paint on one guide (a plane and a sphere, seen at an angle) never shows
+    /// the earlier colour through the later one, on any boil frame. The flat brush used to:
+    /// its vertices took the depth of the point before the boil moved it on screen, so tape
+    /// boiling over tape on a tilted guide z-fought in speckles (Feather users report the same).
+    #[test]
+    fn paint_over_paint_on_a_guide_never_shows_through_while_boiling() {
+        for guide in ["plane", "sphere"] {
+            for kind in [crate::model::BrushKind::Flat, crate::model::BrushKind::Marker, crate::model::BrushKind::Pen] {
+                let mut e = Editor::new();
+                e.set_viewport(240.0, 240.0);
+                e.run("env.set", &json!({"grid": false})).expect("env");
+                e.run("boil.set", &json!({"enabled": true, "amount": 3.0})).expect("boil");
+                e.run("guide.primitive", &json!({"kind": guide})).expect("guide");
+                e.run("guide.done", &json!({})).expect("done");
+                e.run("tool.set", &json!({"tool": "draw"})).expect("draw");
+                e.camera = Camera { yaw: 35.0, pitch: 50.0, distance: 3.0, viewport: e.camera.viewport, ..e.camera };
+                e.camera.orthographic = false;
+                e.run("brush.set", &json!({"kind": kind.name(), "color": "#ff0000", "size": 120, "pressure": false})).expect("red");
+                e.run("stroke.draw", &json!({"points": (0..40).map(|i| [60.0 + i as f32 * 3.0, 120.0, 1.0]).collect::<Vec<_>>()})).expect("red");
+                e.run("brush.set", &json!({"color": "#0000ff", "size": 60})).expect("blue");
+                e.run("stroke.draw", &json!({"points": (0..40).map(|i| [120.0 + (i % 2) as f32, 60.0 + i as f32 * 3.0, 1.0]).collect::<Vec<_>>()}))
+                    .expect("blue");
+                assert_eq!(e.scene.strokes.len(), 2, "{guide} {kind:?}: both strokes landed on the guide");
+                for frame in 0..3 {
+                    let f = e.render(frame, false);
+                    let tex = Textures { atlas: &e.atlas, images: HashMap::new() };
+                    let pic = rasterize(&f, &tex, 240, 240, Some(crate::model::Rgba::WHITE), None).expect("raster");
+                    // Hide the red curve: where blue is solid on its own, it must be solid with red under it too.
+                    let red_id = e.scene.strokes[0].id;
+                    let hide: std::collections::HashSet<u64> = [red_id].into();
+                    let none = std::collections::HashSet::new();
+                    let opts = crate::render::Options {
+                        frame,
+                        selected: &none,
+                        selected_resources: &none,
+                        extra: &[],
+                        hide: &hide,
+                        guides: false,
+                        overlays: false,
+                        orbit_point: None,
+                    };
+                    let alone = crate::render::render(&e.scene, &e.camera, &mut e.atlas, &opts);
+                    let tex = Textures { atlas: &e.atlas, images: HashMap::new() };
+                    let blue = rasterize(&alone, &tex, 240, 240, Some(crate::model::Rgba::WHITE), None).expect("raster");
+                    let is_blue = |p: &[u8]| p[2] > 200 && p[0] < 60;
+                    let (mut inside, mut bled) = (0, 0);
+                    for y in 2..238usize {
+                        for x in 2..238usize {
+                            // Interior of the blue curve only (its soft edge blends by design).
+                            let solid = (-2i32..=2).all(|dy| {
+                                (-2i32..=2).all(|dx| {
+                                    let i = ((y as i32 + dy) as usize * 240 + (x as i32 + dx) as usize) * 4;
+                                    is_blue(&blue.rgba[i..i + 4])
+                                })
+                            });
+                            if !solid {
+                                continue;
+                            }
+                            inside += 1;
+                            let i = (y * 240 + x) * 4;
+                            if !is_blue(&pic.rgba[i..i + 4]) {
+                                bled += 1;
+                            }
+                        }
+                    }
+                    if let Ok(dir) = std::env::var("WOBBLE3D_DEBUG_DIR") {
+                        let _ = std::fs::write(format!("{dir}/{guide}-{kind:?}-{frame}.rgba"), &pic.rgba);
+                    }
+                    assert!(inside > 60, "{guide} {kind:?} frame {frame}: blue is drawn ({inside} px)");
+                    assert_eq!(bled, 0, "{guide} {kind:?} frame {frame}: red shows through blue at {bled} of {inside} px");
+                }
+            }
         }
     }
 

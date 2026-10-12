@@ -13,7 +13,7 @@ use crate::camera::{Camera, View};
 use crate::guide::Guide;
 use crate::math::{Vec3, v3};
 use crate::model::{Boil, BrushKind, Environment, ImageResource, Material, ModelResource, ResourceState, Rgba, Scene, Stroke};
-use crate::noise::{Track, hash2, signed, unit};
+use crate::noise::{Track, hash2, signed, unit, value2};
 use crate::texture::{Atlas, RowKey, TILE_WIDTHS};
 
 /// A vertex: screen pixels, atlas or image texture coordinates, premultiplied RGBA, its depth
@@ -27,7 +27,30 @@ pub struct Vtx {
     /// Reverse depth: larger is nearer (near / depth), so float precision holds at every
     /// distance; nudged by drawing order so later curves win on a shared surface.
     pub z: f32,
+    /// `z` pushed back by [`SURFACE_TOL`]: what solid paint writes in the depth prepass.
+    pub zb: f32,
+    /// `z` pushed back by twice [`SURFACE_TOL`]: overlays (guides) show only where they are
+    /// clearly in front of the paint, not over paint lying on them.
+    pub zo: f32,
     pub solid: bool,
+}
+
+/// How far apart (relative depth) two things may be and still count as the same surface:
+/// paint there layers in drawing order, as on a 2D canvas, instead of by depth. A curve on a
+/// sphere or a tube is a few thousandths off the curve beside it wherever their triangles cut
+/// across the curvature differently, far more than any depth nudge could separate, so the
+/// renderers keep the nearest surface's depth (minus this) in a prepass and then draw every
+/// curve within it in the order it was drawn.
+pub const SURFACE_TOL: f32 = 3e-3;
+
+/// Which pass a batch belongs to.
+pub mod layer {
+    /// Under the paint (the background image, grid, axes, images, models): first, back to front.
+    pub const UNDER: u8 = 0;
+    /// Curves and fills: in drawing order on the nearest surface.
+    pub const PAINT: u8 = 1;
+    /// Guides and the orbit point: last, back to front, only where in front of the paint.
+    pub const OVER: u8 = 2;
 }
 
 /// How far behind a curve its echo and extra layered passes sit (relative depth). They are the
@@ -55,6 +78,8 @@ pub enum Tex {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Batch {
     pub tex: Tex,
+    /// [`layer`]: UNDER and PAINT are drawn in sequence against the prepass depth, OVER after.
+    pub layer: u8,
     pub vertices: Vec<Vtx>,
     pub indices: Vec<u32>,
 }
@@ -115,6 +140,8 @@ pub struct Options<'a> {
 
 struct Item {
     depth: f32,
+    order: u32,
+    layer: u8,
     tex: Tex,
     v0: usize,
     i0: usize,
@@ -138,6 +165,8 @@ struct Builder<'a> {
     pending_dabs: Vec<(Stroke, [f32; 3], f32, u32)>,
     /// The drawing order of the curve being built (0 for everything else).
     order: u32,
+    /// The [`layer`] of what is being built.
+    layer: u8,
     /// The far end of the depth range.
     far: f32,
     /// The background image Cutout paint shows (Render mode with a background image).
@@ -250,6 +279,7 @@ impl<'a> Builder<'a> {
             light,
             pending_dabs: Vec::new(),
             order: 0,
+            layer: layer::PAINT,
             far,
             cut_with: env.background_image.as_ref().filter(|_| env.render_mode).map(|im| im.id),
             cutting: false,
@@ -303,7 +333,10 @@ impl<'a> Builder<'a> {
         if let Some(vs) = self.verts.get_mut(v0..) {
             for v in vs.iter_mut() {
                 max_alpha = max_alpha.max(v.color[3]);
-                v.z = depth_to_z(v.z * factor, ortho, near, far);
+                let d = v.z * factor;
+                v.z = depth_to_z(d, ortho, near, far);
+                v.zb = depth_to_z(d * (1.0 + SURFACE_TOL), ortho, near, far);
+                v.zo = depth_to_z(d * (1.0 + 2.0 * SURFACE_TOL), ortho, near, far);
             }
             // Solid when fully opaque somewhere and not added light.
             let solid = max_alpha == 255;
@@ -311,7 +344,7 @@ impl<'a> Builder<'a> {
                 v.solid = solid;
             }
         }
-        self.items.push(Item { depth, tex, v0, i0, i1: self.idx.len() });
+        self.items.push(Item { depth, order: self.order, layer: self.layer, tex, v0, i0, i1: self.idx.len() });
     }
 
     /// An item drawn over everything (the orbit point).
@@ -320,18 +353,20 @@ impl<'a> Builder<'a> {
         if let Some(vs) = self.verts.get_mut(v0..) {
             for v in vs.iter_mut() {
                 v.z = 1.0;
+                v.zb = 1.0;
+                v.zo = 1.0;
                 v.solid = false;
             }
         }
         if self.idx.len() > i0 {
-            self.items.push(Item { depth: -1.0, tex, v0, i0, i1: self.idx.len() });
+            self.items.push(Item { depth: -1.0, order: u32::MAX, layer: layer::OVER, tex, v0, i0, i1: self.idx.len() });
         }
     }
 
     /// A vertex at view depth `depth` (turned into a depth-buffer value when the item closes).
     fn vtx(&mut self, x: f32, y: f32, depth: f32, uv: [f32; 2], color: [u8; 4]) -> u32 {
         let base = self.open.map_or(0, |(_, v0, _)| v0);
-        self.verts.push(Vtx { pos: [x, y], uv, color, z: depth, solid: false });
+        self.verts.push(Vtx { pos: [x, y], uv, color, z: depth, zb: 0.0, zo: 0.0, solid: false });
         (self.verts.len() - 1 - base) as u32
     }
 
@@ -400,15 +435,22 @@ impl<'a> Builder<'a> {
         if s.n == Vec3::ZERO {
             return s.depth;
         }
+        let Some(d) = self.plane_depth(s.w, s.n, x, y) else { return s.depth };
+        // Grazing surfaces: stay near the sample.
+        d.clamp(s.depth - s.whw * 4.0 - 1e-4, s.depth + s.whw * 4.0 + 1e-4)
+    }
+
+    /// The view depth at screen point (x, y) of the plane through `w` facing `n`.
+    fn plane_depth(&self, w: Vec3, n: Vec3, x: f32, y: f32) -> Option<f32> {
         let v = &self.view;
-        let nc = (s.n.dot(v.right), s.n.dot(v.up), s.n.dot(v.back));
-        let rel = s.w - v.eye;
+        let nc = (n.dot(v.right), n.dot(v.up), n.dot(v.back));
+        let rel = w - v.eye;
         let p0 = (rel.dot(v.right), rel.dot(v.up), rel.dot(v.back));
         let k = nc.0 * p0.0 + nc.1 * p0.1 + nc.2 * p0.2;
         let (hw, hh) = (v.viewport.width * 0.5, v.viewport.height * 0.5);
         let d = if v.orthographic {
             if nc.2.abs() < 1e-3 {
-                return s.depth;
+                return None;
             }
             let sx = (x - hw) / hh * v.half_height;
             let sy = (hh - y) / hh * v.half_height;
@@ -418,12 +460,67 @@ impl<'a> Builder<'a> {
             let sy = (hh - y) / hh / v.f;
             let den = nc.0 * sx + nc.1 * sy - nc.2;
             if den.abs() < 1e-6 {
-                return s.depth;
+                return None;
             }
             k / den
         };
-        // Grazing surfaces: stay near the sample.
-        if d.is_finite() { d.clamp(s.depth - s.whw * 4.0 - 1e-4, s.depth + s.whw * 4.0 + 1e-4) } else { s.depth }
+        d.is_finite().then_some(d)
+    }
+
+    /// A filled surface (Fill, Lasso Fill, Shapes, solid primitives): its triangles shaded with
+    /// the surface normal, boiling as one sheet (smooth noise across the screen, so neighbouring
+    /// corners move together and the patch never tears).
+    fn fill_patch(&mut self, s: &Stroke, base: [f32; 3], alpha: f32, material: Material, distance: f32) {
+        let b = &self.boil;
+        let active = b.enabled && b.amount > 0.0 && s.brush.paint.boil > 0.0;
+        let amp = if active { b.amount * s.brush.paint.boil } else { 0.0 };
+        let wl = b.wavelength.max(4.0) * 2.0;
+        let seed = hash2(s.seed, self.frame.wrapping_mul(0x9e37_79b9).wrapping_add(17));
+        let shade = Paint::Shade { base, alpha, material, lit: true };
+        let uv = self.atlas.solid_uv();
+        let back = self.view.back;
+        // Every corner on screen once: (x, y, depth, colour), or None behind the camera.
+        let corners: Vec<Option<(f32, f32, f32, [u8; 4])>> = s
+            .points
+            .iter()
+            .map(|p| {
+                let q = self.view.project(p.p)?;
+                let (mut x, mut y) = (q.x, q.y);
+                if amp > 0.0 {
+                    x += value2(seed ^ 0x51, q.x / wl, q.y / wl) * amp;
+                    y += value2(seed ^ 0xa3, q.x / wl, q.y / wl) * amp;
+                }
+                let n = if p.n == Vec3::ZERO { back } else { p.n };
+                let depth =
+                    if p.n == Vec3::ZERO { q.depth } else { self.plane_depth(p.p, n, x, y).map_or(q.depth, |d| d.clamp(q.depth * 0.98, q.depth * 1.02)) };
+                let nn = if n.dot(back) < 0.0 { -n } else { n };
+                Some((x, y, depth, self.colour(&shade, nn, 1.0, q.depth, distance)))
+            })
+            .collect();
+        const CHUNK_TRIS: usize = 512;
+        for chunk in s.tris.chunks(CHUNK_TRIS) {
+            self.begin(Tex::Atlas);
+            let mut local: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+            let (mut depth, mut count) = (0.0f32, 0usize);
+            for t in chunk {
+                let Some(cs) = t.iter().map(|i| corners.get(*i as usize).copied().flatten()).collect::<Option<Vec<_>>>() else { continue };
+                let mut ids = [0u32; 3];
+                for (k, (i, c)) in t.iter().zip(&cs).enumerate() {
+                    ids[k] = match local.get(i) {
+                        Some(id) => *id,
+                        None => {
+                            let id = self.vtx(c.0, c.1, c.2, uv, c.3);
+                            local.insert(*i, id);
+                            depth += c.2;
+                            count += 1;
+                            id
+                        }
+                    };
+                }
+                self.tri(ids[0], ids[1], ids[2]);
+            }
+            self.end(if count > 0 { depth / count as f32 } else { 0.0 }, 0.0);
+        }
     }
 
     fn colour(&self, paint: &Paint, n: Vec3, alpha: f32, depth: f32, distance: f32) -> [u8; 4] {
@@ -601,7 +698,14 @@ impl<'a> Builder<'a> {
 
     fn finish(mut self) -> Frame {
         self.flush_dabs();
-        self.items.sort_by(|a, b| b.depth.total_cmp(&a.depth));
+        // Under the paint, then the paint in drawing order (each curve's pieces back to front),
+        // then the overlays back to front.
+        self.items.sort_by(|a, b| {
+            a.layer
+                .cmp(&b.layer)
+                .then_with(|| if a.layer == layer::PAINT { a.order.cmp(&b.order) } else { std::cmp::Ordering::Equal })
+                .then_with(|| b.depth.total_cmp(&a.depth))
+        });
         // Atlas coordinates were row-space while rows were being added.
         let mut is_atlas = vec![false; self.verts.len()];
         for it in &self.items {
@@ -622,9 +726,9 @@ impl<'a> Builder<'a> {
         }
         let mut frame = Frame { cover: cover(self.env.background_image.as_deref(), self.view.viewport.width, self.view.viewport.height), ..Frame::default() };
         for it in &self.items {
-            let need_new = frame.batches.last().is_none_or(|b: &Batch| b.tex != it.tex || b.vertices.len() > 60_000);
+            let need_new = frame.batches.last().is_none_or(|b: &Batch| b.tex != it.tex || b.layer != it.layer || b.vertices.len() > 60_000);
             if need_new {
-                frame.batches.push(Batch { tex: it.tex, vertices: Vec::new(), indices: Vec::new() });
+                frame.batches.push(Batch { tex: it.tex, layer: it.layer, vertices: Vec::new(), indices: Vec::new() });
             }
             let Some(batch) = frame.batches.last_mut() else { continue };
             let base = batch.vertices.len() as u32;
@@ -848,6 +952,10 @@ impl<'a> Builder<'a> {
         let lit = matches!(kind, BrushKind::Pen | BrushKind::Square | BrushKind::Flat);
         let shade = Paint::Shade { base, alpha, material, lit };
 
+        if s.is_fill() {
+            self.fill_patch(s, base, alpha, material, distance);
+            return;
+        }
         // Ground shadow (render mode, shaded curves).
         if render && self.env.lighting.ground_shadow && material == Material::Shaded {
             self.ground_shadow(s, alpha);
@@ -1124,8 +1232,14 @@ impl<'a> Builder<'a> {
                     let (ox, oy) = (sm.x - (p0.x + p1.x) * 0.5, sm.y - (p0.y + p1.y) * 0.5);
                     let nn = if normal.dot(back) < 0.0 { -normal } else { normal };
                     let col = self.colour(&paint, nn, sm.alpha, sm.depth, distance);
-                    let a = self.vtx(p0.x + ox, p0.y + oy, p0.depth, uv, col);
-                    let b = self.vtx(p1.x + ox, p1.y + oy, p1.depth, uv, col);
+                    // The depth of the surface where the vertex lands after the boil moved it:
+                    // tape boiling across other tape on the same guide stays in drawing order
+                    // instead of fighting it (the depth of the unmoved point is off by the
+                    // surface's slope times the boil, far more than the drawing-order nudge).
+                    let (ax, ay, bx, by) = (p0.x + ox, p0.y + oy, p1.x + ox, p1.y + oy);
+                    let (da, db) = if sm.n == Vec3::ZERO { (p0.depth, p1.depth) } else { (self.surface_depth(&sm, ax, ay), self.surface_depth(&sm, bx, by)) };
+                    let a = self.vtx(ax, ay, da, uv, col);
+                    let b = self.vtx(bx, by, db, uv, col);
                     ids.push(Some((a, b)));
                     depth += sm.depth;
                 }
@@ -1450,6 +1564,7 @@ fn render_once(scene: &Scene, camera: &Camera, atlas: &mut Atlas, opts: &Options
     }
     let atlas: &Atlas = atlas;
     let mut b = Builder::new(view, atlas, env, boil, frame, light);
+    b.layer = layer::UNDER;
     if let Some(bg) = &env.background_image {
         b.backdrop(bg);
     }
@@ -1465,7 +1580,9 @@ fn render_once(scene: &Scene, camera: &Camera, atlas: &mut Atlas, opts: &Options
     for m in &scene.models {
         b.model(m, opts.selected_resources.contains(&m.id));
     }
+    b.layer = layer::PAINT;
     build_strokes(&mut b, &strokes, view, atlas, env, boil, frame, light);
+    b.layer = layer::OVER;
     if opts.guides {
         for g in &scene.guides {
             b.guide(g, scene.guide_state(g.id), opts.selected_resources.contains(&g.id));
@@ -1545,6 +1662,7 @@ mod tests {
             points: (0..40).map(|i| Point { p: v3(i as f32 * 0.05 - 1.0, 0.3, 0.0), pressure: 0.8, n: Vec3::Z }).collect(),
             brush: Brush { kind, size_mm: 40.0, paint: kind.default_paint(), ..Brush::default() },
             seed: 5,
+            tris: Vec::new(),
         }
     }
 
@@ -1648,10 +1766,15 @@ mod tests {
         let mut atlas = Atlas::default();
         let cam = Camera { yaw: 0.0, pitch: 0.0, ..Camera::default() };
         let f = render(&scene, &cam, &mut atlas, &opts(&empty, 0));
-        let colours: Vec<[u8; 4]> = f.batches.iter().flat_map(|b| b.vertices.iter().map(|v| v.color)).filter(|c| c[3] == 255).collect();
-        let first_red = colours.iter().position(|c| c[0] > 200 && c[2] < 50);
-        let first_blue = colours.iter().position(|c| c[2] > 200 && c[0] < 50);
-        assert!(first_blue < first_red, "{first_blue:?} {first_red:?}");
+        // Paint is listed in drawing order now; the depth prepass is what keeps the far curve
+        // behind the near one.
+        let tex = crate::raster::Textures { atlas: &atlas, images: std::collections::HashMap::new() };
+        let (w, h) = (cam.viewport.width as u32, cam.viewport.height as u32);
+        let pic = crate::raster::rasterize(&f, &tex, w, h, Some(Rgba::WHITE), None).expect("raster");
+        let near_at = cam.view().project(v3(-0.3, 0.3, 2.0)).expect("on screen");
+        let i = ((near_at.y as u32 * w + near_at.x as u32) * 4) as usize;
+        let p = &pic.rgba[i..i + 4];
+        assert!(p[0] > 200 && p[2] < 50, "the near red curve hides the far blue one: {p:?}");
     }
 
     #[test]

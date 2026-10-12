@@ -454,3 +454,190 @@ fn feel_set_rejects_bad_params() {
     assert_eq!(v, serde_json::to_value(crate::feel::StrokeFeel::default()).expect("json"));
     assert_eq!(e.run("feel.get", &Value::Null).expect("get"), v);
 }
+
+/// The colour of a rendered pixel (CPU raster of the current view).
+fn pixel(e: &mut Editor, x: usize, y: usize) -> [u8; 4] {
+    let (w, h) = (e.camera.viewport.width as u32, e.camera.viewport.height as u32);
+    let f = e.render(0, false);
+    let tex = crate::raster::Textures { atlas: &e.atlas, images: std::collections::HashMap::new() };
+    let pic = crate::raster::rasterize(&f, &tex, w, h, Some(crate::model::Rgba::WHITE), None).expect("raster");
+    let i = (y * w as usize + x) * 4;
+    [pic.rgba[i], pic.rgba[i + 1], pic.rgba[i + 2], pic.rgba[i + 3]]
+}
+
+fn front_ed() -> Editor {
+    let mut e = Editor::new();
+    e.set_viewport(400.0, 300.0);
+    e.stable = 0.0;
+    e.feel.post = false;
+    e.run("env.set", &json!({"grid": false})).expect("env");
+    e.run("boil.set", &json!({"enabled": false})).expect("boil");
+    e.run("camera.view", &json!({"view": "front"})).expect("front");
+    e
+}
+
+fn square(x0: f32, y0: f32, x1: f32, y1: f32) -> Vec<[f32; 2]> {
+    let c = [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]];
+    c.windows(2)
+        .flat_map(|w| (0..20).map(move |i| [w[0][0] + (w[1][0] - w[0][0]) * i as f32 / 20.0, w[0][1] + (w[1][1] - w[0][1]) * i as f32 / 20.0]))
+        .chain([[x0, y0]])
+        .collect()
+}
+
+/// The paint bucket fills a closed outline (under it, in the brush colour) and refuses an
+/// open one or a click outside.
+#[test]
+fn the_bucket_fills_closed_shapes_under_their_lines() {
+    let mut e = front_ed();
+    e.run("brush.set", &json!({"kind": "marker", "color": "#000000", "size": 20, "pressure": false})).expect("ink");
+    e.run("stroke.draw", &json!({"points": pts(&square(120.0, 80.0, 280.0, 220.0))})).expect("outline");
+    let outline_id = e.scene.strokes[0].id;
+    e.run("brush.set", &json!({"color": "#ff0000"})).expect("red");
+    let ids = e.run("fill.at", &json!({"x": 200, "y": 150})).expect("fill");
+    assert_eq!(ids.as_array().map(Vec::len), Some(1));
+    assert_eq!(e.scene.strokes.len(), 2);
+    assert!(e.scene.strokes[0].is_fill(), "the fill goes under the outline");
+    assert_eq!(e.scene.strokes[1].id, outline_id);
+    let p = pixel(&mut e, 200, 150);
+    assert!(p[0] > 200 && p[1] < 60 && p[2] < 60, "inside is red: {p:?}");
+    let edge = pixel(&mut e, 120, 150);
+    assert!(edge[0] < 80 && edge[1] < 80, "the line stays on top: {edge:?}");
+    assert!(pixel(&mut e, 60, 150)[1] > 200, "outside stays white");
+    // One undo step.
+    e.run("edit.undo", &Value::Null).expect("undo");
+    assert_eq!(e.scene.strokes.len(), 1);
+    // Outside the shape the flood leaks: an error, nothing made.
+    assert!(e.run("fill.at", &json!({"x": 30, "y": 30})).is_err());
+    assert!(e.run("fill.at", &json!({"x": -5, "y": 30})).is_err());
+    assert!(e.run("fill.at", &json!({"x": f64::NAN, "y": 30})).is_err());
+    assert_eq!(e.scene.strokes.len(), 1);
+}
+
+/// Lasso Fill and filled shapes paint on the guide; later paint covers earlier paint; the
+/// eraser leaves fills alone and Vacuum takes them whole; select and move work on them.
+#[test]
+fn lasso_fill_and_shapes_paint_on_the_guide() {
+    let mut e = front_ed();
+    e.run("brush.set", &json!({"color": "#0000ff"})).expect("blue");
+    e.run("tool.set", &json!({"tool": "lassofill"})).expect("tool");
+    let loop_pts = circle(200.0, 150.0, 80.0, 48);
+    e.pointer_down(loop_pts[0][0], loop_pts[0][1], 1.0, 0.0, Mods::default());
+    for (k, q) in loop_pts.iter().enumerate().skip(1) {
+        e.pointer_move(q[0], q[1], 1.0, 0.01 * k as f64, Mods::default());
+    }
+    e.pointer_up(200.0 + 80.0, 150.0, 1.0, Mods::default());
+    assert_eq!(e.scene.strokes.len(), 1, "{}", e.status);
+    assert!(e.scene.strokes[0].is_fill());
+    let p = pixel(&mut e, 200, 150);
+    assert!(p[2] > 200 && p[0] < 60, "{p:?}");
+    // A filled rectangle over it, by dragging the Shapes tool.
+    e.run("brush.set", &json!({"color": "#00ff00"})).expect("green");
+    e.run("tool.set", &json!({"tool": "shapes"})).expect("shapes");
+    e.run("shape.set", &json!({"kind": "rect", "filled": true})).expect("rect");
+    e.pointer_down(150.0, 120.0, 1.0, 0.0, Mods::default());
+    e.pointer_move(250.0, 180.0, 1.0, 0.1, Mods::default());
+    assert!(!e.overlay().polyline.is_empty(), "the shape previews while dragging");
+    e.pointer_up(250.0, 180.0, 0.2, Mods::default());
+    assert_eq!(e.scene.strokes.len(), 2);
+    let p = pixel(&mut e, 200, 150);
+    assert!(p[1] > 200 && p[0] < 60 && p[2] < 60, "the later rectangle covers the lasso fill: {p:?}");
+    // Outline shapes are curves.
+    e.run("fill.shape", &json!({"kind": "ellipse", "filled": false, "x0": 20, "y0": 20, "x1": 120, "y1": 80})).expect("outline");
+    assert!(!e.scene.strokes[2].is_fill() && e.scene.strokes[2].points.len() > 20);
+    assert!(e.run("fill.shape", &json!({"kind": "blob", "x0": 0, "y0": 0, "x1": 10, "y1": 10})).is_err());
+    // Erase leaves fills, Vacuum removes the one under it.
+    e.run("tool.set", &json!({"tool": "erase"})).expect("erase");
+    e.run("erase.at", &json!({"x": 200, "y": 150})).expect("erase");
+    assert_eq!(e.scene.strokes.iter().filter(|s| s.is_fill()).count(), 2);
+    // Click-select picks the fill under the pointer and moves it with the gizmo-free drag.
+    e.run("tool.set", &json!({"tool": "select"})).expect("select");
+    e.pointer_down(200.0, 150.0, 1.0, 0.0, Mods::default());
+    e.pointer_up(200.0, 150.0, 0.1, Mods::default());
+    assert_eq!(e.selection.len(), 1);
+    let sel = *e.selection.iter().next().expect("one");
+    let before = e.scene.stroke(sel).expect("fill").centre();
+    e.pointer_down(200.0, 150.0, 1.0, 0.2, Mods::default());
+    e.pointer_move(230.0, 150.0, 1.0, 0.3, Mods::default());
+    e.pointer_move(260.0, 150.0, 1.0, 0.4, Mods::default());
+    e.pointer_up(260.0, 150.0, 0.5, Mods::default());
+    assert!(!e.in_modal(), "letting go puts it down");
+    let after = e.scene.stroke(sel).expect("fill").centre();
+    assert!(after.x > before.x + 0.1, "dragged right: {before:?} → {after:?}");
+    e.run("tool.set", &json!({"tool": "vacuum"})).expect("vacuum");
+    e.run("erase.at", &json!({"x": 100, "y": 150, "vacuum": true})).expect("vacuum");
+}
+
+/// A primitive placed with the Primitives tool moves by dragging it, and becomes a solid,
+/// coloured object with guide.solid.
+#[test]
+fn primitives_drag_into_place_and_turn_solid() {
+    let mut e = front_ed();
+    e.run("guide.primitive", &json!({"kind": "sphere"})).expect("sphere");
+    let gid = e.scene.active_guide.expect("guide");
+    let x0 = e.scene.guide(gid).expect("g").xform.translation.x;
+    let view = e.view();
+    let c = view.project(Vec3::ZERO).expect("centre");
+    e.pointer_down(c.x, c.y, 1.0, 0.0, Mods::default());
+    e.pointer_move(c.x + 20.0, c.y, 1.0, 0.1, Mods::default());
+    e.pointer_move(c.x + 60.0, c.y, 1.0, 0.2, Mods::default());
+    e.pointer_up(c.x + 60.0, c.y, 0.3, Mods::default());
+    assert!(!e.in_modal());
+    let x1 = e.scene.guide(gid).expect("g").xform.translation.x;
+    assert!(x1 > x0 + 0.1, "the sphere moved right with the drag: {x0} → {x1}");
+    e.run("guide.done", &Value::Null).expect("done");
+    e.run("brush.set", &json!({"color": "#ff8800"})).expect("orange");
+    let ids = e.run("guide.solid", &Value::Null).expect("solid");
+    assert_eq!(ids.as_array().map(Vec::len), Some(1));
+    let solid = e.scene.strokes.last().cloned().expect("solid");
+    assert!(solid.is_fill() && solid.tris.len() > 100);
+    let at = view.project(crate::math::v3(x1, 0.0, 0.0)).expect("on screen");
+    let p = pixel(&mut e, at.x as usize, at.y as usize);
+    assert!(p[0] > 200 && p[2] < 80, "the sphere is painted orange: {p:?}");
+    // Survives a save and load.
+    let hex = e.run("file.serialize", &Value::Null).expect("save");
+    let mut f = Editor::new();
+    let hex = hex.get("hex").cloned().unwrap_or(hex);
+    f.run("file.deserialize", &json!({"hex": hex})).expect("load");
+    assert_eq!(f.scene.strokes.last().map(|s| s.tris.len()), Some(solid.tris.len()));
+}
+
+/// QuickShape in plain Draw: a wobbly rectangle held at the end snaps to a clean one; a
+/// scribble held at the end stays a scribble.
+#[test]
+fn holding_the_pen_snaps_a_rough_rectangle_clean() {
+    let mut e = front_ed();
+    e.run("tool.set", &json!({"tool": "draw"})).expect("draw");
+    let rough: Vec<[f32; 2]> =
+        square(100.0, 80.0, 300.0, 220.0).iter().enumerate().map(|(i, p)| [p[0] + ((i * 7) % 5) as f32 - 2.0, p[1] + ((i * 3) % 5) as f32 - 2.0]).collect();
+    e.pointer_down(rough[0][0], rough[0][1], 1.0, 0.0, Mods::default());
+    for (k, q) in rough.iter().enumerate().skip(1) {
+        e.pointer_move(q[0], q[1], 1.0, 0.005 * k as f64, Mods::default());
+    }
+    let t = 0.005 * rough.len() as f64;
+    e.tick(t + 0.1);
+    assert!(!e.overlay().adjusting, "not yet");
+    e.tick(t + HOLD_SECONDS + 0.05);
+    assert!(e.overlay().adjusting, "held still: snapped ({})", e.status);
+    assert!(e.status.contains("rectangle"), "{}", e.status);
+    e.pointer_up(rough.last().expect("p")[0], rough.last().expect("p")[1], t + 0.6, Mods::default());
+    let st = e.scene.strokes.last().expect("stroke");
+    let view = e.view();
+    let ys: Vec<f32> = st.points.iter().filter_map(|p| view.project(p.p)).map(|q| q.y).collect();
+    // The top edge is a straight level line: many points share y within a pixel.
+    let top = ys.iter().copied().fold(f32::MAX, f32::min);
+    assert!(ys.iter().filter(|y| (**y - top).abs() < 1.0).count() > 20, "a clean level top edge");
+
+    let scribble: Vec<[f32; 2]> = (0..80).map(|i| [100.0 + i as f32 * 3.0, 150.0 + ((i as f32) * 0.15).sin() * 30.0 + ((i * 13) % 3) as f32]).collect();
+    let n = e.scene.strokes.len();
+    e.pointer_down(scribble[0][0], scribble[0][1], 1.0, 10.0, Mods::default());
+    for (k, q) in scribble.iter().enumerate().skip(1) {
+        e.pointer_move(q[0], q[1], 1.0, 10.0 + 0.005 * k as f64, Mods::default());
+    }
+    e.tick(10.0 + 0.4 + HOLD_SECONDS + 0.05);
+    assert!(!e.overlay().adjusting, "a scribble is not forced into a shape");
+    e.pointer_up(340.0, 150.0, 11.5, Mods::default());
+    assert_eq!(e.scene.strokes.len(), n + 1);
+    // Off: no snapping.
+    e.run("assist.set", &json!({"quickShape": false})).expect("off");
+    assert!(!e.quick_shape);
+}

@@ -423,6 +423,10 @@ pub struct Stroke {
     pub brush: Brush,
     /// Seeds the boil and painterly noise, so every stroke wiggles its own way.
     pub seed: u32,
+    /// A filled surface (Fill, Lasso Fill, filled shapes, solid primitives) instead of a curve:
+    /// triangles over `points`, which are then the patch's vertices, its outline first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tris: Vec<[u32; 3]>,
 }
 
 impl Stroke {
@@ -434,8 +438,38 @@ impl Stroke {
     pub fn centre(&self) -> Vec3 {
         self.bounds().map_or(Vec3::ZERO, |(lo, hi)| (lo + hi) * 0.5)
     }
-    /// Remove non-finite points and clamp pressures; keep at most STROKE_POINTS_MAX.
+    /// A filled surface rather than a curve.
+    pub fn is_fill(&self) -> bool {
+        !self.tris.is_empty()
+    }
+
+    /// Remove non-finite points and clamp pressures; keep at most STROKE_POINTS_MAX. A fill
+    /// keeps the triangles whose corners survive, renumbered.
     pub fn sanitize(&mut self) {
+        if self.is_fill() {
+            let n = self.points.len().min(STROKE_POINTS_MAX);
+            let mut map = vec![u32::MAX; n];
+            let mut kept = Vec::with_capacity(n);
+            for (i, p) in self.points.iter().take(n).enumerate() {
+                if p.p.is_finite() {
+                    map[i] = kept.len() as u32;
+                    kept.push(*p);
+                }
+            }
+            self.tris = self
+                .tris
+                .iter()
+                .filter_map(|t| {
+                    let m = |i: u32| map.get(i as usize).copied().filter(|v| *v != u32::MAX);
+                    Some([m(t[0])?, m(t[1])?, m(t[2])?])
+                })
+                .take(STROKE_POINTS_MAX * 2)
+                .collect();
+            self.points = kept;
+            if self.tris.is_empty() {
+                self.points.clear();
+            }
+        }
         self.points.retain(|p| p.p.is_finite());
         self.points.truncate(STROKE_POINTS_MAX);
         for p in &mut self.points {
@@ -948,6 +982,7 @@ mod tests {
             points: vec![Point { p: v3(f32::NAN, 0.0, 0.0), pressure: 2.0, n: Vec3::ZERO }, Point { p: Vec3::ZERO, pressure: f32::NAN, n: Vec3::ZERO }],
             brush: Brush { size_mm: 1e9, opacity: -1.0, ..Brush::default() },
             seed: 1,
+            tris: Vec::new(),
         }));
         s.boil.frames = 900;
         s.repair();

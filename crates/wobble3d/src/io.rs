@@ -307,6 +307,7 @@ mod tests {
             points: vec![Point { p: Vec3::ZERO, pressure: 0.5, n: Vec3::Y }, Point { p: Vec3::X, pressure: 1.0, n: Vec3::Y }],
             brush: Brush::default(),
             seed: 1,
+            tris: Vec::new(),
         }));
         let g = crate::guide::Guide::primitive(6, crate::guide::Primitive::Tube, 10).expect("tube");
         s.guides.push(Arc::new(g));
@@ -339,6 +340,7 @@ mod tests {
             points: (0..5).map(|i| Point { p: v3(i as f32, 0.0, 0.0), pressure: 1.0, n: Vec3::ZERO }).collect(),
             brush: Brush::default(),
             seed: 1,
+            tris: Vec::new(),
         }));
         let (obj, mtl) = export_obj(&s, "note.mtl");
         assert!(mtl.contains("newmtl c0"));
