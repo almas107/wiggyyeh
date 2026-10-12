@@ -325,12 +325,22 @@ fn depth_of_field(cv: &mut Canvas, fstop: f32, focus_z: f32) {
             if r == 0 {
                 continue;
             }
-            let (x0, x1, y0, y1) = (x.saturating_sub(r), (x + r + 1).min(w), y.saturating_sub(r), (y + r + 1).min(h));
-            let n = ((x1 - x0) * (y1 - y0)) as f64;
+            // A round-ish lens blur (out-of-focus lights become discs, not squares): the mean
+            // of a wide, a tall and a square box, which together approximate an octagon.
+            let boxed = |rx: usize, ry: usize| -> [f64; 4] {
+                let (x0, x1, y0, y1) = (x.saturating_sub(rx), (x + rx + 1).min(w), y.saturating_sub(ry), (y + ry + 1).min(h));
+                let n = ((x1 - x0) * (y1 - y0)).max(1) as f64;
+                let mut c = [0.0f64; 4];
+                for (k, ck) in c.iter_mut().enumerate() {
+                    *ck = (sat[y1 * (w + 1) + x1][k] - sat[y0 * (w + 1) + x1][k] - sat[y1 * (w + 1) + x0][k] + sat[y0 * (w + 1) + x0][k]) / n;
+                }
+                c
+            };
+            let (thin, mid) = ((r as f32 * 0.42).round() as usize, (r as f32 * 0.78).round() as usize);
+            let (a, b, d) = (boxed(r, thin), boxed(thin, r), boxed(mid, mid));
             let mut c = [0.0f32; 4];
             for (k, ck) in c.iter_mut().enumerate() {
-                let s = sat[y1 * (w + 1) + x1][k] - sat[y0 * (w + 1) + x1][k] - sat[y1 * (w + 1) + x0][k] + sat[y0 * (w + 1) + x0][k];
-                *ck = (s / n) as f32;
+                *ck = ((a[k] + b[k] + d[k]) / 3.0) as f32;
             }
             cv.px[y * w + x] = c;
         }

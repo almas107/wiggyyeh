@@ -3408,7 +3408,11 @@ impl Editor {
                 ok
             }
             "file.showcase" => {
-                crate::showcase::build(self)?;
+                match s(p, "name").unwrap_or("garden") {
+                    "garden" => crate::showcase::build(self)?,
+                    "deepsea" | "deep-sea" | "advanced" => crate::deepsea::build(self)?,
+                    other => return Err(format!("unknown showcase {other:?} (garden, deepsea)")),
+                }
                 self.dirty = false;
                 Ok(json!({"strokes": self.scene.strokes.len(), "groups": self.scene.groups.len()}))
             }
@@ -3716,6 +3720,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("guide.segments", "{value} the primitive's segments"),
     ("guide.plane", "{axis: x|y|z|view} a flat guide through the orbit point across an axis (no guide drawing needed)"),
     ("guide.fromCurve", "{id?} a guide extruded along the view from a curve already drawn (the selected one)"),
+    ("edit.adjustColor", "{hue?: degrees, saturation?, brightness?, opacity?: −1..1} shift the selected curves' colours by the same amount"),
     ("view.focus", "{on?} focus mode: other groups than the active one fade"),
     ("snap.set", "{ends} new curves' ends snap to the ends of nearby curves"),
     ("guide.loft", "{ids: [curve ids in order], tension?, done?} loft a guide through curves"),
@@ -3777,7 +3782,10 @@ const COMMANDS: &[(&str, &str)] = &[
     ("shot.move", "{id, index}"),
     ("sequence.set", "{speed, mode: once|loop|swing, secondsPerShot}"),
     ("file.new", "start a new note"),
-    ("file.showcase", "open the showcase note: a garden scene made with every 3D feature, one group per feature"),
+    (
+        "file.showcase",
+        "{name?: garden|deepsea} open a showcase note: the garden (every 3D feature, one group per feature) or the deep sea (Feather's advanced tutorial redone)",
+    ),
     ("file.serialize", "the note as .wob3d bytes (hex)"),
     ("file.deserialize", "{hex} open .wob3d bytes"),
     ("export.obj", "{mtl?} the curves as OBJ tubes + MTL"),

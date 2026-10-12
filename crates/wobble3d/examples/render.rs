@@ -20,7 +20,10 @@ fn main() -> Result<(), String> {
         return panel(&out);
     }
     if std::env::args().nth(2).as_deref() == Some("showcase") {
-        return showcase(&out);
+        return showcase(&out, false);
+    }
+    if std::env::args().nth(2).as_deref() == Some("deepsea") {
+        return showcase(&out, true);
     }
     let mut e = Editor::new();
     e.set_viewport(960.0, 640.0);
@@ -72,13 +75,18 @@ fn main() -> Result<(), String> {
 
 /// Every brush kind as a big S-curve, seen straight on.
 /// The showcase note from its starting view, Render mode, and each of its shots.
-fn showcase(out: &str) -> Result<(), String> {
+fn showcase(out: &str, deep: bool) -> Result<(), String> {
     let mut e = Editor::new();
     e.set_viewport(1280.0, 800.0);
-    wobbleworks_3d::showcase::build(&mut e)?;
-    let mut views = vec![("showcase".to_string(), e.camera, false), ("showcase-render".to_string(), e.camera, true)];
+    let name = if deep { "deepsea" } else { "showcase" };
+    if deep {
+        wobbleworks_3d::deepsea::build(&mut e)?;
+    } else {
+        wobbleworks_3d::showcase::build(&mut e)?;
+    }
+    let mut views = vec![(name.to_string(), e.camera, deep), (format!("{name}-render"), e.camera, true)];
     for (i, shot) in e.scene.sequence.shots.iter().enumerate() {
-        views.push((format!("showcase-shot{}", i + 1), shot.camera, false));
+        views.push((format!("{name}-shot{}", i + 1), shot.camera, deep));
     }
     for (name, cam, render) in views {
         e.camera = cam;

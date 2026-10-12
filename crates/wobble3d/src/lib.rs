@@ -11,6 +11,7 @@
 
 pub mod assist;
 pub mod camera;
+pub mod deepsea;
 pub mod editor;
 pub mod feel;
 pub mod fill;

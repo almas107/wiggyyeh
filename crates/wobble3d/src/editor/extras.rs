@@ -117,6 +117,30 @@ impl Editor {
         }
     }
 
+    /// Shift the selected curves' colours in hue (degrees), saturation and brightness (−1..1)
+    /// and their opacity, each by the same amount: "brighten everything painted" keeps the
+    /// differences between colours, as Feather's tutorial does to tune a scene's tone.
+    pub fn adjust_colour(&mut self, hue: f32, sat: f32, bright: f32, opacity: f32) -> Result<usize, String> {
+        if ![hue, sat, bright, opacity].iter().all(|v| v.is_finite()) {
+            return Err("hue, saturation, brightness and opacity must be numbers".into());
+        }
+        if self.selection.is_empty() {
+            return Err("select the curves to adjust first".into());
+        }
+        self.checkpoint("Adjust colour");
+        let mut n = 0;
+        for st in self.scene.strokes.iter_mut().filter(|s| self.selection.contains(&s.id)) {
+            let m = Arc::make_mut(st);
+            let (h, s, v) = m.brush.color.to_hsv();
+            let a = m.brush.color.0[3];
+            m.brush.color = crate::model::Rgba::from_hsv(h + hue, (s + sat).clamp(0.0, 1.0), (v + bright).clamp(0.0, 1.0), a);
+            m.brush.opacity = (m.brush.opacity + opacity).clamp(0.0, 1.0);
+            n += 1;
+        }
+        self.changed();
+        Ok(n)
+    }
+
     /// The extra commands (dispatched from [`Editor::run`]).
     pub(super) fn run_extras(&mut self, cmd: &str, p: &Value) -> Option<Result<Value, String>> {
         let out = match cmd {
@@ -127,6 +151,10 @@ impl Editor {
             "guide.fromCurve" => {
                 let id = p.get("id").and_then(Value::as_u64);
                 self.guide_from_curve(id).map(|id| json!(id))
+            }
+            "edit.adjustColor" => {
+                let g = |k: &str| p.get(k).and_then(Value::as_f64).map_or(0.0, |v| v as f32);
+                self.adjust_colour(g("hue"), g("saturation"), g("brightness"), g("opacity")).map(|n| json!(n))
             }
             "view.focus" => {
                 self.focus = p.get("on").and_then(Value::as_bool).unwrap_or(!self.focus);

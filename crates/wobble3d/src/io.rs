@@ -68,6 +68,20 @@ pub fn load(bytes: &[u8]) -> Result<(Scene, Camera), String> {
     Ok((scene, camera))
 }
 
+/// A stroke as triangles (positions, index triples): a fill exports its own triangles, a curve
+/// exports a tube around it.
+fn mesh(s: &Stroke) -> (Vec<Vec3>, Vec<[usize; 3]>) {
+    if s.is_fill() {
+        let pos: Vec<Vec3> = s.points.iter().map(|p| p.p).collect();
+        let ok = |i: u32| pos.get(i as usize).is_some_and(|p| p.is_finite());
+        let tris = s.tris.iter().filter(|t| t.iter().all(|&i| ok(i))).map(|t| t.map(|i| i as usize)).collect();
+        return (pos, tris);
+    }
+    let (pos, quads) = tube(s, 8);
+    let tris = quads.iter().flat_map(|q| [[q[0], q[1], q[2]], [q[0], q[2], q[3]]]).collect();
+    (pos, tris)
+}
+
 /// Tube rings around a curve: (positions, faces as quads of position indices).
 fn tube(s: &Stroke, sides: usize) -> (Vec<Vec3>, Vec<[usize; 4]>) {
     let pts: Vec<_> = s.points.iter().filter(|p| p.p.is_finite()).collect();
@@ -121,7 +135,7 @@ pub fn export_obj(scene: &Scene, mtl_name: &str) -> (String, String) {
         let name: String = g.name.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
         let _ = writeln!(obj, "o {name}");
         for s in scene.strokes.iter().filter(|s| s.group == g.id) {
-            let (pos, faces) = tube(s, 8);
+            let (pos, faces) = mesh(s);
             if faces.is_empty() {
                 continue;
             }
@@ -135,7 +149,7 @@ pub fn export_obj(scene: &Scene, mtl_name: &str) -> (String, String) {
                 let _ = writeln!(obj, "v {:.5} {:.5} {:.5} {:.4} {:.4} {:.4}", p.x, p.y, p.z, c[0], c[1], c[2]);
             }
             for f in &faces {
-                let _ = writeln!(obj, "f {} {} {} {}", f[0] + base, f[1] + base, f[2] + base, f[3] + base);
+                let _ = writeln!(obj, "f {} {} {}", f[0] + base, f[1] + base, f[2] + base);
             }
             base += pos.len();
         }
@@ -163,7 +177,7 @@ pub fn export_glb(scene: &Scene) -> Result<Vec<u8>, String> {
         let mut col: Vec<[f32; 4]> = Vec::new();
         let mut idx: Vec<u32> = Vec::new();
         for s in scene.strokes.iter().filter(|s| s.group == g.id) {
-            let (p, faces) = tube(s, 8);
+            let (p, faces) = mesh(s);
             if faces.is_empty() {
                 continue;
             }
@@ -175,8 +189,7 @@ pub fn export_glb(scene: &Scene) -> Result<Vec<u8>, String> {
             col.extend(std::iter::repeat_n(c, p.len()));
             pos.extend(p);
             for f in faces {
-                let q = f.map(|i| base + i as u32);
-                idx.extend_from_slice(&[q[0], q[1], q[2], q[0], q[2], q[3]]);
+                idx.extend(f.map(|i| base + i as u32));
             }
             if pos.len() > OBJ_MAX {
                 return Err("the note is too big to export".into());
@@ -348,6 +361,21 @@ mod tests {
         assert_eq!(pos.len(), 5 * 8);
         assert_eq!(tris.len(), 4 * 8 * 2);
         assert!(parse_obj("v 1 2\n").is_err());
+        // A fill exports its own triangles, not a tube around its outline.
+        let quad = [v3(0.0, 0.0, 0.0), v3(1.0, 0.0, 0.0), v3(1.0, 1.0, 0.0), v3(0.0, 1.0, 0.0)];
+        let fill = Stroke {
+            id: 6,
+            group: 1,
+            points: quad.iter().map(|&p| Point { p, pressure: 1.0, n: Vec3::Z }).collect(),
+            brush: Brush::default(),
+            seed: 2,
+            tris: vec![[0, 1, 2], [0, 2, 3], [0, 2, 9]],
+        };
+        let mut only_fill = Scene::default();
+        only_fill.strokes.push(Arc::new(fill));
+        let (pos, tris) = parse_obj(&export_obj(&only_fill, "f.mtl").0).expect("parse the fill");
+        assert_eq!((pos.len(), tris.len()), (4, 2), "two triangles; the one pointing nowhere is dropped");
+        assert!(export_glb(&only_fill).is_ok());
         let glb = export_glb(&s).expect("glb");
         assert_eq!(&glb[0..4], b"glTF");
         assert_eq!(u32::from_le_bytes([glb[8], glb[9], glb[10], glb[11]]) as usize, glb.len());

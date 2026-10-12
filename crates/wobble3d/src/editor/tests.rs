@@ -460,7 +460,7 @@ fn pixel(e: &mut Editor, x: usize, y: usize) -> [u8; 4] {
     let (w, h) = (e.camera.viewport.width as u32, e.camera.viewport.height as u32);
     let f = e.render(0, false);
     let tex = crate::raster::Textures { atlas: &e.atlas, images: std::collections::HashMap::new() };
-    let pic = crate::raster::rasterize(&f, &tex, w, h, Some(crate::model::Rgba::WHITE), None).expect("raster");
+    let pic = crate::raster::rasterize(&f, &tex, w, h, Some(e.scene.environment.background), None).expect("raster");
     let i = (y * w as usize + x) * 4;
     [pic.rgba[i], pic.rgba[i + 1], pic.rgba[i + 2], pic.rgba[i + 3]]
 }
@@ -733,4 +733,40 @@ fn comment_requests_planes_guides_from_curves_snapping_and_focus() {
     assert_eq!(e.scene.environment.grid_opacity, 0.25);
     e.run("env.set", &json!({"gridOpacity": f64::NAN})).ok();
     assert!(e.scene.environment.grid_opacity.is_finite());
+}
+
+/// What the advanced tutorial's frames show: glow adds light in Render mode (overlaps get
+/// brighter), the background colour tints the shading, selections are flat mint, and a
+/// selection's colours shift together.
+#[test]
+fn advanced_tutorial_render_behaviours() {
+    let mut e = front_ed();
+    e.run("env.set", &json!({"background": "#0a1a60", "render": true})).expect("deep sea");
+    e.run("brush.set", &json!({"kind": "marker", "color": "#3060ff", "size": 60, "opacity": 0.35, "material": "glow", "pressure": false})).expect("glow");
+    e.run("stroke.draw", &json!({"points": pts(&(0..30).map(|i| [60.0 + i as f32 * 8.0, 150.0]).collect::<Vec<_>>())})).expect("one");
+    let once = pixel(&mut e, 200, 150);
+    e.run("stroke.draw", &json!({"points": pts(&(0..30).map(|i| [60.0 + i as f32 * 8.0, 150.0]).collect::<Vec<_>>())})).expect("two");
+    let twice = pixel(&mut e, 200, 150);
+    let sum = |p: [u8; 4]| p[0] as u32 + p[1] as u32 + p[2] as u32;
+    assert!(sum(twice) > sum(once) + 40, "overlapping glow is brighter: {once:?} → {twice:?}");
+    assert!(sum(once) > sum(pixel(&mut e, 200, 40)), "glow is brighter than the sea");
+    // Environment light: a white shaded curve in shadow takes the background's blue.
+    let mut f = front_ed();
+    f.run("env.set", &json!({"background": "#0a1a60", "render": true, "lighting": {"azimuth": 180, "altitude": -60}})).expect("env");
+    f.run("brush.set", &json!({"kind": "flat", "color": "#ffffff", "size": 60, "material": "shaded", "pressure": false})).expect("white");
+    f.run("stroke.draw", &json!({"points": pts(&(0..30).map(|i| [60.0 + i as f32 * 8.0, 150.0]).collect::<Vec<_>>())})).expect("draw");
+    let sh = pixel(&mut f, 200, 150);
+    assert!(u32::from(sh[2]) > u32::from(sh[0]) + 10, "shadow tinted by the blue background: {sh:?}");
+    // Selection: flat mint.
+    let id = f.scene.strokes[0].id;
+    f.run("select.set", &json!({"ids": [id]})).expect("select");
+    let m = pixel(&mut f, 200, 150);
+    assert!(m[1] > 200 && m[0] < 160, "mint: {m:?}");
+    // Relative colour adjustment keeps differences between colours.
+    f.run("brush.set", &json!({"color": "#804040", "applyToSelection": true})).expect("recolour");
+    f.run("edit.adjustColor", &json!({"brightness": 0.2})).expect("brighten");
+    let c = f.scene.stroke(id).expect("s").brush.color;
+    assert!(c.0[0] > 0x80 + 30, "{c:?}");
+    f.run("select.none", &Value::Null).expect("none");
+    assert!(f.run("edit.adjustColor", &json!({"hue": 10})).is_err(), "needs a selection");
 }

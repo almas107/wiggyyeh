@@ -171,7 +171,17 @@ The screenshot needs a GPU or `mesa-vulkan-drivers`; Linux builds need `libasoun
   showcase). 94 core tests, 54 app tests; screenshot of the showcase through lavapipe matches
   the CPU raster. The dark-mode button in PhotoCraft's title bar now switches WobbleWorks'
   dark and light looks.
-- **Still open:** fills get no ground shadow and no painterly texture; the egui-mesh fallback
+- **2026-10-12, the advanced tutorial (frames + transcript, not transcript alone):** glow is
+  additive light now (overlapping low-opacity glow strokes build up to white, as in Feather's
+  bioluminescent creature) and soft (halo-row strips, faded caps); the background colour lights
+  the scene (ambient 0.18 + 0.3 × background); selections are a flat mint, as Feather draws
+  them; depth of field blurs to round-ish bokeh; `edit.adjustColor` shifts hue / saturation /
+  brightness / opacity of the selection by the same amount; OBJ / glTF export writes a fill's
+  own triangles instead of a tube round its outline. `deepsea.rs` rebuilds the tutorial's scene
+  one group per technique (`file.showcase {name: "deepsea"}`). 96 core tests.
+- **Still open:** no shot thumbnail strip in Sequence; the guide's section lines and the dashed
+  guide preview are not drawn like Feather's; the deep-sea scene is an approximation of the
+  tutorial's render, not a match; fills get no ground shadow and no painterly texture; the egui-mesh fallback
   (no GPU) draws paint in drawing order without depth; eraser leaves fills (Vacuum removes them);
   more than four clipping bases in one view leave the rest unclipped; side-by-side feel tuning with real
   users (defaults: smooth 0.35 × 1, thickness 0.3 × 1).

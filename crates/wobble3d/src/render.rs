@@ -118,6 +118,8 @@ pub fn depth_to_z(depth: f32, orthographic: bool, near: f32, far: f32) -> f32 {
 
 /// The selection highlight (Feather shows selected curves in green).
 pub const SELECT_GREEN: Rgba = Rgba([0x2f, 0xc8, 0x62, 255]);
+/// Selected curves, flat (Feather's mint).
+pub const SELECT_MINT: Rgba = Rgba([0x7d, 0xe8, 0xb4, 255]);
 pub const GUIDE_TINT: Rgba = Rgba([0x8f, 0xb4, 0xff, 255]);
 pub const GUIDE_ORANGE: Rgba = Rgba([0xff, 0x8a, 0x1f, 255]);
 /// Most triangles drawn from one 3D model resource.
@@ -178,6 +180,8 @@ struct Builder<'a> {
     clip: u8,
     mask: u8,
     focus: Option<u64>,
+    /// Paint without light (selection highlight).
+    flat_shading: bool,
     /// The far end of the depth range.
     far: f32,
     /// The background image Cutout paint shows (Render mode with a background image).
@@ -307,6 +311,7 @@ impl<'a> Builder<'a> {
             clip: 0,
             mask: 0,
             focus: None,
+            flat_shading: false,
             far,
             cut_with: env.background_image.as_ref().filter(|_| env.render_mode).map(|im| im.id),
             cutting: false,
@@ -414,7 +419,7 @@ impl<'a> Builder<'a> {
     /// Shade a base colour for a surface normal.
     fn shade(&self, base: [f32; 3], n: Vec3, material: Material, lit: bool) -> [f32; 3] {
         let render = self.env.render_mode;
-        if self.focus.is_some() {
+        if self.focus.is_some() || self.flat_shading {
             return base;
         }
         match (render, material) {
@@ -442,13 +447,16 @@ impl<'a> Builder<'a> {
             }
             let lc = rgb(li.color);
             let s = li.strength;
-            let amb = 0.38;
+            // The background colour lights the scene too (Feather: "the background colour also
+            // acts as environment lighting"): shadows take its tint and only black paint is black.
+            let bg = rgb(self.env.background);
+            let amb = [0.18 + 0.3 * bg[0], 0.18 + 0.3 * bg[1], 0.18 + 0.3 * bg[2]];
             let h = (l + self.view.back).normalized();
             let spec = if li.toon { 0.0 } else { n.dot(h).max(0.0).powi(32) * 0.25 * s };
             [
-                base[0] * (amb + lambert * s * lc[0] * 0.75) + spec,
-                base[1] * (amb + lambert * s * lc[1] * 0.75) + spec,
-                base[2] * (amb + lambert * s * lc[2] * 0.75) + spec,
+                base[0] * (amb[0] + lambert * s * lc[0] * 0.75) + spec,
+                base[1] * (amb[1] + lambert * s * lc[1] * 0.75) + spec,
+                base[2] * (amb[2] + lambert * s * lc[2] * 0.75) + spec,
             ]
         } else {
             // Sketch mode: a soft studio light from the upper left of the view.
@@ -557,6 +565,12 @@ impl<'a> Builder<'a> {
 
     fn colour(&self, paint: &Paint, n: Vec3, alpha: f32, depth: f32, distance: f32) -> [u8; 4] {
         match *paint {
+            // Glow in Render mode is light: it adds, so overlapping strokes grow brighter (the
+            // advanced tutorial's creature, lamp beams and bloom strokes are built this way).
+            Paint::Shade { base, alpha: a, material: Material::Glow, .. } if self.env.render_mode && self.focus.is_none() => {
+                let c = mix3(base, [1.0, 1.0, 1.0], 0.2);
+                additive(c, a * alpha * 1.15)
+            }
             Paint::Shade { base, alpha: a, material, lit } => {
                 let c = self.shade(base, n, material, lit);
                 let c = self.fog(c, depth, distance);
@@ -964,7 +978,18 @@ impl<'a> Builder<'a> {
     fn stroke(&mut self, s: &Stroke, selected: bool) {
         self.cutting = s.brush.material == Material::Cutout;
         (self.clip, self.mask) = self.roles.get(&s.group).copied().unwrap_or((0, 0));
-        if let Some(g) = self.focus {
+        if selected && self.focus.is_none() {
+            // Feather shows a selection as flat mint, whatever its colour or material.
+            let mut f = s.clone();
+            f.brush.color = SELECT_MINT;
+            f.brush.material = Material::Shadeless;
+            f.brush.pattern = None;
+            f.brush.paint.echo = None;
+            f.brush.paint.color_jitter = 0.0;
+            self.flat_shading = true;
+            self.stroke_paint(&f, false);
+            self.flat_shading = false;
+        } else if let Some(g) = self.focus {
             // Feather's focus mode: the active group as a black silhouette, the rest light
             // grey, all flat (a check of shapes and overlaps without colour or light).
             let mut f = s.clone();
@@ -1026,9 +1051,24 @@ impl<'a> Builder<'a> {
                 }
             }
             if render && material == Material::Glow {
-                self.halo(&runs, base, br.glow, distance);
+                self.halo(&runs, base, br.glow, alpha, distance);
             }
-            for run in &runs {
+            // Glow light is soft across its width (brightest in the middle), so strokes build up
+            // into gradients instead of stacking hard-edged slabs; dots are soft discs.
+            let soft_glow = render && material == Material::Glow && self.focus.is_none() && !matches!(kind, BrushKind::Square | BrushKind::Diamond);
+            if soft_glow {
+                let row = self.row(RowKey::Halo);
+                let light = mix3(base, [1.0, 1.0, 1.0], 0.2);
+                for run in &runs {
+                    if run.len() == 1 {
+                        self.cap(&run[0], Paint::Add(light, alpha * 0.9), [0.0, 0.0], 1.0, 0.0, distance);
+                        continue;
+                    }
+                    let r = wrap_u(run);
+                    self.strips(&r, &[&TEXTURED], Paint::Add(light, alpha * 1.4), row, [0.0, 0.0], 1.0, 0.0, distance);
+                }
+            }
+            for run in runs.iter().filter(|_| !soft_glow) {
                 match kind {
                     BrushKind::Pen => {
                         if run.len() == 1 {
@@ -1080,12 +1120,15 @@ impl<'a> Builder<'a> {
         self.view.half_height * self.view.f
     }
 
-    fn halo(&mut self, runs: &[Vec<Sample>], base: [f32; 3], glow: f32, distance: f32) {
+    /// A glow's halo: as strong as the stroke is opaque (faint glow strokes stacked into a
+    /// gradient must not each bring a full halo).
+    fn halo(&mut self, runs: &[Vec<Sample>], base: [f32; 3], glow: f32, alpha: f32, distance: f32) {
         let row = self.row(RowKey::Halo);
         let size = 2.5 + glow * 4.0 + self.env.effects.glow * 6.0;
+        let amount = (0.35 + glow * 0.6) * alpha.clamp(0.0, 1.0);
         for run in runs {
             let r = wrap_u(run);
-            self.strips(&r, &[&TEXTURED], Paint::Add(base, 0.35 + glow * 0.6), row, [0.0, 0.0], size, 3e-4, distance);
+            self.strips(&r, &[&TEXTURED], Paint::Add(base, amount), row, [0.0, 0.0], size, 3e-4, distance);
         }
     }
 
@@ -1109,7 +1152,7 @@ impl<'a> Builder<'a> {
             }
         }
         if render && material == Material::Glow {
-            self.halo(&runs, base, br.glow, distance);
+            self.halo(&runs, base, br.glow, alpha, distance);
         }
         let layers = br.paint.layers.clamp(1, 4) as u32;
         for layer in (0..layers).rev() {
@@ -1131,7 +1174,9 @@ impl<'a> Builder<'a> {
                 }
             }
             let c = if render && material == Material::Glow { mix3(c, [1.0, 1.0, 1.0], 0.35) } else { c };
-            let paint = Paint::Flat([c[0], c[1], c[2], alpha]);
+            // Glow paint adds light in Render mode (textured: the bristles glow).
+            let paint =
+                if render && material == Material::Glow && self.focus.is_none() { Paint::Add(c, alpha) } else { Paint::Flat([c[0], c[1], c[2], alpha]) };
             for run in &runs {
                 let bias = layer as f32 * LAYER_BEHIND;
                 self.dry_ended(run, dry_ends, [start_row, row, tail_row], paint, off, width, bias, distance);
