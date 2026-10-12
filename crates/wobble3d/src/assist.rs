@@ -404,7 +404,7 @@ impl Shape {
                 *ry = (*ry * k).max(1.0);
             }
             Shape::Poly { pts, base, n, grab, .. } => {
-                let m = usize::from(*n).min(POLY_MAX).max(1);
+                let m = usize::from(*n).clamp(1, POLY_MAX);
                 let c = [base[..m].iter().map(|p| p[0]).sum::<f32>() / m as f32, base[..m].iter().map(|p| p[1]).sum::<f32>() / m as f32];
                 let d0 = dist(c, *grab);
                 if d0 < 1.0 {

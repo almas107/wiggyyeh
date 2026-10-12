@@ -36,12 +36,13 @@ Status: **done**, **partial** (works, details differ), **open**.
 | 3D Guide: draw (extruded along the view), bend (sweep along a stroke from another view, repeatable), orange start edge, section lines, opacity (never fully opaque), close / save / recall | done | Paper's tube → doughnut example is a test |
 | Loft (curves in order, tension), primitives (cube, pyramid, sphere, tube; segments) | done | + plane primitive |
 | Draw on guide, on image resources (bounded flat guide), on OBJ models | done | + drawing in the air (toggle) |
-| Brush: type, colour, size 1–300 mm, opacity, pressure, injector, eyedropper, presets | done | 10 brush types (Feather's names are undocumented) |
+| Brush: type, colour, size 1–300 mm, opacity, pressure, injector, eyedropper, presets | done | 12 types incl. Feather's flat ("highlighter"), ribbon (stands off the guide), square and diamond (real swept prisms), tapered first brush (pen + taper) |
 | Materials: Shadeless, Shaded, Glow, Cutout; patterns Dot, Line, Cross, Terrazzo, Stippled (intensity, angle, contrast) | done | Shown in Render mode; Cutout shows the background image (or colour) |
 | Assistance: Mirror X/Y/Z any combination, Draw Shape (line / curve / circle, hold to adjust, press-hold-drag circle), Stable Stroke | done | + Grease Pencil's pressure curve and post-processing; Shift toggles Stable Stroke |
 | Erase (centre-line points) / Vacuum (whole curves); guides isolate what they cover | done | |
 | Selection: drag-select, deselect, resources; duplicate in place / by view / by mirror; delete | done | + click, box, circle, lasso, invert (Blender) |
-| Transform | done (Blender) | No joystick, by request: G / R / S modal, axis & plane constraints, typed numbers, snapping, gizmo |
+| Transform | done (Blender) | No joystick, by request: G / R / S modal, axis & plane constraints, typed numbers, snapping, gizmo (drags confirm on release); drag selected things or primitives directly; the joystick's wider / taller as `transform.stretch` (screen axes, thickness kept) |
+| Focus mode (the colour icon on the group panel) | done | Active group a black silhouette, others grey, flat (as the group tutorial shows) |
 | Liquify: push, pinch, comb; size (screen), range, strength; undo all, compare, apply | done | |
 | Stage: groups (add above active, rename, visibility, isolate, select, duplicate, merge, reorder, move curves in), resources (three-state cube, rename, delete, opacity), environment (axes, grid, background colour and image, fog, lighting dir/colour/strength/from view, ground shadow, toon; glow, DOF, grain, pixelation, bloom) | done | DOF, grain, pixelation and bloom show live (GPU post pass) and in exports |
 | Sequence: shots, play (0.5/1/2×; once / loop / swing), thirds grid, camera info | done | |
@@ -51,6 +52,42 @@ Status: **done**, **partial** (works, details differ), **open**.
 | AR, Publish to Gallery | open | Platform services, out of scope for a desktop/web app |
 | Keyboard shortcuts | done (Blender) | Rebindable in the Keys tab |
 | (WobbleWorks) Agents | done | `w3d.*` control methods, MCP via `control_call` |
+
+## What the tutorials taught (2026-10-12)
+
+Sources: Feather's own videos, supplied by the user as three zips (basic tutorials 1–3, advanced
+tutorials 1–5, ten "How to" clips): transcribed with Whisper and lined up with frames taken at each
+line's timestamp (captioned contact sheets), so what is said and what the hand does are read together.
+
+| Behaviour seen | WobbleWorks |
+|---|---|
+| A guide is a translucent sheet extruded along the view from the drawn line; strokes land on it; closing it leaves the strokes | same (`guide.draw`) |
+| Draw Shape: near-straight → straight at once; hold → the end follows the pen, the start fixed; circle hold → radius, centre fixed; press-hold-slide → circle from its centre; oval → oval, hold resizes; curve hold → curvature | same in Draw Shape, and now in plain Draw on a hold (QuickShape), plus rectangles and polygons |
+| Painting = big flat strokes laid as straight lines over each other on one guide (cassette, 15:52) | works without the colour fights Feather users report: the renderer layers paint on a surface in drawing order, also on curved guides |
+| 2D joystick: taller / longer / wider handles along the screen, 15° rotation about the screen centre, lock mode; scaled strokes keep their thickness | `transform.stretch` keeps thickness; a uniform scale now scales it (`scaleThickness`), the advanced tutorial calls the kept thickness "inconvenient" |
+| 3D joystick: axis cones, arcs, a centre sphere that rotates like a trackball, about the selection's centre | Blender gizmo (move / rotate / scale / all), R R trackball |
+| Group panel: long-press selects a group's strokes (green), arrow icon moves the selected strokes in, eye hides, colour icon = focus | click / Ctrl+click, "Move the selected curves here", eye, Focus button |
+| Brushes named in the videos: first (tapered), second (wide), third, highlighter (flat), ribbon, square / cube, diamond | ribbon and diamond added; square and diamond are real prisms (the orange button is a lit box) |
+| One-finger double tap → nearest perfect view; three-finger double tap → ortho | Alt+middle click, double right-click, `5`, the navigator |
+| Clipboard: floating reference window, opacity, lock, colour picker, "import to stage" | the colour card's Reference tab; Add › image resource |
+| Shadows drawn by hand (duplicate group, darker, offset, low opacity) | Render mode ground shadows, or the same trick |
+
+## From the YouTube comments (436 comments on the tutorial playlists)
+
+| Asked for | Done |
+|---|---|
+| Paint colours glitch through each other / "clipping" when layering (the most repeated complaint) | depth prepass + drawing order on the nearest surface (`SURFACE_TOL`), flat tape takes the surface depth where the boil moves it; tested on planes and spheres |
+| Paint bucket / fill closed loops / fill layer | Fill tool (bucket, fills under its lines), Fill Selection, solid primitives |
+| A lasso tool to colour | Lasso Fill |
+| Straight lines by default, hold to straighten, clean shapes | QuickShape in Draw (line, rectangle, polygon, circle, ellipse, arc); Shapes tool (rect, ellipse, polygon, star, line; filled or outline) |
+| Snap to the ends of existing lines | `snap.set {ends}` (on by default) |
+| Pick the axis to draw on instead of drawing a guide | `guide.plane` floor / wall / side / view |
+| Auto-generate guides from existing strokes, extrude lines | `guide.fromCurve` |
+| Grid opacity slider | `env.set {gridOpacity}` |
+| Two-finger tap undo | two-finger tap undo, three-finger redo |
+| Snap to the six views, ortho / perspective buttons on Windows | navigator, View menu, numpad keys |
+| Clipping masks (this request) | `group.clip`, per-group link toggle |
+| Not done: Android/Windows ports (n/a: native + web already), nested groups, mechanism simulation, measurements, frame animation beyond boil + shots, a lineart post effect | |
 
 ## Better than Feather (from its App Store reviews)
 
@@ -124,5 +161,17 @@ The screenshot needs a GPU or `mesa-vulkan-drivers`; Linux builds need `libasoun
   Strokes End), Shift while drawing toggles Stable Stroke (GP's Shift-LMB). Runs on screen
   samples before projection, so curves stay on their guide. `feel.set` / `feel.get`; Stroke
   feel card in the brush panel; saved with the settings.
-- **Still open:** Feather's undocumented brush type names; side-by-side feel tuning with real
+- **2026-10-12, Feather behaviours and user requests:** see the two sections above. Renderer:
+  a depth prepass of solid paint pushed back by `SURFACE_TOL` (3e-3 of the depth), then paint
+  in drawing order on the nearest surface, then guides only where clearly in front (CPU raster
+  and wgpu alike); clipping masks (mask pass, up to four bases per view); fills are strokes with
+  triangles (`fill.rs`). Editor: Fill, Lasso Fill, Shapes tools, QuickShape, drag-to-move,
+  orbit about the pointer, right-drag orbit, axis planes, guide from curve, end snapping, focus,
+  stretch, ribbon / diamond / prism brushes, the showcase (`showcase.rs`, File › Open the
+  showcase). 94 core tests, 54 app tests; screenshot of the showcase through lavapipe matches
+  the CPU raster. The dark-mode button in PhotoCraft's title bar now switches WobbleWorks'
+  dark and light looks.
+- **Still open:** fills get no ground shadow and no painterly texture; the egui-mesh fallback
+  (no GPU) draws paint in drawing order without depth; eraser leaves fills (Vacuum removes them);
+  more than four clipping bases in one view leave the rest unclipped; side-by-side feel tuning with real
   users (defaults: smooth 0.35 × 1, thickness 0.3 × 1).

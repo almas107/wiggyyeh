@@ -264,6 +264,9 @@ const TEXTURED: [Across; 2] = [ac(-1.0, 0.0, 1.0, 0.0, 0.0), ac(1.0, 0.0, 1.0, 1
 const PRISM_SQUARE: [[f32; 2]; 4] = [[1.0, 1.0], [-1.0, 1.0], [-1.0, -1.0], [1.0, -1.0]];
 const PRISM_DIAMOND: [[f32; 2]; 4] = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]];
 
+/// A fill corner on screen: x, y, depth and colour.
+type Corner = (f32, f32, f32, [u8; 4]);
+
 /// How a pass colours its vertices.
 #[derive(Clone, Copy)]
 enum Paint {
@@ -509,7 +512,7 @@ impl<'a> Builder<'a> {
         let uv = self.atlas.solid_uv();
         let back = self.view.back;
         // Every corner on screen once: (x, y, depth, colour), or None behind the camera.
-        let corners: Vec<Option<(f32, f32, f32, [u8; 4])>> = s
+        let corners: Vec<Option<Corner>> = s
             .points
             .iter()
             .map(|p| {
