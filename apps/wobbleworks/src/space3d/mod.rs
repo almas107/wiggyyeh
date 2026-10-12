@@ -15,6 +15,7 @@ pub mod gpu;
 pub mod mp4;
 mod panels;
 pub mod previews;
+pub mod shotstrip;
 pub mod view;
 
 use std::sync::{Arc, Mutex};
@@ -131,6 +132,10 @@ pub struct Space3d {
     pub previews: previews::Previews,
     /// Shots: a 3 × 3 framing grid over the view.
     pub show_thirds: bool,
+    /// Feather's Sequence bar: shot thumbnails and the timeline.
+    pub strip: shotstrip::ShotStrip,
+    /// Where the timeline was last dragged to (shot-to-shot legs).
+    pub scrub: f64,
     /// Shots: the camera's position, turn and lens over the view.
     pub show_camera_info: bool,
     /// Find Group: the group of the curve under the pointer (Select tool), and when it was looked up.
@@ -266,6 +271,8 @@ impl Space3d {
             leave: false,
             previews: previews::Previews::default(),
             show_thirds: false,
+            strip: shotstrip::ShotStrip::default(),
+            scrub: 0.0,
             show_camera_info: false,
             hover_group: None,
             hover_checked: (0.0, [0.0, 0.0]),
@@ -723,33 +730,44 @@ impl Space3d {
         self.hover_group = self.ed.run("info.groupAt", &json!({"x": m[0], "y": m[1]})).ok().and_then(|v| v.as_str().map(str::to_string));
     }
 
+    /// Seconds from one shot to the next at the sequence's speed.
+    pub fn seconds_per_leg(&self) -> f64 {
+        let seq = &self.ed.scene.sequence;
+        (seq.seconds_per_shot.max(0.05) / seq.speed.max(0.1)) as f64
+    }
+
+    /// Where playback is on the timeline (shot-to-shot legs), or `None` when not playing.
+    pub fn timeline(&self, now: f64) -> Option<f64> {
+        let start = self.playing?;
+        let seq = &self.ed.scene.sequence;
+        let legs = seq.shots.len().checked_sub(1).filter(|l| *l > 0)? as f64;
+        let t = (now - start) / self.seconds_per_leg();
+        Some(match seq.mode {
+            wobbleworks_3d::model::PlayMode::Once => t.min(legs),
+            wobbleworks_3d::model::PlayMode::Loop => t.rem_euclid(legs),
+            wobbleworks_3d::model::PlayMode::Swing => {
+                let c = t.rem_euclid(2.0 * legs);
+                if c > legs { 2.0 * legs - c } else { c }
+            }
+        })
+    }
+
     /// Camera shots playback.
     fn play_shots(&mut self, now: f64) {
-        let Some(start) = self.playing else { return };
-        let seq = &self.ed.scene.sequence;
-        let n = seq.shots.len();
-        if n < 2 {
-            self.playing = None;
+        if self.playing.is_none() {
             return;
         }
-        let per = (seq.seconds_per_shot / seq.speed.max(0.1)) as f64;
-        let legs = (n - 1) as f64;
-        let mut t = (now - start) / per;
-        match seq.mode {
-            wobbleworks_3d::model::PlayMode::Once => {
-                if t >= legs {
-                    t = legs;
-                    self.playing = None;
-                }
-            }
-            wobbleworks_3d::model::PlayMode::Loop => t %= legs,
-            wobbleworks_3d::model::PlayMode::Swing => {
-                let c = t % (2.0 * legs);
-                t = if c > legs { 2.0 * legs - c } else { c };
-            }
+        let Some(t) = self.timeline(now) else {
+            self.playing = None;
+            return;
+        };
+        let legs = self.ed.scene.sequence.shots.len().saturating_sub(1) as f64;
+        if self.ed.scene.sequence.mode == wobbleworks_3d::model::PlayMode::Once && t >= legs {
+            self.playing = None;
         }
+        self.scrub = t;
         let vp = self.ed.camera.viewport;
-        let Some(cam) = export::shot_camera(seq, t, vp) else { return };
+        let Some(cam) = wobbleworks_3d::sequence::shot_camera(&self.ed.scene.sequence, t, vp) else { return };
         self.ed.camera = cam;
         self.run("camera.set", Value::Null);
     }
@@ -809,6 +827,7 @@ impl Space3d {
         }
         self.find_group(now);
         panels::framing(self, ui, look, rect);
+        shotstrip::show(self, ui, look, rect);
         if ui_shown {
             view::navigator(ui, &mut self.ed, look, rect);
             panels::status_line(self, ui, look, rect);

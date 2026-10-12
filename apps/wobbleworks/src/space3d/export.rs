@@ -121,35 +121,10 @@ pub fn turntable_gif(ed: &mut Editor, scale: u32) -> Result<Vec<u8>, String> {
     animation(ed, Anim::Turntable, Video::Gif, scale)
 }
 
-/// The camera between shots at `t` (in shot-to-shot legs: 1.5 is halfway from the second shot
-/// to the third), eased; `None` with fewer than two shots.
+/// The camera between shots at `t` (in shot-to-shot legs); see
+/// [`wobbleworks_3d::sequence::shot_camera`].
 pub fn shot_camera(seq: &wobbleworks_3d::model::Sequence, t: f64, viewport: wobbleworks_3d::camera::Viewport) -> Option<Camera> {
-    let n = seq.shots.len();
-    if n < 2 || !t.is_finite() {
-        return None;
-    }
-    let t = t.clamp(0.0, (n - 1) as f64);
-    let i = (t.floor() as usize).min(n - 2);
-    let f = (t - i as f64).clamp(0.0, 1.0) as f32;
-    let e = f * f * (3.0 - 2.0 * f);
-    let (a, b) = (seq.shots.get(i)?.camera, seq.shots.get(i + 1)?.camera);
-    let lerp = |x: f32, y: f32| x + (y - x) * e;
-    let mut dyaw = b.yaw - a.yaw;
-    if dyaw > 180.0 {
-        dyaw -= 360.0;
-    } else if dyaw < -180.0 {
-        dyaw += 360.0;
-    }
-    Some(Camera {
-        target: a.target.lerp(b.target, e),
-        yaw: a.yaw + dyaw * e,
-        pitch: lerp(a.pitch, b.pitch),
-        distance: lerp(a.distance, b.distance),
-        focal_mm: lerp(a.focal_mm, b.focal_mm),
-        orthographic: if e < 0.5 { a.orthographic } else { b.orthographic },
-        snapped_from_perspective: false,
-        viewport,
-    })
+    wobbleworks_3d::sequence::shot_camera(seq, t, viewport)
 }
 
 /// The pictures of an animation and their rate.

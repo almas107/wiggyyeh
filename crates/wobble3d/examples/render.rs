@@ -22,6 +22,12 @@ fn main() -> Result<(), String> {
     if std::env::args().nth(2).as_deref() == Some("showcase") {
         return showcase(&out, false);
     }
+    if std::env::args().nth(2).as_deref() == Some("guides") {
+        return guides(&out);
+    }
+    if std::env::args().nth(2).as_deref() == Some("fills") {
+        return fills(&out);
+    }
     if std::env::args().nth(2).as_deref() == Some("deepsea") {
         return showcase(&out, true);
     }
@@ -98,6 +104,91 @@ fn showcase(out: &str, deep: bool) -> Result<(), String> {
         let effects = if render { Some(e.scene.environment.effects) } else { None };
         let pic = rasterize(&f, &tex, 1280, 800, Some(bg), effects.as_ref())?;
         let path = format!("{out}/{name}.png");
+        image::save_buffer(&path, &pic.rgba, pic.width, pic.height, image::ColorType::Rgba8).map_err(|e| e.to_string())?;
+        println!("{path}");
+    }
+    Ok(())
+}
+
+/// Feather's bend tutorial: a circle drawn from the top becomes a cylinder guide, bent into an
+/// S from the front, then seen from an angle (how the guide's lines read its shape).
+fn guides(out: &str) -> Result<(), String> {
+    let mut e = Editor::new();
+    e.set_viewport(1280.0, 800.0);
+    let r = |e: &mut Editor, c: &str, p: serde_json::Value| e.run(c, &p).map_err(|err| format!("{c}: {err}"));
+    r(&mut e, "camera.view", json!({"view": "front"}))?;
+    let circle: Vec<[f32; 2]> = (0..=48)
+        .map(|i| {
+            let a = i as f32 / 48.0 * std::f32::consts::TAU;
+            [640.0 + 60.0 * a.sin(), 400.0 + 60.0 * a.cos()]
+        })
+        .collect();
+    r(&mut e, "guide.draw", json!({"points": circle}))?;
+    let s_curve: Vec<[f32; 2]> = (0..=60)
+        .map(|i| {
+            let t = i as f32 / 60.0;
+            [640.0 + 170.0 * (t * std::f32::consts::TAU).sin(), 120.0 + t * 520.0]
+        })
+        .collect();
+    r(&mut e, "camera.view", json!({"view": "top"}))?;
+    let shot = |e: &mut Editor, name: &str| -> Result<(), String> {
+        let f = e.render(0, true);
+        let tex = Textures { atlas: &e.atlas, images: HashMap::new() };
+        let pic = rasterize(&f, &tex, 1280, 800, Some(e.scene.environment.background), None)?;
+        let path = format!("{out}/{name}.png");
+        image::save_buffer(&path, &pic.rgba, pic.width, pic.height, image::ColorType::Rgba8).map_err(|e| e.to_string())?;
+        println!("{path}");
+        Ok(())
+    };
+    shot(&mut e, "guides-top")?;
+    r(&mut e, "guide.bend", json!({"points": s_curve}))?;
+    shot(&mut e, "guides-bent-top")?;
+    eprintln!("guides: {} status: {}", e.scene.guides.len(), e.status);
+    for (name, yaw, pitch) in [("guides-front", 0.0, 0.0), ("guides-angle", -35.0, 25.0)] {
+        r(&mut e, "camera.set", json!({"yaw": yaw, "pitch": pitch}))?;
+        let f = e.render(0, true);
+        let tex = Textures { atlas: &e.atlas, images: HashMap::new() };
+        let pic = rasterize(&f, &tex, 1280, 800, Some(e.scene.environment.background), None)?;
+        let path = format!("{out}/{name}.png");
+        image::save_buffer(&path, &pic.rgba, pic.width, pic.height, image::ColorType::Rgba8).map_err(|e| e.to_string())?;
+        println!("{path}");
+    }
+    Ok(())
+}
+
+/// Fills: a flat one standing over the floor (its shadow), a gouache one on a sphere (brushed
+/// across the curve), and an eraser hole through both. Draft and Render mode.
+fn fills(out: &str) -> Result<(), String> {
+    let mut e = Editor::new();
+    e.set_viewport(1280.0, 800.0);
+    let r = |e: &mut Editor, c: &str, p: serde_json::Value| e.run(c, &p).map_err(|err| format!("{c}: {err}"));
+    r(&mut e, "camera.view", json!({"view": "front"}))?;
+    r(&mut e, "camera.set", json!({"distance": 7.0, "target": [0.0, 1.0, 0.0]}))?;
+    r(&mut e, "guide.plane", json!({"axis": "z"}))?;
+    r(&mut e, "brush.set", json!({"kind": "oil", "color": "#ff8a1f", "size": 90}))?;
+    r(&mut e, "fill.shape", json!({"kind": "rect", "filled": true, "x0": 180, "y0": 160, "x1": 560, "y1": 420}))?;
+    r(&mut e, "guide.close", serde_json::Value::Null)?;
+    r(&mut e, "guide.primitive", json!({"kind": "sphere"}))?;
+    r(&mut e, "guide.done", serde_json::Value::Null)?;
+    r(&mut e, "brush.set", json!({"kind": "gouache", "color": "#2f5bff", "size": 120}))?;
+    r(&mut e, "fill.shape", json!({"kind": "ellipse", "filled": true, "x0": 560, "y0": 260, "x1": 860, "y1": 560}))?;
+    r(&mut e, "guide.close", serde_json::Value::Null)?;
+    r(&mut e, "erase.at", json!({"x": 560, "y": 330, "radius": 45}))?;
+    r(&mut e, "camera.set", json!({"yaw": -30, "pitch": 22, "distance": 8.0, "target": [0.0, 0.8, 0.0]}))?;
+    let close = (e.camera, {
+        let mut c = e.camera;
+        c.target = wobbleworks_3d::math::v3(-1.2, 1.3, 0.0);
+        c.distance = 3.0;
+        c
+    });
+    for (render, cam) in [(false, close.0), (true, close.0), (true, close.1)] {
+        e.camera = cam;
+        e.run("env.set", &json!({"render": render, "lighting": {"groundShadow": true}}))?;
+        let f = e.render(0, false);
+        let tex = Textures { atlas: &e.atlas, images: HashMap::new() };
+        let effects = if render { Some(e.scene.environment.effects) } else { None };
+        let pic = rasterize(&f, &tex, 1280, 800, Some(e.scene.environment.background), effects.as_ref())?;
+        let path = format!("{out}/fills{}{}.png", if render { "-render" } else { "" }, if cam.distance < 4.0 { "-close" } else { "" });
         image::save_buffer(&path, &pic.rgba, pic.width, pic.height, image::ColorType::Rgba8).map_err(|e| e.to_string())?;
         println!("{path}");
     }

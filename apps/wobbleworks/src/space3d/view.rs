@@ -427,7 +427,11 @@ impl Viewport {
     fn overlay(&self, painter: &egui::Painter, o: &Overlay, look: &Look, rect: Rect, ed: &Editor) {
         let at = |p: [f32; 2]| pos2(rect.min.x + p[0], rect.min.y + p[1]);
         let ink = look.t.ink;
-        if o.polyline.len() > 1 {
+        if o.polyline.len() > 1 && o.dashed {
+            // Feather's guide and bend preview: a thin dashed line, dark on a light canvas.
+            let pts: Vec<Pos2> = o.polyline.iter().map(|p| at(*p)).collect();
+            painter.extend(Shape::dashed_line(&pts, Stroke::new(1.5, ink.gamma_multiply(0.55)), 6.0, 4.0));
+        } else if o.polyline.len() > 1 {
             let pts: Vec<Pos2> = o.polyline.iter().map(|p| at(*p)).collect();
             painter.add(Shape::line(pts.clone(), Stroke::new(4.0, Color32::from_white_alpha(200))));
             painter.add(Shape::line(pts, Stroke::new(2.0, crate::space3d::ORANGE)));

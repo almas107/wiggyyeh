@@ -302,6 +302,12 @@ fn snapshot() {
         let t = wobbleworks::theme::PRESETS.iter().find(|(n, _)| *n == theme).map(|p| p.1).unwrap();
         h.state_mut().set_theme(t);
     }
+    if std::env::var("WOBBLE3D_STRIP").is_ok() {
+        // Feather's Sequence bar over the canvas (`WOBBLE3D_STRIP=play` for its Play tab).
+        let s = &mut h.state_mut().space;
+        s.strip.open = true;
+        s.strip.play_tab = std::env::var("WOBBLE3D_STRIP").is_ok_and(|v| v == "play");
+    }
     h.run_steps(8);
     h.render().unwrap().save(&out).unwrap();
 }

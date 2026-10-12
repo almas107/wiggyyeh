@@ -545,18 +545,22 @@ fn lasso_fill_and_shapes_paint_on_the_guide() {
     e.run("fill.shape", &json!({"kind": "ellipse", "filled": false, "x0": 20, "y0": 20, "x1": 120, "y1": 80})).expect("outline");
     assert!(!e.scene.strokes[2].is_fill() && e.scene.strokes[2].points.len() > 20);
     assert!(e.run("fill.shape", &json!({"kind": "blob", "x0": 0, "y0": 0, "x1": 10, "y1": 10})).is_err());
-    // Erase leaves fills, Vacuum removes the one under it.
+    // Erase cuts a round hole through the fills under it (both stay); Vacuum removes one whole.
     e.run("tool.set", &json!({"tool": "erase"})).expect("erase");
     e.run("erase.at", &json!({"x": 200, "y": 150})).expect("erase");
     assert_eq!(e.scene.strokes.iter().filter(|s| s.is_fill()).count(), 2);
+    let hole = pixel(&mut e, 200, 150);
+    assert!(hole[1] < 200 || hole[0] > 60, "the eraser went through: {hole:?}");
+    let beside = pixel(&mut e, 235, 150);
+    assert!(beside[1] > 200 && beside[0] < 60, "paint beside the hole stays: {beside:?}");
     // Click-select picks the fill under the pointer and moves it with the gizmo-free drag.
     e.run("tool.set", &json!({"tool": "select"})).expect("select");
-    e.pointer_down(200.0, 150.0, 1.0, 0.0, Mods::default());
-    e.pointer_up(200.0, 150.0, 0.1, Mods::default());
+    e.pointer_down(235.0, 150.0, 1.0, 0.0, Mods::default());
+    e.pointer_up(235.0, 150.0, 0.1, Mods::default());
     assert_eq!(e.selection.len(), 1);
     let sel = *e.selection.iter().next().expect("one");
     let before = e.scene.stroke(sel).expect("fill").centre();
-    e.pointer_down(200.0, 150.0, 1.0, 0.2, Mods::default());
+    e.pointer_down(235.0, 150.0, 1.0, 0.2, Mods::default());
     e.pointer_move(230.0, 150.0, 1.0, 0.3, Mods::default());
     e.pointer_move(260.0, 150.0, 1.0, 0.4, Mods::default());
     e.pointer_up(260.0, 150.0, 0.5, Mods::default());
@@ -769,4 +773,138 @@ fn advanced_tutorial_render_behaviours() {
     assert!(c.0[0] > 0x80 + 30, "{c:?}");
     f.run("select.none", &Value::Null).expect("none");
     assert!(f.run("edit.adjustColor", &json!({"hue": 10})).is_err(), "needs a selection");
+}
+
+fn picture(e: &mut Editor) -> Vec<u8> {
+    let (w, h) = (e.camera.viewport.width as u32, e.camera.viewport.height as u32);
+    let f = e.render(0, false);
+    let tex = crate::raster::Textures { atlas: &e.atlas, images: std::collections::HashMap::new() };
+    crate::raster::rasterize(&f, &tex, w, h, Some(e.scene.environment.background), None).expect("raster").rgba
+}
+
+/// In Render mode a fill held up off the floor casts a shadow on it; a fill lying on the
+/// floor casts none (and is not darkened by its own); a painterly fill is brushed across.
+#[test]
+fn fills_cast_shadows_and_painterly_fills_are_brushed() {
+    let mut e = front_ed();
+    e.run(
+        "env.set",
+        &json!({"render": true, "lighting": {"azimuth": 0, "altitude": 50, "groundShadow": true}, "effects": {"bloom": 0, "dof": 0, "grain": 0, "glow": 0}}),
+    )
+    .expect("render");
+    e.run("camera.set", &json!({"yaw": 0, "pitch": 35, "distance": 6, "target": [0, 1, 0]})).expect("cam");
+    // A panel standing on a wall guide through y = 1.
+    e.run("guide.plane", &json!({"axis": "z"})).expect("wall");
+    e.run("brush.set", &json!({"kind": "pen", "color": "#ff2020", "material": "shaded"})).expect("brush");
+    e.run("fill.shape", &json!({"kind": "rect", "filled": true, "x0": 150, "y0": 60, "x1": 250, "y1": 110})).expect("panel");
+    e.run("guide.close", &Value::Null).expect("close");
+    let darker = |a: &[u8], b: &[u8]| {
+        a.chunks(4).zip(b.chunks(4)).filter(|(p, q)| (p[0] as i32 + p[1] as i32 + p[2] as i32) + 30 < (q[0] as i32 + q[1] as i32 + q[2] as i32)).count()
+    };
+    let lit = picture(&mut e);
+    e.run("env.set", &json!({"lighting": {"groundShadow": false}})).expect("off");
+    let unlit = picture(&mut e);
+    assert!(darker(&lit, &unlit) > 300, "the panel's shadow darkens the floor: {}", darker(&lit, &unlit));
+    // Brushed: a pond on a solid lawn.
+    e.run("file.new", &Value::Null).expect("new");
+    e.run("env.set", &json!({"grid": false, "render": true, "lighting": {"azimuth": 0, "altitude": 50, "groundShadow": true}, "effects": {"bloom": 0, "dof": 0, "grain": 0, "glow": 0}})).expect("render");
+    e.run("boil.set", &json!({"enabled": false})).expect("boil");
+    e.run("camera.set", &json!({"yaw": 0, "pitch": 35, "distance": 6, "target": [0, 0, 0]})).expect("cam");
+    e.run("guide.primitive", &json!({"kind": "plane"})).expect("plane");
+    e.run("guide.done", &Value::Null).expect("done");
+    e.run("brush.set", &json!({"kind": "pen", "color": "#8fcf6a", "material": "shaded"})).expect("lawn colour");
+    e.run("guide.solid", &Value::Null).expect("lawn");
+    e.run("brush.set", &json!({"kind": "pen", "color": "#2060ff", "material": "shaded"})).expect("brush");
+    e.run("fill.shape", &json!({"kind": "ellipse", "filled": true, "x0": 120, "y0": 120, "x1": 280, "y1": 220})).expect("pond");
+    e.run("guide.close", &Value::Null).expect("close");
+    // Brushed: a painterly fill varies across its surface; the same fill in pen is even.
+    let spread = |e: &mut Editor| {
+        let p = picture(e);
+        let w = e.camera.viewport.width as usize;
+        let v: Vec<i32> = (150..250).map(|x| p[(170 * w + x) * 4 + 2] as i32).collect();
+        v.iter().max().copied().unwrap_or(0) - v.iter().min().copied().unwrap_or(0)
+    };
+    let even = spread(&mut e);
+    let pond = e.scene.strokes.len() - 1;
+    std::sync::Arc::make_mut(&mut e.scene.strokes[pond]).brush.kind = crate::model::BrushKind::Oil;
+    e.changed();
+    let brushed = spread(&mut e);
+    assert!(brushed > even + 10, "oil fill is brushed ({brushed}) where the pen fill is even ({even})");
+}
+
+/// Feather's guide look and bend preview: a drawn guide is covered in fine lines along its
+/// sweep with only a few rings (a primitive keeps an even grid), and the stroke that draws or
+/// bends a guide previews as a dashed line (strokes and lassos do not).
+#[test]
+fn guides_read_like_feathers_and_preview_dashed() {
+    let mut e = front_ed();
+    e.run("tool.set", &json!({"tool": "guide"})).expect("guide tool");
+    let circle: Vec<[f32; 2]> = (0..=32)
+        .map(|i| {
+            let a = i as f32 / 32.0 * std::f32::consts::TAU;
+            [200.0 + 40.0 * a.sin(), 150.0 + 40.0 * a.cos()]
+        })
+        .collect();
+    e.pointer_down(circle[0][0], circle[0][1], 1.0, 0.0, Mods::default());
+    for (k, q) in circle.iter().enumerate().skip(1).take(12) {
+        e.pointer_move(q[0], q[1], 1.0, 0.01 * k as f64, Mods::default());
+    }
+    let o = e.overlay();
+    assert!(o.dashed && o.polyline.len() > 2, "the guide stroke previews dashed");
+    for (k, q) in circle.iter().enumerate().skip(13) {
+        e.pointer_move(q[0], q[1], 1.0, 0.01 * k as f64, Mods::default());
+    }
+    e.pointer_up(200.0, 190.0, 0.5, Mods::default());
+    let g = e.scene.active_guide().expect("a guide").clone();
+    let lines = g.section_lines();
+    let fine = lines.iter().filter(|(_, f)| *f).count();
+    let rings = lines.len() - fine;
+    assert!(fine >= 30 && rings <= 6, "many sweep lines ({fine}), few rings ({rings})");
+    // A primitive: an even grid, no fine sweep lines.
+    e.run("guide.close", &Value::Null).expect("close");
+    e.run("guide.primitive", &json!({"kind": "sphere"})).expect("sphere");
+    let p = e.scene.active_guide().expect("primitive").clone();
+    assert!(p.section_lines().iter().all(|(_, f)| !*f));
+    // Drawing a stroke is not dashed.
+    e.run("guide.done", &Value::Null).expect("done");
+    e.run("tool.set", &json!({"tool": "lasso"})).ok();
+    assert!(!e.overlay().dashed);
+}
+
+/// Feather's Sequence: shots can be renamed, the timeline scrubs the camera between them, and
+/// each shot renders a thumbnail from its own camera (for the shot strip). Bad input errs.
+#[test]
+fn shots_scrub_rename_and_thumbnail() {
+    let mut e = front_ed();
+    e.run("stroke.add", &json!({"points": [[-0.5, 0, 0], [0.5, 0, 0]]})).ok();
+    e.run("brush.set", &json!({"color": "#ff0000", "size": 300})).expect("brush");
+    e.run("guide.plane", &json!({"axis": "z"})).expect("wall");
+    e.run("fill.shape", &json!({"kind": "rect", "filled": true, "x0": 150, "y0": 100, "x1": 250, "y1": 200})).expect("red square");
+    e.run("guide.close", &Value::Null).expect("close");
+    let a = e.run("shot.add", &Value::Null).expect("shot a").as_u64().expect("id");
+    e.run("camera.set", &json!({"yaw": 90})).expect("turn");
+    let b = e.run("shot.add", &Value::Null).expect("shot b").as_u64().expect("id");
+    // Scrub: halfway is between the two yaws; the viewport stays the window's.
+    e.run("sequence.at", &json!({"fraction": 0.5})).expect("scrub");
+    assert!((e.camera.yaw - 45.0).abs() < 1.0, "{}", e.camera.yaw);
+    assert_eq!(e.camera.viewport.width, 400.0);
+    e.run("sequence.at", &json!({"t": 0})).expect("start");
+    assert!(e.camera.yaw.abs() < 1e-3);
+    assert!(e.run("sequence.at", &json!({})).is_err());
+    assert!(e.run("sequence.at", &json!({"t": "x"})).is_err());
+    // Rename.
+    e.run("shot.rename", &json!({"id": b, "name": "  Close up  "})).expect("rename");
+    assert_eq!(e.scene.sequence.shots[1].name, "Close up");
+    assert!(e.run("shot.rename", &json!({"id": b, "name": "   "})).is_err());
+    assert!(e.run("shot.rename", &json!({"id": 999_999, "name": "x"})).is_err());
+    // Thumbnail of shot A (front, the red square in the middle); the view is left alone.
+    let cam = e.camera;
+    let pic = e.shot_thumbnail(a, 80, 60).expect("thumb");
+    assert_eq!((pic.width, pic.height), (80, 60));
+    let mid = ((30 * 80 + 40) * 4) as usize;
+    assert!(pic.rgba[mid] > 180 && pic.rgba[mid + 1] < 80, "the shot sees the red square: {:?}", &pic.rgba[mid..mid + 4]);
+    assert_eq!(e.camera.yaw, cam.yaw);
+    assert_eq!(e.camera.viewport.width, 400.0);
+    assert!(e.run("shot.thumbnail", &json!({"id": 424_242})).is_err());
+    assert!(e.run("shot.thumbnail", &json!({"id": a, "width": 1_000_000, "height": 0})).is_ok(), "sizes are clamped");
 }

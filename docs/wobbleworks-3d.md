@@ -179,9 +179,53 @@ The screenshot needs a GPU or `mesa-vulkan-drivers`; Linux builds need `libasoun
   brightness / opacity of the selection by the same amount; OBJ / glTF export writes a fill's
   own triangles instead of a tube round its outline. `deepsea.rs` rebuilds the tutorial's scene
   one group per technique (`file.showcase {name: "deepsea"}`). 96 core tests.
-- **Still open:** no shot thumbnail strip in Sequence; the guide's section lines and the dashed
-  guide preview are not drawn like Feather's; the deep-sea scene is an approximation of the
-  tutorial's render, not a match; fills get no ground shadow and no painterly texture; the egui-mesh fallback
-  (no GPU) draws paint in drawing order without depth; eraser leaves fills (Vacuum removes them);
-  more than four clipping bases in one view leave the rest unclipped; side-by-side feel tuning with real
-  users (defaults: smooth 0.35 × 1, thickness 0.3 × 1).
+- **2026-10-12, fills, guides and Sequence (checked against the videos' frames):**
+  - The eraser cuts a round hole in a fill (conforming splits along its rim, no cracks).
+  - Fills cast ground shadows in Render mode (clipped where they enter the floor; paint lying
+    on the floor casts none).
+  - Painterly fills (oil, gouache, dry brush, chalk, ink) are brushed: the surface is sliced
+    into strokes a brush-width apart, lit like the patch.
+  - A fill stops at a curved guide's edge instead of growing fins off it.
+  - Drawn and bent guides are covered in fine lines along the sweep with a few rings, as in
+    Feather's bend tutorial; the guide / bend stroke previews as a thin dashed line.
+  - Sequence bar (View › Sequence): thumbnails of every shot (click to go, drag to reorder,
+    rename, update, delete, + for this view), and a Play tab with previous / play / next and a
+    timeline that scrubs the camera (`sequence.at`, `shot.rename`, `shot.thumbnail`).
+  - 103 core tests, 55 app tests.
+- **Still open:** see "Gaps for any project" below; the egui-mesh fallback (no GPU) draws
+  paint in drawing order without depth; more than four clipping bases in one view leave the
+  rest unclipped; Feather's start line is green, ours orange; side-by-side feel tuning with
+  real users (defaults: smooth 0.35 × 1, thickness 0.3 × 1).
+
+## Gaps for any project (audit of every tutorial, frame sheet and comment, 2026-10-12)
+
+What a user would miss on most projects, most important first. S/M/L is the size of the work.
+
+**Workflow-blocking**
+1. New / Open / Showcase replace the note without asking and clear undo; one autosave slot.
+   Feather has a notes home with many notes. (S for a confirm + backup, M for a library.)
+2. Mirrored halves are not linked: selecting one side does not select its twin, so one move
+   can't push both halves apart symmetrically (Basic 3 3:36). (M)
+3. OBJ / glTF export makes every curve a round tube: flat, ribbon, square and diamond lose
+   their shape; opacity and glow are lost (no alphaMode / emissive). (M)
+4. No floating clipboard reference window to trace over (Basic 2 0:31, Clipboard video);
+   at most two images in the scene, so no front / side / top blueprint set. (M)
+5. Touch screens: one finger always draws; no finger orbit, three-finger lens slide or
+   pen-vs-finger split (Navigate, Draw with Finger). (M)
+
+**Features**
+- Export to JPG; record the drawing live to video; choose the output size. (S, M, S)
+- Pick several groups in the panel to select all their curves; duplicates land above their
+  source, selected (the duplicate-recolour-nudge shadow trick). (S)
+- Stable Stroke preview pad; copy / paste between notes; depth of field amount per shot. (S)
+
+**Feel**
+- No brush-size preview on the canvas while sliding the size. (S)
+- Web: large notes may silently fail to autosave (browser storage quota). (S to detect)
+
+**Asked for in the comments, not done**
+- Lock the view; snap strokes to angles; move the mirror plane (S each).
+- Edit a finished stroke's end points; record the drawing process (M).
+- Volumetric fog / airbrush fill, frame animation, nested groups, line-art effect, text,
+  measurements, colour smudging (L each).
+

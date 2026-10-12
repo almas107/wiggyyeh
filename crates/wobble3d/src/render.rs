@@ -511,12 +511,64 @@ impl<'a> Builder<'a> {
     /// the surface normal, boiling as one sheet (smooth noise across the screen, so neighbouring
     /// corners move together and the patch never tears).
     fn fill_patch(&mut self, s: &Stroke, base: [f32; 3], alpha: f32, material: Material, distance: f32) {
+        self.fill_tris(s, Paint::Shade { base, alpha, material, lit: true }, None, distance);
+    }
+
+    /// A fill's ground shadow (Render mode): its triangles flattened onto the floor along the
+    /// light, like a curve's shadow.
+    fn fill_shadow(&mut self, s: &Stroke, alpha: f32) {
+        let l = self.light;
+        if l.y < 0.05 {
+            return;
+        }
+        let cutting = std::mem::replace(&mut self.cutting, false);
+        let distance = self.cam_distance();
+        let above = above_floor(s);
+        self.fill_tris(&above, Paint::Flat([0.0, 0.0, 0.0, 0.22 * alpha]), Some(l), distance);
+        self.cutting = cutting;
+    }
+
+    /// A fill painterly: brush strokes laid across it (slices of its surface, a brush width
+    /// apart, at a slant to the view), over the flat patch, so a painterly fill looks brushed
+    /// like the strokes around it.
+    fn fill_brushed(&mut self, s: &Stroke, base: [f32; 3], alpha: f32, material: Material, selected: bool, distance: f32) {
+        let mut n = Vec3::ZERO;
+        for t in &s.tris {
+            let (Some(a), Some(b), Some(c)) = (s.points.get(t[0] as usize), s.points.get(t[1] as usize), s.points.get(t[2] as usize)) else { continue };
+            n += (b.p - a.p).cross(c.p - a.p);
+        }
+        let n = if n.normalized() == Vec3::ZERO { self.view.back } else { n.normalized() };
+        // Strokes run at a slant across the screen (a painter's hand), lying in the fill.
+        let ang = 0.35 + (unit(s.seed) - 0.5) * 0.5;
+        let along = self.view.right * ang.cos() + self.view.up * ang.sin();
+        let along = along - n * along.dot(n);
+        let m = along.cross(n);
+        let width = s.brush.radius() * 2.0;
+        let cuts = crate::fill::slices(&s.points, &s.tris, m, width * 0.7);
+        for (k, pts) in cuts.into_iter().enumerate() {
+            let seed = hash2(s.seed, k as u32 ^ 0x51ce);
+            let mut brush = s.brush;
+            brush.pressure = false;
+            // Lit like the patch under it (the slice's own normal), so the strokes are paint on
+            // the surface, not flat stickers.
+            let sn = pts.iter().fold(Vec3::ZERO, |a, p| a + p.n).normalized();
+            let sn = if sn == Vec3::ZERO { n } else { sn };
+            let sn = if sn.dot(self.view.back) < 0.0 { -sn } else { sn };
+            let lit = if material == Material::Shaded { self.shade(base, sn, material, true) } else { base };
+            let tint = 0.94 + 0.12 * unit(seed ^ 3);
+            let c = if selected { base } else { [lit[0] * tint, lit[1] * tint, lit[2] * tint] };
+            let st = Stroke { id: s.id, group: s.group, points: pts, brush, seed, tris: Vec::new() };
+            self.painterly(&st, c, alpha, material, selected, distance);
+        }
+    }
+
+    /// A fill's triangles in one paint. `shadow`: flattened onto the floor along that light.
+    fn fill_tris(&mut self, s: &Stroke, shade: Paint, shadow: Option<Vec3>, distance: f32) {
         let b = &self.boil;
         let active = b.enabled && b.amount > 0.0 && s.brush.paint.boil > 0.0;
         let amp = if active { b.amount * s.brush.paint.boil } else { 0.0 };
         let wl = b.wavelength.max(4.0) * 2.0;
         let seed = hash2(s.seed, self.frame.wrapping_mul(0x9e37_79b9).wrapping_add(17));
-        let shade = Paint::Shade { base, alpha, material, lit: true };
         let uv = self.atlas.solid_uv();
         let back = self.view.back;
         // Every corner on screen once: (x, y, depth, colour), or None behind the camera.
@@ -524,6 +576,14 @@ impl<'a> Builder<'a> {
             .points
             .iter()
             .map(|p| {
+                let p = match shadow {
+                    // Under the floor: the shadow stops where the fill goes into the ground.
+                    Some(l) => {
+                        let y = p.p.y.max(0.0);
+                        crate::model::Point { p: crate::math::v3(p.p.x, y, p.p.z) - l * (y / l.y), pressure: p.pressure, n: Vec3::Y }
+                    }
+                    None => *p,
+                };
                 let q = self.view.project(p.p)?;
                 let (mut x, mut y) = (q.x, q.y);
                 if amp > 0.0 {
@@ -537,8 +597,22 @@ impl<'a> Builder<'a> {
                 Some((x, y, depth, self.colour(&shade, nn, 1.0, q.depth, distance)))
             })
             .collect();
+        // A curved fill folds over itself when flattened into its shadow: keep only the
+        // triangles turned the way most of the shadow is, so the folds don't darken twice.
+        let tris: Vec<[u32; 3]> = match shadow {
+            None => s.tris.clone(),
+            Some(_) => {
+                let area = |t: &[u32; 3]| -> Option<f32> {
+                    let c = t.iter().map(|i| corners.get(*i as usize).copied().flatten()).collect::<Option<Vec<_>>>()?;
+                    let (a, b, d) = (c.first()?, c.get(1)?, c.get(2)?);
+                    Some((b.0 - a.0) * (d.1 - a.1) - (b.1 - a.1) * (d.0 - a.0))
+                };
+                let total: f32 = s.tris.iter().filter_map(area).sum();
+                s.tris.iter().filter(|t| area(t).is_some_and(|a| a * total >= 0.0)).copied().collect()
+            }
+        };
         const CHUNK_TRIS: usize = 512;
-        for chunk in s.tris.chunks(CHUNK_TRIS) {
+        for chunk in tris.chunks(CHUNK_TRIS) {
             self.begin(Tex::Atlas);
             let mut local: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
             let (mut depth, mut count) = (0.0f32, 0usize);
@@ -1024,7 +1098,13 @@ impl<'a> Builder<'a> {
         let shade = Paint::Shade { base, alpha, material, lit };
 
         if s.is_fill() {
+            if render && self.env.lighting.ground_shadow && material == Material::Shaded {
+                self.fill_shadow(s, alpha);
+            }
             self.fill_patch(s, base, alpha, material, distance);
+            if kind.painterly() {
+                self.fill_brushed(s, base, alpha, material, selected, distance);
+            }
             return;
         }
         // Ground shadow (render mode, shaded curves).
@@ -1511,8 +1591,10 @@ impl<'a> Builder<'a> {
         let line_a = (op * 1.4).clamp(0.0, 0.9);
         if line_a > 0.01 {
             let lc = mix3(tint, [0.1, 0.15, 0.3], 0.45);
-            for l in g.section_lines() {
-                self.line(&l, 1.0, [lc[0], lc[1], lc[2], line_a], -2e-4);
+            for (l, fine) in g.section_lines() {
+                // Fine sweep lines are hairlines; rings and primitive grids a little stronger.
+                let (w, a) = if fine { (0.7, line_a * 0.55) } else { (1.0, line_a) };
+                self.line(&l, w, [lc[0], lc[1], lc[2], a], -2e-4);
             }
         }
         if let Some(l) = g.start_line() {
@@ -1638,6 +1720,58 @@ impl<'a> Builder<'a> {
         // Always on top.
         self.end_on_top();
     }
+}
+
+/// How high (metres) a fill must rise off the floor to cast a shadow: paint lying on the ground
+/// (a pond, a path, the lawn) has none, and must not be darkened by its own.
+const SHADOW_LIFT: f32 = 0.02;
+
+/// The part of a fill above the floor (y ≥ [`SHADOW_LIFT`]): triangles crossing it are cut
+/// there, so its shadow ends cleanly where the fill goes into the ground.
+fn above_floor(s: &Stroke) -> Stroke {
+    use crate::model::Point;
+    let mut pts: Vec<Point> = s.points.clone();
+    let mut tris: Vec<[u32; 3]> = Vec::with_capacity(s.tris.len());
+    let mut cut: std::collections::HashMap<(u32, u32), u32> = std::collections::HashMap::new();
+    for t in &s.tris {
+        let Some(c) = t.iter().map(|i| s.points.get(*i as usize).copied()).collect::<Option<Vec<Point>>>() else { continue };
+        let up: Vec<bool> = c.iter().map(|p| p.p.y >= SHADOW_LIFT).collect();
+        match up.iter().filter(|u| **u).count() {
+            0 => continue,
+            3 => {
+                tris.push(*t);
+                continue;
+            }
+            _ => {}
+        }
+        // Walk the triangle's edges, keeping corners above and adding where edges cross.
+        let mut poly: Vec<u32> = Vec::with_capacity(4);
+        for e in 0..3 {
+            let (a, b) = (t[e], t[(e + 1) % 3]);
+            let (pa, pb) = (c[e], c[(e + 1) % 3]);
+            let (ua, ub) = (up[e], up[(e + 1) % 3]);
+            if ua {
+                poly.push(a);
+            }
+            if ua != ub {
+                let key = (a.min(b), a.max(b));
+                let id = *cut.entry(key).or_insert_with(|| {
+                    let k = ((pa.p.y - SHADOW_LIFT) / (pa.p.y - pb.p.y)).clamp(0.0, 1.0);
+                    let mut p = pa.p + (pb.p - pa.p) * k;
+                    p.y = SHADOW_LIFT;
+                    pts.push(Point { p, pressure: pa.pressure, n: pa.n });
+                    (pts.len() - 1) as u32
+                });
+                poly.push(id);
+            }
+        }
+        for k in 1..poly.len().saturating_sub(1) {
+            if let (Some(a), Some(b), Some(d)) = (poly.first(), poly.get(k), poly.get(k + 1)) {
+                tris.push([*a, *b, *d]);
+            }
+        }
+    }
+    Stroke { points: pts, tris, ..s.clone() }
 }
 
 /// The paint of a painterly stroke's dry start and dry tail.
@@ -1865,6 +1999,33 @@ fn build_strokes(b: &mut Builder<'_>, strokes: &[(&Stroke, bool)], view: View, a
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn only_what_rises_off_the_floor_casts_a_fill_shadow() {
+        use crate::model::{Brush, Point};
+        let fill = |ys: [f32; 4]| Stroke {
+            id: 1,
+            group: 1,
+            points: [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+                .iter()
+                .zip(ys)
+                .map(|((x, z), y)| Point { p: crate::math::v3(*x, y, *z), pressure: 1.0, n: Vec3::Y })
+                .collect(),
+            brush: Brush::default(),
+            seed: 1,
+            tris: vec![[0, 1, 2], [0, 2, 3]],
+        };
+        // Lying on the floor (a pond, the lawn): no shadow at all.
+        assert!(above_floor(&fill([0.0; 4])).tris.is_empty());
+        // Standing up through the floor: cut where it rises past the lift, nothing below.
+        let wall = above_floor(&fill([-1.0, -1.0, 1.0, 1.0]));
+        assert!(!wall.tris.is_empty());
+        let used: Vec<f32> = wall.tris.iter().flatten().filter_map(|i| wall.points.get(*i as usize)).map(|p| p.p.y).collect();
+        assert!(used.iter().all(|y| *y >= SHADOW_LIFT - 1e-5), "{used:?}");
+        assert!(used.iter().any(|y| (*y - SHADOW_LIFT).abs() < 1e-5), "cut along the lift line");
+        // Held up off the floor: whole.
+        assert_eq!(above_floor(&fill([0.5; 4])).tris.len(), 2);
+    }
     use super::*;
     use crate::model::{Brush, Echo, Point};
     use std::sync::Arc;

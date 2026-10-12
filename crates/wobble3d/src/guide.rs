@@ -391,11 +391,18 @@ impl Guide {
     }
 
     /// The section lines drawn on the surface: some rows and columns of each grid.
-    pub fn section_lines(&self) -> Vec<Vec<Vec3>> {
-        let mut out = Vec::new();
+    pub fn section_lines(&self) -> Vec<(Vec<Vec3>, bool)> {
+        // Drawn, bent and lofted guides look like Feather's: many fine lines along the sweep
+        // (they bunch up where the surface turns away, which shades its form) and only a few
+        // rings across it. Primitives keep an even grid. `true` marks a fine sweep line.
+        let swept = !matches!(self.recipe, Recipe::Primitive { .. });
+        let mut out: Vec<(Vec<Vec3>, bool)> = Vec::new();
         for g in &self.grids {
-            let step_r = (g.rows / 12).max(1);
-            let step_c = (g.cols / 12).max(1);
+            if g.rows == 0 || g.cols == 0 {
+                continue;
+            }
+            let step_r = if swept { (g.rows / 4).max(1) } else { (g.rows / 12).max(1) };
+            let step_c = if swept { (g.cols / 48).max(1) } else { (g.cols / 12).max(1) };
             for r in (0..g.rows).step_by(step_r).chain(std::iter::once(g.rows - 1)) {
                 let mut line: Vec<Vec3> = (0..g.cols).filter_map(|c| g.at(c, r)).collect();
                 if g.closed_u
@@ -403,10 +410,10 @@ impl Guide {
                 {
                     line.push(f);
                 }
-                out.push(line);
+                out.push((line, false));
             }
             for c in (0..g.cols).step_by(step_c) {
-                out.push((0..g.rows).filter_map(|r| g.at(c, r)).collect());
+                out.push(((0..g.rows).filter_map(|r| g.at(c, r)).collect(), swept));
             }
         }
         out.dedup();

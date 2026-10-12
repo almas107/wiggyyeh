@@ -163,14 +163,11 @@ pub fn levels_for(verts: &[[f32; 2]], tris: &[[u32; 3]], spacing: f32) -> u32 {
 }
 
 /// A filled patch from a screen outline: triangulated, refined `levels` times, and every corner
-/// cast onto the surface with `cast` (screen point → point and normal). Corners that miss
-/// land on the plane that fits the ones that hit. Errors when nothing hits.
-pub fn patch(
-    outline: &[[f32; 2]],
-    levels: u32,
-    cast: impl Fn(f32, f32) -> Option<(Vec3, Vec3)>,
-    ray: impl Fn(f32, f32) -> (Vec3, Vec3),
-) -> Result<(Vec<Point>, Vec<[u32; 3]>), String> {
+/// cast onto the surface with `cast` (screen point → point and normal). Paint goes only where
+/// the surface is (as on a guide in Feather): a corner that misses slides along an edge to the
+/// surface's silhouette, and triangles that can't reach the surface are left out. Errors when
+/// nothing hits.
+pub fn patch(outline: &[[f32; 2]], levels: u32, cast: impl Fn(f32, f32) -> Option<(Vec3, Vec3)>) -> Result<(Vec<Point>, Vec<[u32; 3]>), String> {
     let mut verts = clean_outline(outline);
     if verts.len() < 3 || signed_area(&verts).abs() < 4.0 {
         return Err("the outline is too small to fill".into());
@@ -180,22 +177,71 @@ pub fn patch(
         return Err("the outline has no area to fill".into());
     }
     refine(&mut verts, &mut tris, levels);
-    let hits: Vec<Option<(Vec3, Vec3)>> = verts.iter().map(|v| cast(v[0], v[1])).collect();
-    let (plane_p, plane_n) =
-        fit_plane(&hits.iter().flatten().copied().collect::<Vec<_>>()).ok_or("nothing to fill on here: draw on a guide, or turn on drawing in the air")?;
-    let points: Vec<Point> = verts
-        .iter()
-        .zip(&hits)
-        .map(|(v, h)| match h {
-            Some((p, n)) => Point { p: *p, pressure: 1.0, n: *n },
-            None => {
-                let (o, d) = ray(v[0], v[1]);
-                let den = d.dot(plane_n);
-                let t = if den.abs() > 1e-6 { (plane_p - o).dot(plane_n) / den } else { 0.0 };
-                Point { p: o + d * t.max(0.0), pressure: 1.0, n: plane_n }
+    let mut hits: Vec<Option<(Vec3, Vec3)>> = verts.iter().map(|v| cast(v[0], v[1])).collect();
+    if !hits.iter().any(Option::is_some) {
+        return Err("nothing to fill on here: draw on a guide, or turn on drawing in the air".into());
+    }
+    // Corners off the surface: slide each toward a neighbour on it until just on the edge.
+    let mut near: Vec<Vec<u32>> = vec![Vec::new(); verts.len()];
+    for t in &tris {
+        for e in 0..3 {
+            let (a, b) = (t[e], t[(e + 1) % 3]);
+            if let Some(v) = near.get_mut(a as usize) {
+                v.push(b);
             }
-        })
-        .collect();
+            if let Some(v) = near.get_mut(b as usize) {
+                v.push(a);
+            }
+        }
+    }
+    let missing: Vec<usize> = (0..verts.len()).filter(|i| hits.get(*i).is_some_and(Option::is_none)).collect();
+    let mut moved: Vec<(usize, [f32; 2], (Vec3, Vec3))> = Vec::new();
+    for i in missing {
+        let (Some(v), Some(nb)) = (verts.get(i).copied(), near.get(i)) else { continue };
+        // The nearest neighbour on the surface (on screen).
+        let best = nb
+            .iter()
+            .filter_map(|j| Some((*j, verts.get(*j as usize).copied()?, hits.get(*j as usize).copied().flatten()?)))
+            .min_by(|a, b| dist(a.1, v).total_cmp(&dist(b.1, v)));
+        let Some((_, on, mut hit)) = best else { continue };
+        let (mut lo, mut hi) = (0.0f32, 1.0f32); // lo: on the surface, hi: off it
+        let at = |k: f32| [on[0] + (v[0] - on[0]) * k, on[1] + (v[1] - on[1]) * k];
+        for _ in 0..12 {
+            let mid = (lo + hi) * 0.5;
+            let q = at(mid);
+            match cast(q[0], q[1]) {
+                Some(h) => {
+                    lo = mid;
+                    hit = h;
+                }
+                None => hi = mid,
+            }
+        }
+        moved.push((i, at(lo), hit));
+    }
+    for (i, q, h) in moved {
+        if let (Some(v), Some(slot)) = (verts.get_mut(i), hits.get_mut(i)) {
+            *v = q;
+            *slot = Some(h);
+        }
+    }
+    tris.retain(|t| t.iter().all(|i| hits.get(*i as usize).is_some_and(Option::is_some)));
+    if tris.is_empty() {
+        return Err("the outline is off the surface: fill on a guide".into());
+    }
+    // Keep only the corners still used, renumbered.
+    let mut remap = vec![u32::MAX; hits.len()];
+    let mut points: Vec<Point> = Vec::new();
+    for t in &mut tris {
+        for i in t.iter_mut() {
+            let (Some(slot), Some(Some((p, n)))) = (remap.get_mut(*i as usize), hits.get(*i as usize)) else { continue };
+            if *slot == u32::MAX {
+                *slot = points.len() as u32;
+                points.push(Point { p: *p, pressure: 1.0, n: *n });
+            }
+            *i = *slot;
+        }
+    }
     if points.iter().any(|p| !p.p.is_finite()) {
         return Err("the fill could not be placed on the surface".into());
     }
@@ -463,12 +509,126 @@ pub fn shape_outline(kind: &str, a: [f32; 2], b: [f32; 2], sides: u32) -> Result
     }
 }
 
+/// Most slices a painterly fill is cut into (wider spacing past that).
+pub const SLICES_MAX: usize = 240;
+
+/// Cut a fill's surface with parallel planes (normal `m`, `spacing` apart): the curves where
+/// they meet it, for laying painterly strokes across a fill so it looks brushed. Each curve is
+/// a run of points on the surface with its normal, following the surface on a curved guide.
+pub fn slices(points: &[Point], tris: &[[u32; 3]], m: Vec3, spacing: f32) -> Vec<Vec<Point>> {
+    let mut out = Vec::new();
+    let m = m.normalized();
+    if m == Vec3::ZERO || !spacing.is_finite() || spacing <= 0.0 || tris.is_empty() {
+        return out;
+    }
+    let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+    for p in points.iter().filter(|p| p.p.is_finite()) {
+        let d = p.p.dot(m);
+        lo = lo.min(d);
+        hi = hi.max(d);
+    }
+    if lo >= hi {
+        return out;
+    }
+    let mut spacing = spacing;
+    if (hi - lo) / spacing > SLICES_MAX as f32 {
+        spacing = (hi - lo) / SLICES_MAX as f32;
+    }
+    let mut o = lo + spacing * 0.5;
+    while o < hi {
+        out.extend(slice_at(points, tris, m, o));
+        o += spacing;
+    }
+    out
+}
+
+/// The curves where the plane `p·m = o` meets the triangles, chained across shared edges.
+fn slice_at(points: &[Point], tris: &[[u32; 3]], m: Vec3, o: f32) -> Vec<Vec<Point>> {
+    use std::collections::HashMap;
+    type Key = (u32, u32);
+    let side = |i: u32| points.get(i as usize).map(|p| p.p.dot(m) - o);
+    let mut cross_at: HashMap<Key, Point> = HashMap::new();
+    let mut segs: Vec<(Key, Key)> = Vec::new();
+    for t in tris {
+        let Some(d) = t.iter().map(|i| side(*i)).collect::<Option<Vec<f32>>>() else { continue };
+        let mut hit: Vec<Key> = Vec::with_capacity(2);
+        for e in 0..3 {
+            let (a, b) = (t[e], t[(e + 1) % 3]);
+            let (da, db) = (d[e], d[(e + 1) % 3]);
+            if (da < 0.0) == (db < 0.0) {
+                continue;
+            }
+            let key = (a.min(b), a.max(b));
+            if let std::collections::hash_map::Entry::Vacant(slot) = cross_at.entry(key) {
+                let (Some(pa), Some(pb)) = (points.get(a as usize), points.get(b as usize)) else { continue };
+                let k = (da / (da - db)).clamp(0.0, 1.0);
+                let n = (pa.n + (pb.n - pa.n) * k).normalized();
+                slot.insert(Point { p: pa.p + (pb.p - pa.p) * k, pressure: 1.0, n });
+            }
+            hit.push(key);
+        }
+        if let [a, b] = hit[..] {
+            segs.push((a, b));
+        }
+    }
+    let mut by_key: HashMap<Key, Vec<usize>> = HashMap::new();
+    for (i, (a, b)) in segs.iter().enumerate() {
+        by_key.entry(*a).or_default().push(i);
+        by_key.entry(*b).or_default().push(i);
+    }
+    let mut used = vec![false; segs.len()];
+    // Open chains first (start at an end used once), then the closed loops left over.
+    let mut starts: Vec<Key> = by_key.iter().filter(|(_, v)| v.len() == 1).map(|(k, _)| *k).collect();
+    starts.sort_unstable();
+    starts.extend(segs.iter().map(|s| s.0));
+    let mut out = Vec::new();
+    for start in starts {
+        let mut chain = vec![start];
+        let mut at = start;
+        loop {
+            let next = by_key.get(&at).and_then(|v| v.iter().copied().find(|i| !used.get(*i).copied().unwrap_or(true)));
+            let Some(i) = next else { break };
+            if let Some(u) = used.get_mut(i) {
+                *u = true;
+            }
+            let Some((a, b)) = segs.get(i).copied() else { break };
+            at = if a == at { b } else { a };
+            chain.push(at);
+        }
+        if chain.len() >= 2 {
+            out.push(chain.iter().filter_map(|k| cross_at.get(k).copied()).collect());
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn area_of(p: &[[f32; 2]], tris: &[[u32; 3]]) -> f32 {
         tris.iter().map(|t| cross(p[t[0] as usize], p[t[1] as usize], p[t[2] as usize]).abs() * 0.5).sum()
+    }
+
+    #[test]
+    fn slices_cross_a_fill_in_one_piece_per_plane() {
+        // A 2 x 2 square in the XY plane, refined so slices cross many triangles.
+        let mut v = vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]];
+        let mut t = vec![[0, 1, 2], [0, 2, 3]];
+        refine(&mut v, &mut t, 3);
+        let pts: Vec<Point> = v.iter().map(|q| Point { p: v3(q[0], q[1], 0.0), pressure: 1.0, n: Vec3::Z }).collect();
+        let cut = slices(&pts, &t, Vec3::Y, 0.25);
+        assert_eq!(cut.len(), 8, "one curve per plane");
+        for c in &cut {
+            let y = c[0].p.y;
+            assert!(c.iter().all(|p| (p.p.y - y).abs() < 1e-5 && p.n == Vec3::Z));
+            let (a, b) = c.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), p| (a.min(p.p.x), b.max(p.p.x)));
+            assert!(a < 1e-4 && b > 2.0 - 1e-4, "each slice spans the fill");
+        }
+        assert!(slices(&pts, &t, Vec3::ZERO, 0.25).is_empty());
+        assert!(slices(&pts, &t, Vec3::Y, f32::NAN).is_empty());
+        assert!(slices(&pts, &[[0, 1, 99]], Vec3::Y, 0.25).is_empty(), "bad indices are skipped");
+        assert!(slices(&pts, &t, Vec3::Y, 1e-9).len() <= SLICES_MAX);
     }
 
     #[test]
@@ -502,15 +662,20 @@ mod tests {
     }
 
     #[test]
-    fn a_patch_lands_on_the_surface_and_falls_back_to_its_plane() {
-        // A flat floor at y = 0 under a camera looking straight down; the right half misses.
-        let ray = |x: f32, y: f32| (v3(x, 10.0, y), v3(0.0, -1.0, 0.0));
+    fn a_patch_stays_on_the_surface_up_to_its_edge() {
+        // A surface (y = 0) only left of x = 50 under a camera looking straight down: the
+        // outline's right half is off it, so the fill stops at the edge, with no fins past it.
         let cast = |x: f32, y: f32| (x < 50.0).then_some((v3(x, 0.0, y), v3(0.0, 1.0, 0.0)));
-        let (pts, tris) = patch(&[[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]], 2, cast, ray).expect("patch");
+        let (pts, tris) = patch(&[[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]], 2, cast).expect("patch");
         assert!(!tris.is_empty());
-        assert!(pts.iter().all(|p| p.p.y.abs() < 1e-4), "every corner on y = 0");
-        assert!(patch(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], 0, cast, ray).is_err(), "too small");
-        assert!(patch(&[[60.0, 0.0], [100.0, 0.0], [100.0, 100.0]], 0, cast, ray).is_err(), "nothing hit");
+        assert!(pts.iter().all(|p| p.p.y.abs() < 1e-4 && p.p.x < 50.0), "every corner on the surface");
+        let right = pts.iter().map(|p| p.p.x).fold(0.0f32, f32::max);
+        assert!(right > 49.5, "the fill reaches the surface's edge ({right})");
+        assert!(tris.iter().all(|t| t.iter().all(|i| (*i as usize) < pts.len())));
+        let used: std::collections::HashSet<u32> = tris.iter().flatten().copied().collect();
+        assert_eq!(used.len(), pts.len(), "no unused corners");
+        assert!(patch(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], 0, cast).is_err(), "too small");
+        assert!(patch(&[[60.0, 0.0], [100.0, 0.0], [100.0, 100.0]], 0, cast).is_err(), "nothing hit");
     }
 
     #[test]

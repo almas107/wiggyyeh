@@ -147,7 +147,7 @@ impl Editor {
             let tris = fill::triangulate(&cleaned);
             fill::levels_for(&cleaned, &tris, CURVED_SPACING)
         };
-        fill::patch(&cleaned, levels, |x, y| self.target_hit(view, x, y), |x, y| view.ray(x, y))
+        fill::patch(&cleaned, levels, |x, y| self.target_hit(view, x, y))
     }
 
     fn can_fill(&self) -> bool {
@@ -250,7 +250,7 @@ impl Editor {
                 let t = (c - o).dot(n) / den;
                 (t > 0.0 && t.is_finite()).then(|| (o + d * t, n))
             };
-            fill::patch(&fill::clean_outline(&outline), 0, cast, |sx, sy| view.ray(sx, sy))?
+            fill::patch(&fill::clean_outline(&outline), 0, cast)?
         };
         Ok(self.commit_fill(points, tris, "Fill", first_border))
     }
@@ -282,7 +282,7 @@ impl Editor {
                 let t = (c - o).dot(n) / den;
                 (t > 0.0 && t.is_finite()).then(|| (o + d * t, n))
             };
-            if let Ok((p, t)) = fill::patch(&outline, 0, cast, |sx, sy| view.ray(sx, sy)) {
+            if let Ok((p, t)) = fill::patch(&outline, 0, cast) {
                 pending.push((p, t, id));
             }
         }

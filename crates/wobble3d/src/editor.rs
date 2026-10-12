@@ -294,6 +294,8 @@ pub enum Session {
 pub struct Overlay {
     /// The guide or bend stroke being drawn, the lasso.
     pub polyline: Vec<[f32; 2]>,
+    /// The polyline is a guide or bend preview: drawn as Feather does, a thin dashed line.
+    pub dashed: bool,
     /// The box being dragged.
     pub rect: Option<[f32; 4]>,
     /// A brush circle at the mouse (eraser, circle select, liquify): (radius, inner radius).
@@ -356,6 +358,8 @@ pub struct Editor {
     pub events: Vec<Event>,
     /// Bumped on every visible change (render caches key on it).
     pub revision: u64,
+    /// Bumped when the note itself changes, not the view (shot thumbnails key on it).
+    pub scene_revision: u64,
     pub dirty: bool,
     pub mouse: [f32; 2],
     pub time: f64,
@@ -469,6 +473,7 @@ impl Editor {
             status: String::new(),
             events: Vec::new(),
             revision: 1,
+            scene_revision: 1,
             dirty: false,
             mouse: [0.0, 0.0],
             time: 0.0,
@@ -496,6 +501,7 @@ impl Editor {
 
     fn changed(&mut self) {
         self.touch();
+        self.scene_revision = self.scene_revision.wrapping_add(1);
         self.dirty = true;
     }
 
@@ -1922,6 +1928,22 @@ impl Editor {
 
     // ---------------------------------------------------------------- overlay and rendering
 
+    /// A small picture of a shot, seen from its camera (Render mode as set): the shot strip's
+    /// thumbnails. The view and everything else are left as they were.
+    pub fn shot_thumbnail(&mut self, id: u64, width: u32, height: u32) -> Result<crate::raster::Picture, String> {
+        let shot = self.scene.sequence.shots.iter().find(|x| x.id == id).map(|x| x.camera).ok_or("no such shot")?;
+        let (w, h) = (width.clamp(8, crate::sequence::THUMB_MAX), height.clamp(8, crate::sequence::THUMB_MAX));
+        let saved = self.camera;
+        self.camera = shot;
+        self.camera.viewport = crate::camera::Viewport { width: w as f32, height: h as f32 };
+        let frame = self.render(0, false);
+        self.camera = saved;
+        let images = self.scene.images.iter().map(|im| (im.id, (im.width, im.height, im.rgba.as_slice()))).collect();
+        let tex = crate::raster::Textures { atlas: &self.atlas, images };
+        let effects = self.scene.environment.render_mode.then_some(self.scene.environment.effects);
+        crate::raster::rasterize(&frame, &tex, w, h, Some(self.scene.environment.background), effects.as_ref())
+    }
+
     pub fn overlay(&self) -> Overlay {
         let mut o = Overlay::default();
         if let Some(m) = &self.modal {
@@ -1949,6 +1971,7 @@ impl Editor {
             o.adjusting = live.adjusting;
             match live.kind {
                 LiveKind::Guide | LiveKind::Bend => {
+                    o.dashed = true;
                     o.polyline = match live.shape {
                         Some(sh) => sh.points(),
                         None => live.raw.iter().map(|q| [q[0], q[1]]).collect(),
@@ -3383,6 +3406,40 @@ impl Editor {
                 self.changed();
                 ok
             }
+            "shot.rename" => {
+                let sid = id(p, "id").ok_or("missing id")?;
+                let name = s(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or("name must be some text")?;
+                let name: String = name.chars().take(60).collect();
+                let i = self.scene.sequence.shots.iter().position(|x| x.id == sid).ok_or("no such shot")?;
+                self.checkpoint("Rename shot");
+                if let Some(sh) = self.scene.sequence.shots.get_mut(i) {
+                    sh.name = name;
+                }
+                self.changed();
+                ok
+            }
+            "sequence.at" => {
+                // Scrub the timeline: t in shot-to-shot legs (0 = first shot, 1.5 = halfway from
+                // the second to the third), or `fraction` 0..1 of the whole sequence.
+                let legs = crate::sequence::legs(&self.scene.sequence);
+                let t = match (f(p, "t"), f(p, "fraction")) {
+                    (Some(t), _) => t as f64,
+                    (None, Some(fr)) => fr as f64 * legs,
+                    (None, None) => return Err("missing t (legs) or fraction (0–1)".into()),
+                };
+                let vp = self.camera.viewport;
+                let cam = crate::sequence::shot_camera(&self.scene.sequence, t, vp).ok_or("add two shots or more, and give a number")?;
+                self.camera = cam;
+                self.touch();
+                Ok(json!(t.clamp(0.0, legs)))
+            }
+            "shot.thumbnail" => {
+                let sid = id(p, "id").ok_or("missing id")?;
+                let w = p.get("width").and_then(Value::as_u64).unwrap_or(160).clamp(8, crate::sequence::THUMB_MAX as u64) as u32;
+                let h = p.get("height").and_then(Value::as_u64).unwrap_or(100).clamp(8, crate::sequence::THUMB_MAX as u64) as u32;
+                let pic = self.shot_thumbnail(sid, w, h)?;
+                Ok(json!({"width": pic.width, "height": pic.height, "bytes": pic.rgba.len()}))
+            }
             "sequence.set" => {
                 if let Some(v) = f(p, "speed") {
                     self.scene.sequence.speed = v;
@@ -3781,6 +3838,9 @@ const COMMANDS: &[(&str, &str)] = &[
     ("shot.delete", "{ids}"),
     ("shot.move", "{id, index}"),
     ("sequence.set", "{speed, mode: once|loop|swing, secondsPerShot}"),
+    ("shot.rename", "{id, name} rename a camera shot"),
+    ("sequence.at", "{t (shot-to-shot legs) | fraction 0–1} scrub the timeline: the camera between shots"),
+    ("shot.thumbnail", "{id, width?, height?} render a small picture of a shot (the shot strip)"),
     ("file.new", "start a new note"),
     (
         "file.showcase",

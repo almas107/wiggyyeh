@@ -156,9 +156,21 @@ pub fn erase_points(scene: &mut Scene, view: &View, at: [f32; 2], radius: f32) -
     let mut out: Vec<Arc<Stroke>> = Vec::with_capacity(scene.strokes.len());
     let strokes = std::mem::take(&mut scene.strokes);
     for s in strokes {
-        // Fills go whole (Vacuum), not point by point.
-        if !scene.group_shown(s.group) || s.is_fill() {
+        if !scene.group_shown(s.group) {
             out.push(s);
+            continue;
+        }
+        // Fills lose the triangles under the eraser (cut finer along its edge first).
+        if s.is_fill() {
+            match erase_fill(scene, view, &s, at, radius) {
+                Some(Some(cut)) => out.push(Arc::new(cut)),
+                Some(None) => {}
+                None => {
+                    out.push(s);
+                    continue;
+                }
+            }
+            changed = true;
             continue;
         }
         let gone: Vec<bool> = s
@@ -194,6 +206,132 @@ pub fn erase_points(scene: &mut Scene, view: &View, at: [f32; 2], radius: f32) -
     }
     scene.strokes = out;
     changed
+}
+
+/// The most triangles an erased fill may grow to while its cut edge is refined.
+const ERASE_FILL_MAX_TRIS: usize = 200_000;
+
+/// Erase a circle out of a fill: triangles straddling the eraser's edge are split (midpoints,
+/// up to a few times, until they are small next to the eraser) so the hole is round, then the
+/// triangles whose middle is under the eraser go. `None`: nothing touched; `Some(None)`: the
+/// whole fill is gone; `Some(Some(fill))`: what is left (unused corners dropped).
+fn erase_fill(scene: &Scene, view: &View, s: &Stroke, at: [f32; 2], radius: f32) -> Option<Option<Stroke>> {
+    use crate::model::Point;
+    let mut pts: Vec<Point> = s.points.clone();
+    let mut tris: Vec<[u32; 3]> = s.tris.clone();
+    let scr = |p: &Point| view.project(p.p).map(|q| [q.x, q.y]);
+    let d = |q: [f32; 2]| ((q[0] - at[0]).powi(2) + (q[1] - at[1]).powi(2)).sqrt();
+    // Whether a triangle (screen corners) touches the eraser disc: a corner inside, the centre
+    // inside the triangle, or an edge passing within the radius.
+    let touches = |c: &[[f32; 2]; 3]| -> bool {
+        c.iter().any(|q| d(*q) <= radius) || (0..3).any(|k| seg_dist(at, (c[k][0], c[k][1]), (c[(k + 1) % 3][0], c[(k + 1) % 3][1])) <= radius) || {
+            let cr = |o: [f32; 2], p: [f32; 2]| (p[0] - o[0]) * (at[1] - o[1]) - (p[1] - o[1]) * (at[0] - o[0]);
+            let (a, b, c2) = (cr(c[0], c[1]), cr(c[1], c[2]), cr(c[2], c[0]));
+            (a >= 0.0 && b >= 0.0 && c2 >= 0.0) || (a <= 0.0 && b <= 0.0 && c2 <= 0.0)
+        }
+    };
+    let corners = |pts: &[Point], t: &[u32; 3]| -> Option<[[f32; 2]; 3]> {
+        let a = scr(pts.get(t[0] as usize)?)?;
+        let b = scr(pts.get(t[1] as usize)?)?;
+        let c = scr(pts.get(t[2] as usize)?)?;
+        Some([a, b, c])
+    };
+    if !tris.iter().any(|t| corners(&pts, t).is_some_and(|c| touches(&c))) {
+        return None;
+    }
+    // Refine the triangles crossing the eraser's rim until their screen size is under a third
+    // of the radius (or a few rounds), so the hole's edge follows the circle.
+    let fine = (radius / 10.0).max(1.5);
+    for _ in 0..10 {
+        // Pass 1: the triangles on the rim that are still big get a midpoint on every edge.
+        let mut mids: std::collections::HashMap<(u32, u32), u32> = std::collections::HashMap::new();
+        let mut red = vec![false; tris.len()];
+        for (k, t) in tris.iter().enumerate() {
+            if tris.len() + mids.len() * 2 > ERASE_FILL_MAX_TRIS {
+                break;
+            }
+            let Some(c) = corners(&pts, t) else { continue };
+            let inside = c.iter().filter(|q| d(**q) <= radius).count();
+            let big = (0..3).any(|e| d2(c[e], c[(e + 1) % 3]) > fine);
+            if !(big && inside < 3 && touches(&c)) {
+                continue;
+            }
+            if let Some(r) = red.get_mut(k) {
+                *r = true;
+            }
+            for e in 0..3 {
+                let (a, b) = (t[e], t[(e + 1) % 3]);
+                let key = (a.min(b), a.max(b));
+                if mids.contains_key(&key) {
+                    continue;
+                }
+                let (Some(pa), Some(pb)) = (pts.get(a as usize).copied(), pts.get(b as usize).copied()) else { continue };
+                let n = (pa.n + pb.n).normalized();
+                pts.push(Point { p: (pa.p + pb.p) * 0.5, pressure: (pa.pressure + pb.pressure) * 0.5, n: if n == Vec3::ZERO { pa.n } else { n } });
+                mids.insert(key, (pts.len() - 1) as u32);
+            }
+        }
+        if mids.is_empty() {
+            break;
+        }
+        // Pass 2: split every triangle by the midpoints on its edges (red ones in four, their
+        // neighbours in two or three), so no corner sits on an unsplit edge and nothing cracks.
+        let mid = |a: u32, b: u32| mids.get(&(a.min(b), a.max(b))).copied();
+        let mut next: Vec<[u32; 3]> = Vec::with_capacity(tris.len() * 2);
+        for t in &tris {
+            let m = [mid(t[0], t[1]), mid(t[1], t[2]), mid(t[2], t[0])];
+            match m {
+                [None, None, None] => next.push(*t),
+                [Some(ab), Some(bc), Some(ca)] => next.extend_from_slice(&[[t[0], ab, ca], [ab, t[1], bc], [ca, bc, t[2]], [ab, bc, ca]]),
+                _ => {
+                    // Rotate so edge 0 (t0-t1) is split, then split one or two edges.
+                    let r = m.iter().position(Option::is_some).unwrap_or(0);
+                    let (a, b, c) = (t[r], t[(r + 1) % 3], t[(r + 2) % 3]);
+                    let (mab, mbc, mca) = (m[r], m[(r + 1) % 3], m[(r + 2) % 3]);
+                    match (mab, mbc, mca) {
+                        (Some(ab), None, None) => next.extend_from_slice(&[[a, ab, c], [ab, b, c]]),
+                        (Some(ab), Some(bc), None) => next.extend_from_slice(&[[a, ab, c], [ab, b, bc], [ab, bc, c]]),
+                        (Some(ab), None, Some(ca)) => next.extend_from_slice(&[[a, ab, ca], [ab, b, c], [ab, c, ca]]),
+                        _ => next.push(*t),
+                    }
+                }
+            }
+        }
+        tris = next;
+    }
+    // Drop the triangles whose middle is under the eraser (and not hidden behind the guide).
+    tris.retain(|t| {
+        let Some(c) = corners(&pts, t) else { return true };
+        let m = [(c[0][0] + c[1][0] + c[2][0]) / 3.0, (c[0][1] + c[1][1] + c[2][1]) / 3.0];
+        if d(m) > radius {
+            return true;
+        }
+        let w = t.iter().filter_map(|i| pts.get(*i as usize)).fold(Vec3::ZERO, |acc, p| acc + p.p) * (1.0 / 3.0);
+        occluded_by_guide(scene, view, w)
+    });
+    if tris.is_empty() {
+        return Some(None);
+    }
+    // Keep only the corners still used.
+    let mut remap = vec![u32::MAX; pts.len()];
+    let mut kept: Vec<Point> = Vec::new();
+    for t in &mut tris {
+        for i in t.iter_mut() {
+            let Some(slot) = remap.get_mut(*i as usize) else { continue };
+            if *slot == u32::MAX {
+                *slot = kept.len() as u32;
+                if let Some(p) = pts.get(*i as usize) {
+                    kept.push(*p);
+                }
+            }
+            *i = *slot;
+        }
+    }
+    Some(Some(Stroke { points: kept, tris, ..s.clone() }))
+}
+
+fn d2(a: [f32; 2], b: [f32; 2]) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
 }
 
 /// Feather's Vacuum: remove every curve the eraser touches.
@@ -629,6 +767,52 @@ mod tests {
         let left = v.project(v3(-0.8, 0.0, 0.0)).expect("left");
         assert!(vacuum(&mut s, &v, [left.x, left.y], 5.0));
         assert_eq!(s.strokes.len(), 1);
+    }
+
+    #[test]
+    fn the_eraser_cuts_a_round_hole_in_a_fill() {
+        let v = front();
+        let mut s = Scene::default();
+        let quad = [v3(-1.0, -1.0, 0.0), v3(1.0, -1.0, 0.0), v3(1.0, 1.0, 0.0), v3(-1.0, 1.0, 0.0)];
+        s.strokes.push(Arc::new(Stroke {
+            id: 4,
+            group: 1,
+            points: quad.iter().map(|&p| Point { p, pressure: 1.0, n: Vec3::Z }).collect(),
+            brush: Brush::default(),
+            seed: 1,
+            tris: vec![[0, 1, 2], [0, 2, 3]],
+        }));
+        s.next_id = 5;
+        let c = v.project(Vec3::ZERO).expect("centre");
+        let edge = v.project(v3(1.0, 0.0, 0.0)).expect("edge");
+        let r = (edge.x - c.x) * 0.3;
+        assert!(erase_points(&mut s, &v, [c.x, c.y], r));
+        let fill = &s.strokes[0];
+        assert!(fill.is_fill());
+        assert!(fill.tris.iter().all(|t| t.iter().all(|i| (*i as usize) < fill.points.len())));
+        // Conforming: no corner sits inside another triangle's edge (a T-junction cracks).
+        for t in &fill.tris {
+            for e in 0..3 {
+                let (a, b) = (fill.points[t[e] as usize].p, fill.points[t[(e + 1) % 3] as usize].p);
+                for (i, p) in fill.points.iter().enumerate() {
+                    if t.contains(&(i as u32)) {
+                        continue;
+                    }
+                    let (ab, ap) = (b - a, p.p - a);
+                    let k = ap.dot(ab) / ab.dot(ab);
+                    let off = (ap - ab * k).length();
+                    assert!(!(k > 1e-4 && k < 1.0 - 1e-4 && off < 1e-5), "T-junction at corner {i}");
+                }
+            }
+        }
+        // The centre is a hole; a point just outside the eraser is still filled.
+        assert!(fill_hit(&v, fill, [c.x, c.y]).is_none());
+        assert!(fill_hit(&v, fill, [c.x + r * 1.4, c.y]).is_some());
+        assert!(fill_hit(&v, fill, [c.x + r * 0.8, c.y]).is_none(), "the hole is round, not a whole triangle");
+        // Erasing far away does nothing; erasing all of it removes the fill.
+        assert!(!erase_points(&mut s, &v, [-500.0, -500.0], 5.0));
+        assert!(erase_points(&mut s, &v, [c.x, c.y], 10_000.0));
+        assert!(s.strokes.is_empty());
     }
 
     #[test]

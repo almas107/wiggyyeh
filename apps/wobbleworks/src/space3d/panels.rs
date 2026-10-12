@@ -258,6 +258,10 @@ fn view_menu(s: &mut Space3d, ui: &mut Ui) {
             ui.close();
         }
     }
+    ui.separator();
+    if ui.checkbox(&mut s.strip.open, "Sequence (shot strip and timeline)").changed() {
+        ui.close();
+    }
     let mut mm = s.ed.camera.focal_mm;
     if ui.add(egui::Slider::new(&mut mm, 10.0..=500.0).logarithmic(true).text("Lens mm")).changed() {
         s.run("camera.fov", json!({"mm": mm}));
@@ -1258,6 +1262,7 @@ fn shots(s: &mut Space3d, ui: &mut Ui, look: &Look) {
             }
         }
     });
+    ui.checkbox(&mut s.strip.open, "Shot strip on the canvas (Feather's Sequence bar)");
     ui.horizontal(|ui| {
         ui.checkbox(&mut s.show_thirds, "Thirds grid");
         ui.checkbox(&mut s.show_camera_info, "Camera info");
