@@ -41,7 +41,8 @@ pub fn picture(atlas: &mut Atlas, kind: BrushKind, b: &Brush) -> Option<Vec<u8>>
             Point {
                 p: v3(-0.95 + t * 1.9, (t * std::f32::consts::TAU).sin() * 0.12, 0.0),
                 pressure: 0.35 + 0.65 * (t * std::f32::consts::PI).sin(),
-                n: Vec3::Z,
+                // A ribbon stands along its normal: lay it on the floor so it rises into view.
+                n: if kind == BrushKind::Ribbon { Vec3::Y } else { Vec3::Z },
             }
         })
         .collect();
@@ -52,7 +53,17 @@ pub fn picture(atlas: &mut Atlas, kind: BrushKind, b: &Brush) -> Option<Vec<u8>>
     let mut cam = Camera { viewport: Viewport { width: SIZE[0] as f32, height: SIZE[1] as f32 }, distance: 1.5, ..Camera::default() };
     cam.snap(PerfectView::Front);
     let none = HashSet::new();
-    let opts = Options { frame: 0, selected: &none, selected_resources: &none, extra: &[], hide: &none, guides: false, overlays: false, orbit_point: None };
+    let opts = Options {
+        frame: 0,
+        selected: &none,
+        selected_resources: &none,
+        extra: &[],
+        hide: &none,
+        guides: false,
+        overlays: false,
+        orbit_point: None,
+        focus: None,
+    };
     let frame = render(&scene, &cam, atlas, &opts);
     let tex = Textures { atlas, images: HashMap::new() };
     rasterize(&frame, &tex, SIZE[0] as u32, SIZE[1] as u32, None, None).ok().map(|p| p.rgba)

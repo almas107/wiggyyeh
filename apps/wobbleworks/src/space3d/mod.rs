@@ -316,6 +316,8 @@ impl Space3d {
             "drawInAir": self.ed.draw_in_air,
             "guideShape": self.ed.guide_shape,
             "quickShape": self.ed.quick_shape,
+            "snapEnds": self.ed.snap_ends,
+            "scaleThickness": self.ed.scale_thickness,
             "exportScale": self.export_scale,
             "keymap": self.ed.keymap,
         })
@@ -357,6 +359,12 @@ impl Space3d {
         }
         if let Some(b) = flag("quickShape") {
             self.ed.quick_shape = b;
+        }
+        if let Some(b) = flag("snapEnds") {
+            self.ed.snap_ends = b;
+        }
+        if let Some(b) = flag("scaleThickness") {
+            self.ed.scale_thickness = b;
         }
         if let Some(b) = flag("guideShape") {
             self.ed.guide_shape = b;

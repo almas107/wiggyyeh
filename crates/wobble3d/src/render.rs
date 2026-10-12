@@ -140,6 +140,8 @@ pub struct Options<'a> {
     /// Grid, axes and the orbit point (exports hide them).
     pub overlays: bool,
     pub orbit_point: Option<Vec3>,
+    /// Focus mode: curves outside this group are faded (Feather's focus icon).
+    pub focus: Option<u64>,
 }
 
 struct Item {
@@ -175,6 +177,7 @@ struct Builder<'a> {
     roles: &'a std::collections::HashMap<u64, (u8, u8)>,
     clip: u8,
     mask: u8,
+    focus: Option<u64>,
     /// The far end of the depth range.
     far: f32,
     /// The background image Cutout paint shows (Render mode with a background image).
@@ -257,8 +260,9 @@ const TUBE: [Across; 7] = [
 ];
 const BAND: [Across; 4] = [ac(-1.0, 0.0, 0.0, 0.0, 1.0), ac(-1.0, 0.0, 1.0, 0.0, 0.0), ac(1.0, 0.0, 1.0, 1.0, 0.0), ac(1.0, 0.0, 0.0, 1.0, 1.0)];
 const TEXTURED: [Across; 2] = [ac(-1.0, 0.0, 1.0, 0.0, 0.0), ac(1.0, 0.0, 1.0, 1.0, 0.0)];
-const SQUARE_L: [Across; 3] = [ac(-1.0, -0.7, 0.0, 0.0, 1.0), ac(-1.0, -0.7, 1.0, 0.0, 0.0), ac(0.0, -0.7, 1.0, 0.5, 0.0)];
-const SQUARE_R: [Across; 3] = [ac(0.0, 0.7, 1.0, 0.5, 0.0), ac(1.0, 0.7, 1.0, 1.0, 0.0), ac(1.0, 0.7, 0.0, 1.0, 1.0)];
+/// Cross-sections of the square and diamond prisms, (across, up) in half widths.
+const PRISM_SQUARE: [[f32; 2]; 4] = [[1.0, 1.0], [-1.0, 1.0], [-1.0, -1.0], [1.0, -1.0]];
+const PRISM_DIAMOND: [[f32; 2]; 4] = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]];
 
 /// How a pass colours its vertices.
 #[derive(Clone, Copy)]
@@ -299,6 +303,7 @@ impl<'a> Builder<'a> {
             roles,
             clip: 0,
             mask: 0,
+            focus: None,
             far,
             cut_with: env.background_image.as_ref().filter(|_| env.render_mode).map(|im| im.id),
             cutting: false,
@@ -406,6 +411,9 @@ impl<'a> Builder<'a> {
     /// Shade a base colour for a surface normal.
     fn shade(&self, base: [f32; 3], n: Vec3, material: Material, lit: bool) -> [f32; 3] {
         let render = self.env.render_mode;
+        if self.focus.is_some() {
+            return base;
+        }
         match (render, material) {
             (true, Material::Shadeless) => return base,
             (true, Material::Glow) => return mix3(base, [1.0, 1.0, 1.0], 0.35),
@@ -953,7 +961,19 @@ impl<'a> Builder<'a> {
     fn stroke(&mut self, s: &Stroke, selected: bool) {
         self.cutting = s.brush.material == Material::Cutout;
         (self.clip, self.mask) = self.roles.get(&s.group).copied().unwrap_or((0, 0));
-        self.stroke_paint(s, selected);
+        if let Some(g) = self.focus {
+            // Feather's focus mode: the active group as a black silhouette, the rest light
+            // grey, all flat (a check of shapes and overlaps without colour or light).
+            let mut f = s.clone();
+            f.brush.color = if s.group == g { Rgba::rgb(0x16, 0x16, 0x1c) } else { Rgba::rgb(0xc8, 0xc8, 0xcc) };
+            f.brush.material = Material::Shadeless;
+            f.brush.pattern = None;
+            f.brush.paint.echo = None;
+            f.brush.paint.color_jitter = 0.0;
+            self.stroke_paint(&f, selected);
+        } else {
+            self.stroke_paint(s, selected);
+        }
         self.cutting = false;
         (self.clip, self.mask) = (0, 0);
     }
@@ -972,7 +992,7 @@ impl<'a> Builder<'a> {
         let kind = br.kind;
         let render = self.env.render_mode;
         let material = br.material;
-        let lit = matches!(kind, BrushKind::Pen | BrushKind::Square | BrushKind::Flat);
+        let lit = matches!(kind, BrushKind::Pen | BrushKind::Square | BrushKind::Flat | BrushKind::Ribbon | BrushKind::Diamond);
         let shade = Paint::Shade { base, alpha, material, lit };
 
         if s.is_fill() {
@@ -988,8 +1008,8 @@ impl<'a> Builder<'a> {
             // Drawn after (in front of) the stroke itself; see `dabs`.
             self.pending_dabs.push((s.clone(), base, alpha, self.order));
         }
-        if kind == BrushKind::Flat {
-            self.flat(s, shade, distance);
+        if kind == BrushKind::Flat || kind == BrushKind::Ribbon {
+            self.flat(s, shade, distance, kind == BrushKind::Ribbon);
         } else if kind.painterly() {
             self.painterly(s, base, alpha, material, selected, distance);
         } else {
@@ -1020,7 +1040,10 @@ impl<'a> Builder<'a> {
                             }
                         }
                     }
-                    BrushKind::Square => self.strips(run, &[&SQUARE_L, &SQUARE_R], shade, solid, [0.0, 0.0], 1.0, 0.0, distance),
+                    // Feather's square and diamond brushes are real prisms: a box (or a rhombus)
+                    // swept along the curve, its sides lit by the way they face.
+                    BrushKind::Square => self.prism(run, &PRISM_SQUARE, shade, distance),
+                    BrushKind::Diamond => self.prism(run, &PRISM_DIAMOND, shade, distance),
                     BrushKind::Nib => {
                         let mut r = run.clone();
                         nib_widths(&mut r);
@@ -1223,8 +1246,107 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// Tape lying on the surface it was drawn on.
-    fn flat(&mut self, s: &Stroke, paint: Paint, distance: f32) {
+    /// A prism swept along a run: the cross-section's corners are (across, up) offsets in units
+    /// of the half width, `up` being the surface normal (else the screen's up). Each side is a
+    /// quad strip shaded with its own normal, and the two ends are capped.
+    fn prism(&mut self, run: &[Sample], section: &[[f32; 2]], paint: Paint, distance: f32) {
+        let n = run.len();
+        if n == 0 || section.len() < 3 {
+            return;
+        }
+        let uv = self.atlas.solid_uv();
+        let back = self.view.back;
+        // A frame per sample: tangent, up (surface normal or view up made perpendicular), across.
+        let frames: Vec<(Vec3, Vec3, Vec3)> = (0..n)
+            .map(|i| {
+                let a = run[i.saturating_sub(1)].w;
+                let b = run[(i + 1).min(n - 1)].w;
+                let mut t = (b - a).normalized();
+                if !t.is_finite() || t.length() < 0.5 {
+                    t = self.view.right;
+                }
+                let s = &run[i];
+                let up0 = if s.n == Vec3::ZERO {
+                    self.view.up
+                } else if s.n.dot(back) < 0.0 {
+                    -s.n
+                } else {
+                    s.n
+                };
+                let mut up = (up0 - t * up0.dot(t)).normalized();
+                if !up.is_finite() || up.length() < 0.5 {
+                    up = t.any_perpendicular().normalized();
+                }
+                let across = t.cross(up).normalized();
+                (t, up, across)
+            })
+            .collect();
+        let corner = |i: usize, c: [f32; 2]| -> Vec3 {
+            let (_, up, across) = frames[i];
+            let s = &run[i];
+            s.w + (across * c[0] + up * c[1]) * s.whw
+        };
+        let k = section.len();
+        for side in 0..k {
+            let (c0, c1) = (section[side], section[(side + 1) % k]);
+            self.begin(Tex::Atlas);
+            let mut ids: Vec<Option<(u32, u32)>> = Vec::with_capacity(n);
+            let mut depth = 0.0;
+            let mut count = 0usize;
+            for i in 0..n {
+                let (t, up, across) = frames[i];
+                let mid = [(c0[0] + c1[0]) * 0.5, (c0[1] + c1[1]) * 0.5];
+                let mut nn = (across * mid[0] + up * mid[1]).normalized();
+                if !nn.is_finite() {
+                    nn = back;
+                }
+                let _ = t;
+                let (pa, pb) = (corner(i, c0), corner(i, c1));
+                let (Some(qa), Some(qb)) = (self.view.project(pa), self.view.project(pb)) else {
+                    ids.push(None);
+                    continue;
+                };
+                // Keep the boil's screen offset.
+                let base = self.view.project(run[i].w);
+                let (ox, oy) = base.map_or((0.0, 0.0), |b| (run[i].x - b.x, run[i].y - b.y));
+                let col = self.colour(&paint, nn, run[i].alpha, run[i].depth, distance);
+                let a = self.vtx(qa.x + ox, qa.y + oy, qa.depth, uv, col);
+                let b = self.vtx(qb.x + ox, qb.y + oy, qb.depth, uv, col);
+                ids.push(Some((a, b)));
+                depth += (qa.depth + qb.depth) * 0.5;
+                count += 1;
+            }
+            for (i, w) in ids.windows(2).enumerate() {
+                if let (Some((a0, b0)), Some((a1, b1))) = (w[0], w[1])
+                    && run.get(i + 1).is_some_and(|s| s.connect)
+                {
+                    self.tri(a0, b0, b1);
+                    self.tri(a0, b1, a1);
+                }
+            }
+            self.end(if count > 0 { depth / count as f32 } else { 0.0 }, 0.0);
+        }
+        // End caps.
+        for (i, sign) in [(0usize, -1.0f32), (n - 1, 1.0)] {
+            let (t, _, _) = frames[i];
+            let nn = t * sign;
+            let col = self.colour(&paint, if nn.dot(back) < 0.0 { -nn } else { nn }, run[i].alpha, run[i].depth, distance);
+            let pts: Vec<Option<crate::camera::Projected>> = section.iter().map(|c| self.view.project(corner(i, *c))).collect();
+            let Some(pts) = pts.into_iter().collect::<Option<Vec<_>>>() else { continue };
+            let base = self.view.project(run[i].w);
+            let (ox, oy) = base.map_or((0.0, 0.0), |b| (run[i].x - b.x, run[i].y - b.y));
+            self.begin(Tex::Atlas);
+            let ids: Vec<u32> = pts.iter().map(|q| self.vtx(q.x + ox, q.y + oy, q.depth, uv, col)).collect();
+            for j in 1..ids.len().saturating_sub(1) {
+                self.tri(ids[0], ids[j], ids[j + 1]);
+            }
+            self.end(run[i].depth, 0.0);
+        }
+    }
+
+    /// Tape lying on the surface it was drawn on, or (`standing`, the ribbon) a band rising off
+    /// it along its normal.
+    fn flat(&mut self, s: &Stroke, paint: Paint, distance: f32, standing: bool) {
         let runs = self.runs(s, None);
         let uv = self.atlas.solid_uv();
         let back = self.view.back;
@@ -1245,8 +1367,20 @@ impl<'a> Builder<'a> {
                     let b = run[(k + 1).min(n - 1)].w;
                     let t = (b - a).normalized();
                     let normal = if sm.n == Vec3::ZERO { back } else { sm.n };
-                    let side = t.cross(normal).normalized() * sm.whw;
-                    let (p0, p1) = (self.view.project(sm.w - side), self.view.project(sm.w + side));
+                    let (base, side) = if standing {
+                        // Off the surface (towards the viewer's side of it), as tall as the brush.
+                        let up = if sm.n == Vec3::ZERO {
+                            self.view.up
+                        } else if sm.n.dot(back) < 0.0 {
+                            -sm.n
+                        } else {
+                            sm.n
+                        };
+                        (sm.w + up * sm.whw, up * sm.whw)
+                    } else {
+                        (sm.w, t.cross(normal).normalized() * sm.whw)
+                    };
+                    let (p0, p1) = (self.view.project(base - side), self.view.project(base + side));
                     let (Some(p0), Some(p1)) = (p0, p1) else {
                         ids.push(None);
                         continue;
@@ -1260,7 +1394,12 @@ impl<'a> Builder<'a> {
                     // instead of fighting it (the depth of the unmoved point is off by the
                     // surface's slope times the boil, far more than the drawing-order nudge).
                     let (ax, ay, bx, by) = (p0.x + ox, p0.y + oy, p1.x + ox, p1.y + oy);
-                    let (da, db) = if sm.n == Vec3::ZERO { (p0.depth, p1.depth) } else { (self.surface_depth(&sm, ax, ay), self.surface_depth(&sm, bx, by)) };
+                    let (da, db) =
+                        if sm.n == Vec3::ZERO || standing { (p0.depth, p1.depth) } else { (self.surface_depth(&sm, ax, ay), self.surface_depth(&sm, bx, by)) };
+                    // A ribbon is lit by the way it faces: across the band, not the surface.
+                    let nn = if standing { t.cross(side).normalized() } else { nn };
+                    let nn = if nn.dot(back) < 0.0 { -nn } else { nn };
+                    let col = if standing { self.colour(&paint, nn, sm.alpha, sm.depth, distance) } else { col };
                     let a = self.vtx(ax, ay, da, uv, col);
                     let b = self.vtx(bx, by, db, uv, col);
                     ids.push(Some((a, b)));
@@ -1298,7 +1437,7 @@ impl<'a> Builder<'a> {
         shadow.brush.kind = BrushKind::Flat;
         shadow.brush.paint.boil = s.brush.paint.boil;
         let distance = self.cam_distance();
-        self.flat(&shadow, Paint::Flat([0.0, 0.0, 0.0, 0.22 * alpha]), distance);
+        self.flat(&shadow, Paint::Flat([0.0, 0.0, 0.0, 0.22 * alpha]), distance, false);
     }
 
     fn guide(&mut self, g: &Guide, state: ResourceState, selected: bool) {
@@ -1415,7 +1554,8 @@ impl<'a> Builder<'a> {
                     let (x, z) = if axis_x { (j as f32, k as f32) } else { (k as f32, j as f32) };
                     pts.push(v3(x, 0.0, z));
                 }
-                let color = if major { if axis_x { [0.9, 0.3, 0.3, 0.6] } else { [0.3, 0.45, 0.95, 0.6] } } else { [c[0], c[1], c[2], 0.55] };
+                let k = self.env.grid_opacity.clamp(0.0, 1.0);
+                let color = if major { if axis_x { [0.9, 0.3, 0.3, 0.6 * k] } else { [0.3, 0.45, 0.95, 0.6 * k] } } else { [c[0], c[1], c[2], 0.55 * k] };
                 self.line(&pts, if major { 1.4 } else { 1.0 }, color, 1e-4);
             }
         }
@@ -1588,6 +1728,7 @@ fn render_once(scene: &Scene, camera: &Camera, atlas: &mut Atlas, opts: &Options
     let atlas: &Atlas = atlas;
     let roles = scene.clip_roles();
     let mut b = Builder::new(view, atlas, env, boil, frame, light, &roles);
+    b.focus = opts.focus;
     b.layer = layer::UNDER;
     if let Some(bg) = &env.background_image {
         b.backdrop(bg);
@@ -1651,6 +1792,7 @@ fn build_strokes(b: &mut Builder<'_>, strokes: &[(&Stroke, bool)], view: View, a
             .enumerate()
             .map(|(c, chunk)| {
                 let mut part = Builder::new(view, atlas, env, boil, frame, light, b.roles);
+                part.focus = b.focus;
                 for (i, (s, sel)) in chunk.iter().enumerate() {
                     part.order = (c * 32 + i + 1) as u32;
                     part.stroke(s, *sel);
@@ -1691,7 +1833,7 @@ mod tests {
     }
 
     fn opts<'a>(e: &'a HashSet<u64>, frame: u32) -> Options<'a> {
-        Options { frame, selected: e, selected_resources: e, extra: &[], hide: e, guides: true, overlays: true, orbit_point: None }
+        Options { frame, selected: e, selected_resources: e, extra: &[], hide: e, guides: true, overlays: true, orbit_point: None, focus: None }
     }
 
     #[test]

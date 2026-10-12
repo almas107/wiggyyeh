@@ -276,6 +276,18 @@ fn view_menu(s: &mut Space3d, ui: &mut Ui) {
         s.run("assist.set", json!({"showOrbit": orbit}));
     }
     ui.checkbox(&mut s.view.emulate_mmb, "Emulate 3-button mouse (Alt+drag orbits)");
+    let mut snap = s.ed.snap_ends;
+    if ui.checkbox(&mut snap, "Snap curve ends").on_hover_text("A new curve's ends join the ends of curves near them on screen").changed() {
+        s.run("snap.set", json!({"ends": snap}));
+    }
+    let mut thick = s.ed.scale_thickness;
+    if ui
+        .checkbox(&mut thick, "Scaling scales line thickness")
+        .on_hover_text("A uniform scale makes lines thicker or thinner with the drawing (stretching keeps them)")
+        .changed()
+    {
+        s.run("assist.set", json!({"scaleThickness": thick}));
+    }
     ui.checkbox(&mut s.view.orbit_about_pointer, "Orbit around what's under the pointer")
         .on_hover_text("Right drag, middle drag and Alt+drag turn the view about the curve or guide you grabbed");
     ui.checkbox(&mut s.left_handed, "Left-handed layout");
@@ -439,6 +451,8 @@ pub fn brush_panel(s: &mut Space3d, ui: &mut Ui, look: &Look, right: bool) {
                             BrushKind::DryBrush => "Painterly: a dry brush that breaks up",
                             BrushKind::Chalk => "Painterly: chalk grain",
                             BrushKind::Ink => "Painterly: a pointed ink brush",
+                            BrushKind::Ribbon => "Ribbon: a band standing up off the guide (walls, rims)",
+                            BrushKind::Diamond => "Diamond: a faceted tube",
                         };
                         let tile = s.previews.tile(ui.ctx(), k, &b);
                         let size = egui::vec2(super::previews::SIZE[0] as f32 * 0.8, super::previews::SIZE[1] as f32 * 0.8);
@@ -758,6 +772,14 @@ pub fn context_bar(s: &mut Space3d, ui: &mut Ui, look: &Look) {
                     }
                 }
             });
+            ui.menu_button("Plane", |ui| {
+                for (axis, label) in [("y", "Floor (XZ)"), ("z", "Wall (XY)"), ("x", "Side (YZ)"), ("view", "Facing the view")] {
+                    if ui.button(label).on_hover_text("A flat guide through the orbit point: draw straight away").clicked() {
+                        s.run("guide.plane", json!({"axis": axis}));
+                        ui.close();
+                    }
+                }
+            });
             if let Some(g) = s.ed.scene.active_guide().cloned() {
                 ui.separator();
                 let mut op = g.opacity;
@@ -821,6 +843,16 @@ pub fn context_bar(s: &mut Space3d, ui: &mut Ui, look: &Look) {
                     {
                         s.run("edit.fill", json!({}));
                     }
+                    if ui.button("Guide from curve").on_hover_text("Extrude the selected curve along the view into a guide (no redrawing)").clicked() {
+                        s.run("guide.fromCurve", json!({}));
+                    }
+                    ui.menu_button("Stretch", |ui| {
+                        for (label, x, y) in [("Wider", 1.1, 1.0), ("Narrower", 0.9, 1.0), ("Taller", 1.0, 1.1), ("Shorter", 1.0, 0.9)] {
+                            if ui.button(label).on_hover_text("Along the screen; line thickness stays").clicked() {
+                                s.run("transform.stretch", json!({"x": x, "y": y}));
+                            }
+                        }
+                    });
                     if ui.button("Duplicate").on_hover_text(s.tip("Duplicate", "edit.duplicate")).clicked() {
                         s.run("edit.duplicate", json!({"mode": "inplace"}));
                     }
@@ -896,6 +928,9 @@ fn groups(s: &mut Space3d, ui: &mut Ui, look: &Look) {
     ui.horizontal_wrapped(|ui| {
         if ui.button("+ Group").on_hover_text("A new group above the active one").clicked() {
             s.run("group.new", Value::Null);
+        }
+        if ui.selectable_label(s.ed.focus, "Focus").on_hover_text("Feather's focus mode: the active group as a black silhouette, the rest grey").clicked() {
+            s.run("view.focus", Value::Null);
         }
         let picked = s.picked_groups.clone();
         if ui.add_enabled(!picked.is_empty(), egui::Button::new("Duplicate")).clicked() {
@@ -1080,6 +1115,10 @@ fn environment(s: &mut Space3d, ui: &mut Ui) {
             changed.insert("axes".into(), json!(axes));
         }
     });
+    let mut go = env.grid_opacity;
+    if ui.add(egui::Slider::new(&mut go, 0.0..=1.0).text("Grid opacity")).changed() {
+        changed.insert("gridOpacity".into(), json!(go));
+    }
     ui.horizontal(|ui| {
         ui.label("Background");
         let mut c = colour32(env.background);

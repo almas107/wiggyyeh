@@ -130,10 +130,15 @@ pub enum BrushKind {
     Chalk,
     /// Painterly: an ink brush with a pointed, ragged, pressure-swelling line.
     Ink,
+    /// Feather's ribbon: a band standing up off the surface it was drawn on (the width goes
+    /// along the surface's normal, the other way to Flat): walls, rims, the side of a button.
+    Ribbon,
+    /// Feather's diamond: a faceted tube with a rhombus cross-section.
+    Diamond,
 }
 
 impl BrushKind {
-    pub const ALL: [BrushKind; 10] = [
+    pub const ALL: [BrushKind; 12] = [
         BrushKind::Pen,
         BrushKind::Marker,
         BrushKind::Flat,
@@ -144,6 +149,8 @@ impl BrushKind {
         BrushKind::DryBrush,
         BrushKind::Chalk,
         BrushKind::Ink,
+        BrushKind::Ribbon,
+        BrushKind::Diamond,
     ];
 
     pub fn name(self) -> &'static str {
@@ -158,6 +165,8 @@ impl BrushKind {
             BrushKind::DryBrush => "drybrush",
             BrushKind::Chalk => "chalk",
             BrushKind::Ink => "ink",
+            BrushKind::Ribbon => "ribbon",
+            BrushKind::Diamond => "diamond",
         }
     }
 
@@ -173,6 +182,8 @@ impl BrushKind {
             BrushKind::DryBrush => "Dry brush",
             BrushKind::Chalk => "Chalk",
             BrushKind::Ink => "Ink",
+            BrushKind::Ribbon => "Ribbon",
+            BrushKind::Diamond => "Diamond",
         }
     }
 
@@ -595,6 +606,9 @@ pub struct Environment {
     pub effects: Effects,
     /// Render mode: materials, lighting and effects shown accurately.
     pub render_mode: bool,
+    /// How strongly the floor grid shows, 0..1.
+    #[serde(default = "one")]
+    pub grid_opacity: f32,
 }
 
 impl Default for Environment {
@@ -608,6 +622,7 @@ impl Default for Environment {
             lighting: Lighting::default(),
             effects: Effects::default(),
             render_mode: false,
+            grid_opacity: 1.0,
         }
     }
 }
@@ -880,6 +895,8 @@ impl Scene {
         l.strength = if l.strength.is_finite() { l.strength.clamp(0.0, 2.0) } else { 1.0 };
         l.azimuth = if l.azimuth.is_finite() { l.azimuth.rem_euclid(360.0) } else { 35.0 };
         l.altitude = if l.altitude.is_finite() { l.altitude.clamp(-90.0, 90.0) } else { 50.0 };
+        let go = self.environment.grid_opacity;
+        self.environment.grid_opacity = if go.is_finite() { go.clamp(0.0, 1.0) } else { 1.0 };
         let e = &mut self.environment.effects;
         let c = |v: f32, hi: f32| if v.is_finite() { v.clamp(0.0, hi) } else { 0.0 };
         e.glow = c(e.glow, 1.0);

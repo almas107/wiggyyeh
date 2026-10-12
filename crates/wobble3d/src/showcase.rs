@@ -199,11 +199,11 @@ pub fn build(ed: &mut Editor) -> Result<(), String> {
         r(ed, "transform.apply", json!({"mode": "rotate", "axis": "x", "amount": 90}))?;
         r(ed, "select.none", Value::Null)?;
     }
-    let kinds = ["pen", "marker", "flat", "square", "nib", "oil", "gouache", "drybrush", "chalk", "ink"];
-    let colours = ["#23222b", "#ff2e88", "#2f5bff", "#2ec27e", "#8a4dff", "#ff8a1f", "#e8344e", "#7a4a2e", "#4fb3ff", "#17161c"];
+    let kinds = ["pen", "marker", "flat", "square", "nib", "diamond", "oil", "gouache", "drybrush", "chalk", "ink", "ribbon"];
+    let colours = ["#23222b", "#ff2e88", "#2f5bff", "#2ec27e", "#8a4dff", "#00a6a6", "#ff8a1f", "#e8344e", "#7a4a2e", "#4fb3ff", "#17161c", "#f0a020"];
     for (i, (kind, colour)) in kinds.iter().zip(colours).enumerate() {
-        let x0 = -0.95 + (i % 5) as f32 * 0.55;
-        let y0 = if i < 5 { 2.45 } else { 1.55 };
+        let x0 = -1.0 + (i % 6) as f32 * 0.48;
+        let y0 = if i < 6 { 2.45 } else { 1.55 };
         let wave: Vec<Vec3> = (0..24).map(|j| v3(x0 + j as f32 * 0.018, y0 - j as f32 * 0.03 + (j as f32 * 0.4).sin() * 0.06, -3.15)).collect();
         r(ed, "brush.set", json!({"kind": kind, "color": colour, "size": 34, "pattern": null}))?;
         r(ed, "stroke.add", json!({"points": pts(&wave), "normal": [0, 0, 1]}))?;

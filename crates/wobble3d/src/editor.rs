@@ -21,6 +21,7 @@ use crate::render::{self, Frame, Options};
 use crate::texture::Atlas;
 use crate::transform::{self, Delta, GizmoKind, Handle, Modal, Mode, Part};
 
+mod extras;
 mod fills;
 pub use fills::{ShapeKind, shape_corners};
 
@@ -326,6 +327,13 @@ pub struct Editor {
     /// stroke and it becomes a clean line, rectangle, polygon, circle, ellipse or arc, then
     /// keep holding and move to adjust it.
     pub quick_shape: bool,
+    /// Scaling curves scales their brush size too (Feather keeps the old thickness, so a
+    /// scaled-down drawing turns into a blob).
+    pub scale_thickness: bool,
+    /// A new curve's ends snap to the ends of other curves nearby on screen.
+    pub snap_ends: bool,
+    /// Feather's focus mode: other groups than the active one are shown faded.
+    pub focus: bool,
     /// The Shapes tool: what it draws, how many sides (polygon, star) and whether it fills.
     pub shape_kind: ShapeKind,
     pub shape_sides: u32,
@@ -442,6 +450,9 @@ impl Editor {
             feel: crate::feel::StrokeFeel::default(),
             guide_shape: true,
             quick_shape: true,
+            scale_thickness: true,
+            snap_ends: true,
+            focus: false,
             shape_kind: ShapeKind::Rect,
             shape_sides: 5,
             shape_filled: true,
@@ -763,7 +774,10 @@ impl Editor {
         self.checkpoint(label);
         let mut out = Vec::new();
         let maps = if self.mirror_on { mirror_maps(self.mirror_axes) } else { Vec::new() };
-        for c in curves {
+        for mut c in curves {
+            if label == "Draw" {
+                self.snap_curve_ends(&mut c);
+            }
             for m in &maps {
                 let copy: Vec<Point> = c.iter().map(|p| Point { p: reflect(p.p, *m), pressure: p.pressure, n: reflect(p.n, *m) }).collect();
                 let st = self.new_stroke(copy);
@@ -1782,11 +1796,26 @@ impl Editor {
     /// The selection under a delta, built from `base`.
     fn transformed(&self, base: &Scene, d: &Delta) -> Scene {
         let mut scene = base.clone();
+        // A uniform scale scales line thickness too; a stretch (taller, wider) keeps it, as
+        // Feather's joystick does.
+        let thick = match d {
+            Delta::Scale { factors, .. } if self.scale_thickness => {
+                let (lo, hi) = (factors.x.abs().min(factors.y.abs()).min(factors.z.abs()), factors.x.abs().max(factors.y.abs()).max(factors.z.abs()));
+                let k = factors.x.abs();
+                (k.is_finite() && k > 0.0 && hi - lo <= 1e-4 * hi.max(1.0)).then_some(k)
+            }
+            _ => None,
+        };
         for st in scene.strokes.iter_mut().filter(|s| self.selection.contains(&s.id)) {
             let m = Arc::make_mut(st);
             for p in &mut m.points {
                 p.p = d.point(p.p);
                 p.n = d.normal(p.n);
+            }
+            if let Some(k) = thick
+                && !m.is_fill()
+            {
+                m.brush.size_mm = (m.brush.size_mm * k).clamp(crate::model::SIZE_MIN_MM, crate::model::SIZE_MAX_MM);
             }
         }
         for g in scene.guides.iter_mut().filter(|g| self.selected_resources.contains(&g.id)) {
@@ -1865,6 +1894,26 @@ impl Editor {
             Mode::Rotate => "Rotate",
             Mode::Scale => "Scale",
         });
+        self.scene = scene;
+        self.events.push(Event::Transformed);
+        self.changed();
+        Ok(())
+    }
+
+    /// Feather's 2D joystick handles: stretch the selection along the screen's axes (`kx`
+    /// wider / narrower, `ky` taller / shorter) about the pivot. Line thickness stays.
+    pub fn stretch_on_screen(&mut self, kx: f32, ky: f32) -> Result<(), String> {
+        if !(kx.is_finite() && ky.is_finite()) || kx.abs() < 1e-3 || ky.abs() < 1e-3 || kx.abs() > 1e3 || ky.abs() > 1e3 {
+            return Err("stretch factors must be numbers between 0.001 and 1000".into());
+        }
+        let pivot = self.pivot_point().ok_or("select something to transform first")?;
+        let view = self.view();
+        let q1 = Quat::from_to(Vec3::X, view.right);
+        let q2 = Quat::from_to(q1.rotate(Vec3::Y), view.up);
+        let orient = (q2 * q1).normalized();
+        let d = Delta::Scale { pivot, orient, factors: crate::math::v3(kx, ky, 1.0) };
+        let scene = self.transformed(&self.scene, &d);
+        self.checkpoint("Stretch");
         self.scene = scene;
         self.events.push(Event::Transformed);
         self.changed();
@@ -1959,8 +2008,18 @@ impl Editor {
             (Some(before), true) => before,
             _ => &self.scene,
         };
-        let opts =
-            Options { frame, selected: &selected, selected_resources: &resources, extra: &extra, hide: &empty, guides: overlays, overlays, orbit_point: orbit };
+        let focus = self.focus.then_some(self.scene.active_group);
+        let opts = Options {
+            frame,
+            selected: &selected,
+            selected_resources: &resources,
+            extra: &extra,
+            hide: &empty,
+            guides: overlays,
+            overlays,
+            orbit_point: orbit,
+            focus,
+        };
         render::render(scene, &self.camera, &mut self.atlas, &opts)
     }
 
@@ -2126,6 +2185,9 @@ impl Editor {
 
     fn run_inner(&mut self, cmd: &str, p: &Value) -> Result<Value, String> {
         if let Some(out) = self.run_fill(cmd, p) {
+            return out;
+        }
+        if let Some(out) = self.run_extras(cmd, p) {
             return out;
         }
         let ok = Ok(Value::Null);
@@ -2655,6 +2717,12 @@ impl Editor {
                 self.transform_exact(mode, axis, b(p, "plane").unwrap_or(false), need_f(p, "amount")?)?;
                 ok
             }
+            "transform.stretch" => {
+                let kx = f(p, "x").unwrap_or(1.0);
+                let ky = f(p, "y").unwrap_or(1.0);
+                self.stretch_on_screen(kx, ky)?;
+                ok
+            }
             "transform.pivot" => {
                 let v = s(p, "pivot").ok_or("missing pivot")?;
                 self.pivot = Pivot::parse(v).ok_or_else(|| format!("unknown pivot {v:?}"))?;
@@ -3093,6 +3161,9 @@ impl Editor {
                 if let Some(v) = b(p, "fog") {
                     e.fog = v;
                 }
+                if let Some(v) = f(p, "gridOpacity") {
+                    e.grid_opacity = if v.is_finite() { v.clamp(0.0, 1.0) } else { 1.0 };
+                }
                 if let Some(v) = b(p, "render") {
                     e.render_mode = v;
                 }
@@ -3262,6 +3333,9 @@ impl Editor {
                 }
                 if let Some(v) = b(p, "quickShape") {
                     self.quick_shape = v;
+                }
+                if let Some(v) = b(p, "scaleThickness") {
+                    self.scale_thickness = v;
                 }
                 self.touch();
                 ok
@@ -3629,6 +3703,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("transform.confirm", "confirm the transform (or finish a primitive / loft)"),
     ("transform.cancel", "cancel the transform"),
     ("transform.apply", "{mode, axis?, plane?, amount} one exact transform (metres, degrees, factor)"),
+    ("transform.stretch", "{x?, y?} stretch the selection along the screen's axes (Feather's joystick: wider, taller); thickness stays"),
     ("transform.pivot", "{pivot: median|bounds|orbit}"),
     ("transform.gizmo", "{kind: none|move|rotate|scale|all, local?}"),
     ("guide.draw", "{points: [[x,y]…], shape?} draw a 3D Guide from screen points"),
@@ -3639,6 +3714,10 @@ const COMMANDS: &[(&str, &str)] = &[
     ("guide.opacity", "{value 0–0.95, id?}"),
     ("guide.primitive", "{kind: cube|pyramid|sphere|tube|plane, segments?} start (or change) a primitive guide"),
     ("guide.segments", "{value} the primitive's segments"),
+    ("guide.plane", "{axis: x|y|z|view} a flat guide through the orbit point across an axis (no guide drawing needed)"),
+    ("guide.fromCurve", "{id?} a guide extruded along the view from a curve already drawn (the selected one)"),
+    ("view.focus", "{on?} focus mode: other groups than the active one fade"),
+    ("snap.set", "{ends} new curves' ends snap to the ends of nearby curves"),
     ("guide.loft", "{ids: [curve ids in order], tension?, done?} loft a guide through curves"),
     ("guide.tension", "{value 0–1} loft tension"),
     ("guide.done", "finish the primitive or loft"),
@@ -3673,7 +3752,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("resource.addImage", "{width, height, rgbaHex, name?} add a reference image"),
     (
         "env.set",
-        "{grid, axes, fog, render, background, lighting: {azimuth, altitude, strength, color, groundShadow, toon}, effects: {glow, dof, grain, pixelate, bloom}}",
+        "{grid, gridOpacity 0–1, axes, fog, render, background, lighting: {azimuth, altitude, strength, color, groundShadow, toon}, effects: {glow, dof, grain, pixelate, bloom}}",
     ),
     ("env.toggleRender", "render mode on / off"),
     ("env.clearBackgroundImage", "remove the background image"),
@@ -3690,7 +3769,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "assist.set",
-        "{guideShape, drawInAir, showOrbit, pinOrbit, quickShape} quickShape: hold the pen still at the end of a Draw stroke to snap it to a line, rectangle, polygon, circle or ellipse",
+        "{guideShape, drawInAir, showOrbit, pinOrbit, quickShape, scaleThickness} scaleThickness: scaling curves scales their brush size; quickShape: hold the pen still at the end of a Draw stroke to snap it to a line, rectangle, polygon, circle or ellipse",
     ),
     ("shot.add", "{after?} add a camera shot of the current view"),
     ("shot.go", "{id}"),

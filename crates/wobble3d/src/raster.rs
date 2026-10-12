@@ -438,7 +438,8 @@ mod order_tests {
     /// every brush kind and from a tilted view.
     #[test]
     fn later_curves_cover_earlier_ones_on_a_shared_surface() {
-        for kind in crate::model::BrushKind::ALL {
+        // A ribbon stands up off the surface: it occludes like a wall, by depth.
+        for kind in crate::model::BrushKind::ALL.into_iter().filter(|k| *k != crate::model::BrushKind::Ribbon) {
             let mut e = Editor::new();
             e.set_viewport(200.0, 200.0);
             e.run("env.set", &json!({"grid": false})).expect("env");
@@ -503,6 +504,7 @@ mod order_tests {
                         guides: false,
                         overlays: false,
                         orbit_point: None,
+                        focus: None,
                     };
                     let alone = crate::render::render(&e.scene, &e.camera, &mut e.atlas, &opts);
                     let tex = Textures { atlas: &e.atlas, images: HashMap::new() };

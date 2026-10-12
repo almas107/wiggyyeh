@@ -672,3 +672,65 @@ fn clipped_groups_paint_only_on_the_group_below() {
     f.run("file.deserialize", &json!({"hex": hex.get("hex").cloned().unwrap_or(Value::Null)})).expect("load");
     assert!(f.scene.groups.iter().any(|g| g.clip));
 }
+
+/// Feather users' requests: axis-plane guides without drawing one, a guide made from a curve,
+/// stroke ends that snap to other ends, scaling that scales thickness, focus mode, grid opacity.
+#[test]
+fn comment_requests_planes_guides_from_curves_snapping_and_focus() {
+    let mut e = front_ed();
+    // The floor plane through the orbit point: drawing from the top lands on y = 0.
+    let gid = e.run("guide.plane", &json!({"axis": "y"})).expect("plane").as_u64().expect("id");
+    assert_eq!(e.scene.active_guide, Some(gid));
+    e.run("camera.view", &json!({"view": "top"})).expect("top");
+    e.run("stroke.draw", &json!({"points": pts(&[[150.0, 150.0], [200.0, 160.0], [250.0, 150.0]])})).expect("draw");
+    assert!(e.scene.strokes[0].points.iter().all(|p| p.p.y.abs() < 1e-3), "on the floor");
+    assert!(e.run("guide.plane", &json!({"axis": "w"})).is_err());
+    // A second stroke starting 6 px from the first one's end snaps onto it.
+    let end = e.scene.strokes[0].points.last().expect("end").p;
+    let at = e.view().project(end).expect("on screen");
+    e.run("stroke.draw", &json!({"points": pts(&[[at.x + 5.0, at.y + 3.0], [at.x + 40.0, at.y + 30.0], [at.x + 80.0, at.y + 40.0]])})).expect("draw");
+    assert!(e.scene.strokes[1].points[0].p.distance(end) < 1e-5, "snapped to the end");
+    e.run("snap.set", &json!({"ends": false})).expect("off");
+    e.run("stroke.draw", &json!({"points": pts(&[[at.x + 5.0, at.y + 3.0], [at.x + 40.0, at.y + 60.0]])})).expect("draw");
+    assert!(e.scene.strokes[2].points[0].p.distance(end) > 1e-3, "not snapped when off");
+    // A guide extruded from the first curve.
+    e.run("guide.close", &Value::Null).expect("close");
+    e.run("select.set", &json!({"ids": [e.scene.strokes[0].id]})).expect("select");
+    e.run("camera.view", &json!({"view": "front"})).expect("front");
+    let g2 = e.run("guide.fromCurve", &json!({})).expect("from curve");
+    assert!(g2.as_u64().is_some() && e.scene.active_guide.is_some());
+    assert!(e.run("guide.fromCurve", &json!({"id": 999_999})).is_err());
+    // Scaling a curve by half halves its brush size (and can be turned off).
+    let id = e.scene.strokes[0].id;
+    let before = e.scene.strokes[0].brush.size_mm;
+    e.run("select.set", &json!({"ids": [id]})).expect("select");
+    e.run("transform.apply", &json!({"mode": "scale", "amount": 0.5})).expect("scale");
+    assert!((e.scene.stroke(id).expect("s").brush.size_mm - before * 0.5).abs() < 1e-3);
+    // Stretching taller on screen keeps the thickness, and makes it taller on screen.
+    let h0 = e.scene.stroke(id).expect("s").bounds().map(|(lo, hi)| hi.y - lo.y).expect("b");
+    e.run("transform.stretch", &json!({"y": 2.0})).expect("stretch");
+    assert!((e.scene.stroke(id).expect("s").brush.size_mm - before * 0.5).abs() < 1e-3);
+    let h1 = e.scene.stroke(id).expect("s").bounds().map(|(lo, hi)| hi.y - lo.y).expect("b");
+    assert!(h1 > h0 * 1.9 || h0 < 1e-4, "{h0} → {h1}");
+    assert!(e.run("transform.stretch", &json!({"x": 0})).is_err());
+    e.run("assist.set", &json!({"scaleThickness": false})).expect("off");
+    e.run("transform.apply", &json!({"mode": "scale", "amount": 0.5})).expect("scale");
+    assert!((e.scene.stroke(id).expect("s").brush.size_mm - before * 0.5).abs() < 1e-3);
+    // Focus mode and grid opacity.
+    assert_eq!(e.run("view.focus", &json!({})).expect("focus"), json!(true));
+    let _ = e.render(0, true);
+    // The active group's curves are a black silhouette, the others light grey.
+    let mut f = front_ed();
+    f.run("brush.set", &json!({"kind": "marker", "color": "#ff0000", "size": 60, "pressure": false})).expect("red");
+    f.run("stroke.draw", &json!({"points": pts(&(0..30).map(|i| [60.0 + i as f32 * 3.0, 100.0]).collect::<Vec<_>>())})).expect("a");
+    f.run("group.new", &json!({})).expect("group");
+    f.run("stroke.draw", &json!({"points": pts(&(0..30).map(|i| [240.0 + i as f32 * 3.0, 100.0]).collect::<Vec<_>>())})).expect("b");
+    f.run("view.focus", &json!({"on": true})).expect("focus");
+    let (other, active) = (pixel(&mut f, 100, 100), pixel(&mut f, 280, 100));
+    assert!(active[0] < 50 && active[1] < 50, "active group black: {active:?}");
+    assert!(other[0] > 170 && (other[0] as i32 - other[2] as i32).abs() < 20, "others grey: {other:?}");
+    e.run("env.set", &json!({"gridOpacity": 0.25})).expect("grid");
+    assert_eq!(e.scene.environment.grid_opacity, 0.25);
+    e.run("env.set", &json!({"gridOpacity": f64::NAN})).ok();
+    assert!(e.scene.environment.grid_opacity.is_finite());
+}

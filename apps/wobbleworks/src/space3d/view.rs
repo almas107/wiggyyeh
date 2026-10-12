@@ -117,6 +117,11 @@ pub struct Viewport {
     right_click: Option<Pos2>,
     /// Orbit drags turn about what is under the pointer (else about the orbit point).
     pub orbit_about_pointer: bool,
+    /// When the last right click (no drag) was, for Feather's double tap: a double right
+    /// click snaps to the nearest perfect view.
+    last_right_click: f64,
+    /// A touch gesture in progress: (start time, most fingers, how far it moved).
+    touch_tap: Option<(f64, usize, f32)>,
     /// The primary button went down in the viewport (and goes to the editor until it lifts).
     drawing: bool,
     /// Alt+middle click: snap when released without dragging.
@@ -143,6 +148,8 @@ impl Default for Viewport {
             orbit_pivot: None,
             right_click: None,
             orbit_about_pointer: true,
+            last_right_click: f64::NEG_INFINITY,
+            touch_tap: None,
             drawing: false,
             alt_click: None,
             emulate_mmb: true,
@@ -244,7 +251,14 @@ impl Viewport {
                             if let Some(start) = self.right_click.take() {
                                 self.nav = None;
                                 if start.distance(*pos) < 4.0 {
-                                    context_menu = Some(*pos);
+                                    if t - self.last_right_click < 0.35 {
+                                        // Feather's one-finger double tap: the nearest perfect view.
+                                        let _ = ed.run("camera.view", &serde_json::json!({"view": "nearest"}));
+                                        self.last_right_click = f64::NEG_INFINITY;
+                                    } else {
+                                        context_menu = Some(*pos);
+                                        self.last_right_click = t;
+                                    }
                                 }
                             }
                         }
@@ -293,6 +307,28 @@ impl Viewport {
                 }
                 _ => {}
             }
+        }
+        // Feather's taps on touch screens: two fingers undo, three redo (a tap: short, still).
+        match (ctx.multi_touch(), self.touch_tap) {
+            (Some(mt), None) if resp.hovered() => self.touch_tap = Some((t, mt.num_touches, 0.0)),
+            (Some(mt), Some((t0, n, moved))) => {
+                let m = moved + mt.translation_delta.length() + (mt.zoom_delta - 1.0).abs() * 200.0;
+                self.touch_tap = Some((t0, n.max(mt.num_touches), m));
+            }
+            (None, Some((t0, n, moved))) => {
+                self.touch_tap = None;
+                if t - t0 < 0.3 && moved < 12.0 {
+                    let cmd = match n {
+                        2 => Some("edit.undo"),
+                        3 => Some("edit.redo"),
+                        _ => None,
+                    };
+                    if let Some(cmd) = cmd {
+                        let _ = ed.run(cmd, &serde_json::Value::Null);
+                    }
+                }
+            }
+            _ => {}
         }
         // Two-finger touch: pinch zooms, drag pans (Feather's gestures on touch screens).
         if let Some(mt) = ctx.multi_touch()
