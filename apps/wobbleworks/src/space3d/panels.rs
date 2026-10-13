@@ -259,33 +259,44 @@ fn view_menu(s: &mut Space3d, ui: &mut Ui) {
         }
     }
     ui.separator();
-    ui.label(RichText::new("Trace in 2D").strong())
-        .on_hover_text("Render this view into a dimmed layer of the 2D picture, with an empty layer above it to trace on. The 3D note is not changed");
-    if ui.button("Shoot (pinned)").on_hover_text("The layer keeps this angle: orbit on freely, shoot again for more angles").clicked() {
-        s.shoot = Some(super::trace::CameraLink::Pinned);
+    let mut roll = s.ed.camera.twist;
+    if ui
+        .add(egui::Slider::new(&mut roll, -180.0..=180.0).suffix("°").text("Roll"))
+        .on_hover_text("Tilt the view about its axis (Clip Studio's camera twist). Perfect views are upright")
+        .changed()
+    {
+        s.run("camera.roll", json!({"to": roll}));
+    }
+    ui.separator();
+    ui.label(RichText::new("Trace in 2D").strong()).on_hover_text(
+        "Add a 3D layer to the 2D picture: the note seen through a camera, dimmed, with an empty layer above it to trace on. The note is not changed",
+    );
+    if ui.button("Shoot").on_hover_text("Save this view in the note's camera list and trace it: orbit on freely, the layer holds this angle").clicked() {
+        s.shoot = Some(super::trace::Shoot::Pinned);
         ui.close();
     }
-    if ui.button("Shoot live").on_hover_text("The layer follows the 3D view: it is shot again each time you go back to 2D").clicked() {
-        s.shoot = Some(super::trace::CameraLink::Live);
+    if ui.button("Shoot live").on_hover_text("The layer follows the 3D view: it is brought up to date each time you go back to 2D").clicked() {
+        s.shoot = Some(super::trace::Shoot::Live);
         ui.close();
     }
     let shots: Vec<(u64, String)> = s.ed.scene.sequence.shots.iter().map(|sh| (sh.id, sh.name.clone())).collect();
     if !shots.is_empty() {
-        ui.menu_button("Shoot from a camera shot", |ui| {
+        ui.menu_button("Shoot from a saved camera", |ui| {
             for (id, name) in shots {
                 if ui.button(name).clicked() {
-                    s.shoot = Some(super::trace::CameraLink::Shot(id));
+                    s.shoot = Some(super::trace::Shoot::Camera(id));
                     ui.close();
                 }
             }
         });
     }
     ui.horizontal(|ui| {
+        use photocraft_doc::Model3dFit;
         ui.label("Fit");
         for (label, fit, tip) in [
-            ("Height", super::trace::Fit::Height, "Keep the view's height; the picture's width decides how much is seen sideways"),
-            ("Width", super::trace::Fit::Width, "Keep the view's width"),
-            ("All", super::trace::Fit::Contain, "Keep everything the view shows"),
+            ("Height", Model3dFit::Height, "Keep the view's height; the picture's width decides how much is seen sideways"),
+            ("Width", Model3dFit::Width, "Keep the view's width"),
+            ("All", Model3dFit::Contain, "Keep everything the view shows"),
         ] {
             ui.selectable_value(&mut s.trace_fit, fit, label).on_hover_text(tip);
         }

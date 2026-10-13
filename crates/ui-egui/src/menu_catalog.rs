@@ -392,6 +392,7 @@ pub static CATALOG: &[(&[&str], &str, Option<&str>, &str)] = &[
     (&["Layer", "Rasterize"], "Vector Mask", None, "layer.rasterize.vectorMask"),
     (&["Layer", "Rasterize"], "Smart Object", None, "layer.rasterize.smartObject"),
     (&["Layer", "Rasterize"], "Video", None, "layer.rasterize.video"),
+    (&["Layer", "Rasterize"], "3D", None, "layer.rasterize.3d"),
     (&["Layer", "Rasterize"], "---", None, "---"),
     (&["Layer", "Rasterize"], "Layer", None, "layer.rasterize.layer"),
     (&["Layer", "Rasterize"], "All Layers", None, "layer.rasterize.allLayers"),

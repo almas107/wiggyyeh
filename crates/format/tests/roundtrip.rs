@@ -425,3 +425,43 @@ fn video_layer_frames_survive_roundtrip() {
     v.frames[2].read_rgba_into(Rect::from_xywh(1, 1, 1, 1), &mut px);
     assert!(px[0][0] > 0.9 && px[0][2] < 0.1, "frame 2 is reddish: {:?}", px[0]);
 }
+
+#[test]
+fn a_3d_layer_roundtrips_and_layers_of_one_scene_share_its_bytes() {
+    use photocraft_doc::{Model3dFit, Model3dLayer};
+    use std::sync::Arc;
+    let mut doc = Document::new("3d", photocraft_geom::Size::new(64, 48), ColorMode::Rgb, SampleType::U8);
+    // Noise, so it doesn't compress away and the size check below means something.
+    let mut x = 0x9e37_79b9u32;
+    let scene = Arc::new(
+        (0..50_000)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                (x >> 24) as u8
+            })
+            .collect::<Vec<u8>>(),
+    );
+    for (i, follow) in [false, true].into_iter().enumerate() {
+        let mut cache = photocraft_raster::Surface::new(doc.pixel_format());
+        cache.fill_rect(photocraft_geom::Rect::new(4, 4, 20 + i as i32, 20), &[0.2, 0.4, 0.6, 1.0]);
+        let m = Model3dLayer {
+            scene: scene.clone(),
+            scene_id: 9,
+            main_camera_id: 3 + i as u64,
+            follow_view: follow,
+            fit: Model3dFit::Contain,
+            cache,
+            dirty: i == 1,
+        };
+        doc.layers.push(Layer::new(format!("3D {i}"), LayerContent::Model3d(m)));
+    }
+    let bytes = save_to_bytes(&doc, &SaveOptions::default()).unwrap();
+    assert_eq!(load_from_bytes(&bytes).unwrap(), doc);
+    // The 50 kB scene is stored once, not once per layer.
+    let mut one = doc.clone();
+    one.layers.truncate(1);
+    let one_bytes = save_to_bytes(&one, &SaveOptions::default()).unwrap();
+    assert!(bytes.len() < one_bytes.len() + 4_000, "{} vs {}", bytes.len(), one_bytes.len());
+}

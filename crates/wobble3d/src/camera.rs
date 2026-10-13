@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::math::{Vec3, v3};
+use crate::math::{Quat, Vec3, v3};
 
 /// Lens range, millimetres on a 35 mm frame (Feather's FOV slider).
 pub const FOCAL_MIN: f32 = 10.0;
@@ -16,6 +16,12 @@ pub const FOCAL_MAX: f32 = 500.0;
 const FRAME_MM: f32 = 24.0;
 pub const DISTANCE_MIN: f32 = 0.02;
 pub const DISTANCE_MAX: f32 = 10_000.0;
+
+/// An angle in degrees wrapped to -180..=180.
+pub fn wrap_degrees(a: f32) -> f32 {
+    let w = (a + 180.0).rem_euclid(360.0) - 180.0;
+    if w == -180.0 && a > 0.0 { 180.0 } else { w }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Viewport {
@@ -98,6 +104,10 @@ pub struct Camera {
     pub snapped_from_perspective: bool,
     #[serde(default)]
     pub viewport: Viewport,
+    /// Roll about the view axis in degrees, -180..=180 (Clip Studio's camera `Twist`): tilts the
+    /// picture without moving the eye. Notes saved before it existed load upright.
+    #[serde(default)]
+    pub twist: f32,
 }
 
 impl Default for Camera {
@@ -111,6 +121,7 @@ impl Default for Camera {
             orthographic: false,
             snapped_from_perspective: false,
             viewport: Viewport::default(),
+            twist: 0.0,
         }
     }
 }
@@ -162,14 +173,21 @@ impl Camera {
         self.pitch = if self.pitch.is_finite() { self.pitch.clamp(-90.0, 90.0) } else { d.pitch };
         self.distance = if self.distance.is_finite() { self.distance.clamp(DISTANCE_MIN, DISTANCE_MAX) } else { d.distance };
         self.focal_mm = if self.focal_mm.is_finite() { self.focal_mm.clamp(FOCAL_MIN, FOCAL_MAX) } else { d.focal_mm };
+        self.twist = if self.twist.is_finite() { wrap_degrees(self.twist) } else { 0.0 };
         self.viewport = self.viewport.sane();
     }
 
     pub fn view(&self) -> View {
         let (yaw, pitch) = (self.yaw.to_radians(), self.pitch.to_radians());
         let back = v3(pitch.cos() * yaw.sin(), pitch.sin(), pitch.cos() * yaw.cos()).normalized();
-        let right = v3(yaw.cos(), 0.0, -yaw.sin()).normalized();
-        let up = back.cross(right).normalized();
+        let mut right = v3(yaw.cos(), 0.0, -yaw.sin()).normalized();
+        let mut up = back.cross(right).normalized();
+        // Roll about the view axis; `back` (so the eye and every depth) is left alone.
+        if self.twist.is_finite() && self.twist != 0.0 {
+            let roll = Quat::from_axis_angle(back, self.twist.to_radians());
+            right = roll.rotate(right).normalized();
+            up = roll.rotate(up).normalized();
+        }
         let fov = self.fov_y();
         let f = 1.0 / (fov * 0.5).tan();
         let vp = self.viewport.sane();
@@ -289,6 +307,7 @@ impl Camera {
     /// was in perspective.
     pub fn snap(&mut self, pv: PerfectView) {
         (self.yaw, self.pitch) = pv.angles();
+        self.twist = 0.0;
         if !self.orthographic {
             self.snapped_from_perspective = true;
         }
@@ -475,5 +494,55 @@ mod tests {
         let eye = c.view().eye;
         c.set_orbit_point(v3(1.0, 0.5, -0.5));
         assert!(c.view().eye.distance(eye) < 1e-3);
+    }
+
+    #[test]
+    fn twist_rolls_the_screen_axes_without_moving_the_eye() {
+        for ortho in [false, true] {
+            let base = Camera { orthographic: ortho, yaw: 37.0, pitch: 21.0, ..Camera::default() };
+            let v0 = base.view();
+            let p = v3(0.6, -0.4, 0.3);
+            let s0 = v0.project(p).expect("in front");
+            // Half a turn reflects the picture through the centre; eye and depth stay.
+            let v180 = Camera { twist: 180.0, ..base }.view();
+            let s1 = v180.project(p).expect("in front");
+            let (w, h) = (v0.viewport.width, v0.viewport.height);
+            assert!((s1.x - (w - s0.x)).abs() < 1e-2 && (s1.y - (h - s0.y)).abs() < 1e-2, "{s0:?} -> {s1:?}");
+            assert!((s1.depth - s0.depth).abs() < 1e-4);
+            assert!((v180.eye - v0.eye).length() < 1e-5 && (v180.back - v0.back).length() < 1e-6);
+            for t in [0.0, 30.0, -115.0, 180.0] {
+                let v = Camera { twist: t, ..base }.view();
+                let s = v.project(p).expect("in front");
+                assert!((v.unproject_at(s.x, s.y, p) - p).length() < 1e-3, "twist {t}");
+                // Still a right-handed orthonormal frame.
+                assert!(v.right.dot(v.up).abs() < 1e-5 && v.right.dot(v.back).abs() < 1e-5 && v.up.dot(v.back).abs() < 1e-5);
+                assert!((v.right.cross(v.up) - v.back).length() < 1e-4);
+            }
+        }
+    }
+
+    #[test]
+    fn twist_is_wrapped_and_survives_hostile_numbers() {
+        let mut c = Camera { twist: 540.0, ..Camera::default() };
+        c.sanitize();
+        assert_eq!(c.twist, 180.0);
+        let mut c = Camera { twist: -190.0, ..Camera::default() };
+        c.sanitize();
+        assert!((c.twist - 170.0).abs() < 1e-4);
+        let mut c = Camera { twist: f32::NAN, ..Camera::default() };
+        c.sanitize();
+        assert_eq!(c.twist, 0.0);
+        // A perfect view is upright.
+        let mut c = Camera { twist: 33.0, ..Camera::default() };
+        c.snap(PerfectView::Front);
+        assert_eq!(c.twist, 0.0);
+    }
+
+    #[test]
+    fn a_note_saved_before_twist_existed_loads_upright() {
+        let mut v = serde_json::to_value(Camera { yaw: 12.0, ..Camera::default() }).expect("json");
+        v.as_object_mut().expect("object").remove("twist");
+        let c: Camera = serde_json::from_value(v).expect("loads");
+        assert_eq!((c.twist, c.yaw), (0.0, 12.0));
     }
 }

@@ -9,13 +9,14 @@
 //! | `w3d.state` | | revision, tool, counts, selection, camera, environment flags |
 //! | `w3d.render` | `{kind?: png / boilGif / turntableGif / shotsGif / boilMp4 / turntableMp4 / shotsMp4, scale?, frame?, transparent?, width?, height?}` | `{mime, base64, bytes}` |
 //!
-//! `w3d.show` (switch the 3D mode on or off), `w3d.shoot` and `w3d.retrace` (trace the note in
+//! `w3d.show` (switch the 3D mode on or off), `w3d.shoot`, `w3d.retrace` and `w3d.edit` (3D layers in
 //! 2D, see `trace`) live in the shell, which owns the mode and the PhotoCraft session:
 //!
 //! | Method | Params | Result |
 //! |---|---|---|
-//! | `w3d.shoot` | `{link?: pinned / live / shot, shot?, fit?: height / width / contain}` | `{layer, traceOn, link, size}`: a dimmed trace layer and an empty layer above it; switches to 2D |
-//! | `w3d.retrace` | `{layer?}` | `{updated}`: shoot the trace layers (or one) again |
+//! | `w3d.shoot` | `{camera?: "new" / "view" / id, fit?: height / width / contain}` | `{layer, traceOn, camera, followView, size}`: a 3D layer and an empty layer above it; switches to 2D |
+//! | `w3d.retrace` | `{layer?}` | `{updated}`: render the 3D layers (or one) again |
+//! | `w3d.edit` | `{layer}` | `{note, camera}`: open a 3D layer's note in 3D, on its camera |
 
 use base64::Engine as _;
 use serde_json::{Value, json};

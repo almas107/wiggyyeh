@@ -9,42 +9,6 @@ hard part.** `wobbleworks_3d::camera` is a complete projective camera, and
 the live one back. What is missing is a place in the document to keep a 3D scene, and a surface
 for it to render into.
 
-## Status (2026-10-13)
-
-Steps 1, 2 and 4 of section 5 have landed, and step 3 in a lighter form. In the app:
-**View › Trace in 2D › Shoot (pinned)**, **Shoot live**, **Shoot from a camera shot**, with a
-Fit choice (Height / Width / All). Shoot renders the view at the picture's size into a dimmed
-(50%), pixel-locked layer named "3D trace (…)", adds an empty "Trace" layer above it (made
-active), switches to 2D, and is one undo step. Leaving the 3D mode shoots the trace layers again
-when the note changed (all of them) or the camera moved (live and shot layers only). Agents:
-`w3d.shoot {link, shot?, fit?}` and `w3d.retrace {layer?}` (`docs/control-protocol.md`).
-
-Where it differs from the design below, and why:
-
-- **No `crates/trace3d`.** The bridge is `apps/wobbleworks/src/space3d/trace.rs`: the app is its
-  only user and already depends on both sides, so a crate would add a layering entry and nothing
-  else. It can move into a crate unchanged if PhotoCraft itself ever traces 3D.
-- **No `LayerContent::Model3d` yet.** A trace layer is a pixel layer that carries its
-  `TraceCamera` (link and fit included) as JSON in a private layer block, `wb3T`. `.pcraft`
-  and PSD keep unknown blocks verbatim, so the camera survives saves; other apps see the picture
-  (which is section 5's step 9 for free). The note itself is not embedded: the layer refers to
-  the one 3D note that WobbleWorks keeps (and autosaves). This avoids touching `doc`, `format`,
-  `compose` and `gpu` for a variant whose only extra power today would be re-rendering, which
-  the refresh-on-leave already does.
-- **Alpha** (open question 1): PhotoCraft surfaces are straight alpha, like `Picture`, so the
-  RGBA8 bytes go in unchanged (`Surface::from_interleaved`, then `convert` to the picture's
-  format).
-- **Undo** (open question 2): the histories stay separate. Shooting and refreshing are steps in
-  PhotoCraft's history; the 3D note's history is untouched (tracing never writes to it:
-  `tracing_never_touches_the_note`).
-- **Size:** `export::picture_at` renders at any size up to `MAX_SIDE` (8192); larger pictures
-  are rendered at 8192 on the long side and scaled up.
-
-Still open: the interactive (capped-size) render while a live layer follows the camera (4.4:
-today live layers refresh when you leave 3D, not while orbiting), LT conversion (4.5), Paint on
-3D (4.6), snapping to projected geometry and the derived perspective ruler (4.7), and a real
-`Model3d` layer if trace layers ever need to re-render inside PhotoCraft without WobbleWorks.
-
 ## 1. What CSP actually does
 
 CSP's 3D is not a modeller. It is a *reference rig*: you park a posed model under your drawing
@@ -185,6 +149,11 @@ dependency graph stays acyclic and the bridge is one reviewable crate.
 
 > *whatever the camera views in 3d mode we can trace it in 2d, without changing whatever is on the
 > 3d canvas*
+
+> **Superseded by section 7.2.** The `CameraLink` enum below was the first design. CSP turns out
+> to keep a camera *list* on the scene and a `MainCameraID` on the layer, which is strictly better
+> and also settles where the note is stored. Read 7.2 for the model being built; this section is
+> kept because the reasoning about *why* pinning matters still holds.
 
 Three link modes, one enum:
 
@@ -332,13 +301,250 @@ untouched.*
 
 ## 6. Open questions
 
-- **Alpha convention.** `Picture.rgba` is straight RGBA8 and `Surface::from_interleaved` takes
-  interleaved RGBA8, but whether `Surface` stores straight or premultiplied alpha needs confirming
-  before step 2; a mismatch shows up as dark fringing on soft 3D edges.
+### Resolved
+
+- **Alpha convention — settled, and no conversion is needed.** Both sides are *straight*
+  (unassociated) alpha, so `Picture.rgba` can go into a `Surface` verbatim.
+  - `crates/wobble3d/src/raster.rs:259` divides the alpha back out when it emits the picture
+    (`un = |v| v / a`), so the premultiplied float canvas it composites in does not leak into the
+    output.
+  - `crates/raster/src/lib.rs` `to_rgba` / `from_rgba` carry alpha as an independent channel and
+    never multiply or divide RGB by it.
+  - There is therefore no dark-fringing risk on soft 3D edges, which was the worry.
+- **A size mismatch panics, so the bridge must validate.**
+  `Surface::write_interleaved` (`crates/raster/src/lib.rs:464`) asserts
+  `bytes.len() == w * h * bpp`. `trace3d` must check the rasterised picture's length against the
+  target rect before handing it over, rather than trusting it.
+- **Document storage** — answered by CSP's own model; see 7.2. The note is stored once with a
+  camera list, and each layer names a camera by id.
+
+### Still open
+
 - **Undo.** 3D edits are commands in `Editor`'s own history (`editor::Editor::run`); 2D edits are
   in PhotoCraft's. A camera pin is a *document* edit and belongs in PhotoCraft's history. Whether
   the two histories stay separate (simplest, and it matches having two modes) or merge is a
-  product call.
-- **Document storage.** A `.wob3d` note embedded per layer is simple but duplicates the scene
-  across several pinned angles of the same model. One note per document, with layers referencing
-  it, is leaner but needs a lifetime story.
+  product call. This is the one genuine unknown left, and it is a product decision rather than a
+  technical one.
+- **Off-centre frustum.** Ours derives a symmetric frustum from `focal_mm`; CSP stores six planes
+  (7.3). Only matters for a shifted / tilt-shift camera, so it is deferred, not solved.
+
+## 7. Verified against the CSP binary (2026-10-13)
+
+Evidence: 14,591 MSVC RTTI type descriptors recovered from `CLIPStudioPaint.exe` (90 MB), plus
+`kSerializeLabel*` identifiers. CSP is **not stripped of RTTI**, so its class names are readable
+directly. No decompilation was needed for any claim below.
+
+### 7.1 CSP's four layers, and what they correspond to here
+
+CSP's internal codenames:
+
+| CSP module | Role | Our counterpart |
+|---|---|---|
+| **`C3DCore`** | The 3D engine. Pure data + maths, no UI: `SMLCamera`, `SMLModelData`, `SMLMeshData`, `SMLMeshGroup`, `SMLMeshItem`, `SMLBone`, `SMLSkin`, `SMLHalfEdge`, `SMLMaterial`, `SMLPart`, `SMLPartsList`, `C3DMaterial`, `C3DTextureInfo`, `C3DRoomParts`, and a `C3DIK*` inverse-kinematics family for posing figures | `crates/wobble3d` |
+| **`Planeswalker`** | App framework and document model: `PW3DLayerDoCommand`, `PW3DLayerUtility`, `PW3DRenderSettingDialogBox`, `PWRender`, `PWIO3DCore` (`PWIO3DMaterial`, `PWIO3DTextureInfo`) | `photocraft-doc` + `photocraft-engine` |
+| **`Odyssey`** | Serialisation and presets: `ODDPresetCamera`, `ODDPresetSceneCamera`, `ODICatalogAngle`, `ODDCatalogInfoAngle`, `ODDPresetPose`, `ODCCameraMouseControllerT<Move\|Rotate\|Target>` | `crates/format` + `crates/io` |
+| **`Urza`** | UI: `URUX3DLayerEditController`, `URUX3DLayerEditView`, `URUX3DLayerEditCommandExecutor`, `URUX3DCameraAnglePresetSelectView`, `URNewLayer3DDessindollDialogBox` | `apps/wobbleworks/src/space3d` |
+
+The split is the same one this design proposes, which is reassuring: a UI-free 3D engine, a
+document model that owns the layer, a serialisation layer for cameras and poses, and a separate UI.
+`PW3DLayerUtility` is the direct analogue of the proposed `crates/trace3d`.
+
+### 7.2 A 3D layer owns a camera — confirmed
+
+Two independent pieces of evidence:
+
+- `UR3DLayerMainCameraCollapsedErrorFormatter`, alongside `UR3DLayerSceneCollapsedErrorFormatter`
+  and `UR3DLayerSceneNodeLostErrorFormatter`.
+- `kSerializeLabelMainCameraID` and `kSerializeLabelCameraList`.
+
+So a CSP 3D layer persists a **camera list** plus a **main camera ID** pointing into it. This
+confirms section 4.1 (the layer stores its own camera) and **supersedes section 4.2's
+`CameraLink`**: rather than three link modes, CSP keeps one camera list on the scene and has each
+layer name a camera by id.
+
+That is the better model, and it resolves the third open question in section 6. Revised:
+
+```rust
+/// On the note: cameras live here, once each.
+pub struct CameraList { pub cameras: Vec<(u32, TraceCamera)> }
+
+/// On the layer: which camera this layer is traced through.
+pub struct Model3dLayer {
+    pub note: Arc<Vec<u8>>,
+    pub main_camera_id: u32,   // CSP's MainCameraID
+    pub follow_viewport: bool, // true = Live; false = pinned to main_camera_id
+    pub cache: Surface,
+    pub dirty: bool,
+}
+```
+
+Several pinned angles of one model then cost one camera each instead of a duplicated note, and
+"Shoot" becomes *append a camera to the list and point this layer at it*. `Shot(u32)` collapses
+into the same mechanism, since the note's `Sequence` is already a list of cameras.
+
+### 7.3 CSP's camera stores more than ours
+
+From the `ODDPresetCamera` serialise labels:
+
+`Position`, `Rotation`, `TargetDistance`, `Twist`, `UpGuide`, `IsOrthographic`, `RotationPivot`,
+`BillboardRotation`, and a full frustum: `FrustumLeft/Right/Top/Bottom/Near/Far/Origin`
+(plus `FrustumStock` on `ODDPresetSceneCamera`).
+
+Two real gaps against `wobbleworks_3d::camera::Camera`:
+
+1. **No twist (roll).** CSP persists `Twist` and an explicit `UpGuide`; our camera derives `up`
+   from yaw/pitch and cannot roll. A traced camera that cannot match a tilted reference angle is a
+   genuine limitation — adding a `twist: f32` applied to `right`/`up` in `Camera::view()` is small
+   and should go in at step 2, before `TraceCamera` is serialised, to avoid a format change later.
+2. **Frustum versus focal length.** CSP stores six frustum planes; we store `focal_mm` and derive
+   a symmetric frustum. Ours is a strict subset — it cannot express an *off-centre* frustum, which
+   is what a shifted/tilt-shift camera needs. Worth knowing before claiming camera parity; not
+   needed for step 1–4.
+
+`RotationPivot` corroborates `Camera::orbit_about(pivot, …)`, which already exists here.
+
+### 7.4 LT conversion: 2D and 3D lines are separate code paths
+
+The dialog classes are:
+
+- `URNewLTConvertLayerDialogBox` — the container
+- `URNewLTConvertLayer3DLineView` — **3D Lines**
+- `URNewLTConvertLayer2DLineView` — **Texture Lines** (2D/flat-image treatment)
+- `URNewLTConvertLayerToneView` — **Tone**
+- `URNewLTConvertLayerCategorySelector` / `…SelectorList` — the preset categories
+- `UREditLTConvertPresetController`, `LTConvertPreset` — user-editable presets
+
+This directly confirms the three presets, and more usefully it confirms that **CSP implements 2D
+line and 3D line extraction as two different views over two different code paths**, not one shared
+edge detector with a flag.
+
+That validates the split in section 4.5: *3D Lines* sourced from geometry and *Texture Lines*
+sourced from the raster are genuinely different operations, and implementing them separately is
+following CSP's own architecture rather than diverging from it.
+
+It also means the plan to emit *3D Lines* as **vector** paths is a clean improvement at the point
+where CSP is weakest, without touching the *Texture Lines* path at all.
+
+### 7.5 Unchanged by this evidence
+
+Sections 1–5 stand. The `picture_at` + `trace3d` + `Model3d` + Shoot sequence is unaffected except
+for the camera-id refinement in 7.2 and the `twist` field in 7.3, both of which land in steps 1–3.
+
+## 8. Implementation status (2026-10-13)
+
+Steps 1–4 and 9 are in the tree and green (8.3). `cargo test -p wobbleworks-3d --lib` passes
+**110 tests**, the four twist tests below among them.
+
+### 8.1 Done: camera twist (roll)
+
+The gap found in 7.3. Done first and deliberately, because `twist` has to exist *before* anything
+serialises a camera for a document — adding it later would be a file-format change.
+
+`crates/wobble3d/src/camera.rs`:
+
+- `Camera::twist: f32`, degrees, `#[serde(default)]`.
+- Applied in `Camera::view()` as a quaternion roll about the view axis, reusing
+  `math::Quat::from_axis_angle`:
+
+  ```rust
+  if self.twist.is_finite() && self.twist != 0.0 {
+      let roll = Quat::from_axis_angle(back, self.twist.to_radians());
+      right = roll.rotate(right).normalized();
+      up = roll.rotate(up).normalized();
+  }
+  ```
+
+  `back` is deliberately left alone, so the eye position, every depth and all six perfect views are
+  bit-identical to before at `twist == 0`.
+- `sanitize()` wraps it to −180..=180 and falls back to 0 when non-finite.
+
+`crates/wobble3d/src/sequence.rs`: `shot_camera` now interpolates `twist`. Since both `yaw` and
+`twist` are angles needing shortest-arc interpolation, the ad-hoc yaw wrap was factored into one
+`lerp_angle` closure used by both — a leg from +170° to −170° crosses ±180 the short way instead of
+swinging 340° the wrong way.
+
+Tests added:
+
+| Test | What it pins down |
+|---|---|
+| `twist_rolls_the_screen_axes_without_moving_the_eye` | 180° of roll reflects the picture exactly through the screen centre; eye, view axis and depth unchanged; `project`/`unproject_at` still invert each other at 0/30/−115/180° in both perspective and orthographic; `right`,`up`,`back` stay a right-handed orthonormal frame |
+| `twist_is_wrapped_and_survives_hostile_numbers` | 540° wraps to 180°; `NaN` falls back to upright |
+| `a_note_saved_before_twist_existed_loads_upright` | A camera JSON with no `twist` key still deserialises, at 0 — the back-compatibility guarantee, asserted rather than assumed |
+| `twist_flies_between_shots_the_short_way_too` | Shot interpolation crosses ±180 the short way |
+
+### 8.2 Done: `picture_at` (step 1)
+
+`apps/wobbleworks/src/space3d/export.rs`:
+
+```rust
+pub fn picture_at(ed: &mut Editor, camera: &Camera, frame: u32,
+                  width: u32, height: u32, transparent: bool) -> Result<Picture, String>
+```
+
+Renders at an exact pixel size instead of a 1–4× multiple of the 3D pane, which is what a document
+of arbitrary size needs. It keeps the existing save/restore contract (`ed.camera` is put back, and
+`ed.scene` is only read) and adds a `cam.sanitize()` so a hostile camera cannot reach the renderer.
+
+`picture` is now a thin wrapper that computes `width`/`height` from `scale` and delegates, so there
+is exactly one implementation of the render path. Its signature is unchanged and all five existing
+call sites (`png`, the boil/turntable/shots exporters) are untouched.
+
+### 8.3 Done: steps 2, 3, 4 and 9 (2026-10-13)
+
+Steps 1–4 (the whole user-visible request) and step 9 are in, on 7.2's camera-list model.
+In WobbleWorks: **View › Trace in 2D › Shoot / Shoot live / Shoot from a saved camera**, with
+Fit (Height / Width / All) and a **Roll** slider for twist.
+
+**`crates/trace3d`** (`wobbleworks-trace3d`, layer 2 in `xtask/src/layers.rs`): the render path
+moved here as planned (`picture_at`; `export::picture_at` delegates, so there is one copy), plus
+`fit_camera`, `layer_camera`, `to_surface` (length-checked, see section 6), `render_surface`
+(sides over `MAX_SIDE` render at 8192 and scale up), `snapshot`, `new_layer`, `refresh_layer` and
+`render_saved` (re-renders a layer from its own saved note in a scratch editor, with nothing live
+open). 7 tests, including `tracing_never_touches_the_note`.
+
+**`LayerContent::Model3d(Model3dLayer)`** in `photocraft-doc`:
+
+```rust
+pub struct Model3dLayer {
+    pub scene: Arc<Vec<u8>>,   // the .wob3d note, opaque to doc; shared by the note's layers
+    pub scene_id: u64,         // which note (Scene::uid), so its layers can be kept in step
+    pub main_camera_id: u64,   // CSP's MainCameraID: an id in the note's camera list
+    pub follow_view: bool,     // follow the note's view camera instead
+    pub fit: Model3dFit,       // Height / Width / Contain (4.3)
+    pub cache: Surface,        // the last render: what everything else composites
+    pub dirty: bool,
+}
+```
+
+- **The camera list is the note's camera shots.** As 7.2 predicted, `Shot(u32)` collapsed into
+  the same mechanism: "Shoot" appends the view to the shots as "Trace N" (one 3D undo step;
+  `shot.add` now takes a name) and points the layer at it. The shot strip is the camera list's
+  editor for free: re-aim or rename a camera there and its layers follow; delete it and its
+  layers keep their last picture, marked `dirty`.
+- **The note is stored once** (open question 3): every layer of a note shares one
+  `Arc<Vec<u8>>`, and `.pcraft` stores blobs by content hash, so one copy per file however many
+  layers (tested with incompressible bytes). `Scene::uid` (new, `#[serde(default)]`) ties
+  layers to their note; `Editor::note_uid` stamps it into the undo and redo snapshots too, so
+  undoing in 3D can't orphan layers.
+- **Compositing** reads `cache` through `Layer::surface()` (CPU and GPU paths alike);
+  proxies downsample it; it is not paintable (`surface_mut` is `None`). **Layer › Rasterize › 3D**
+  (`layer.rasterize.3d`, new menu item, live) turns it into pixels. Moving the layer moves its
+  render; the next re-render frames it by its camera again.
+- **Keeping layers current:** leaving the 3D mode re-renders the open note's layers: all of them
+  when the note changed, only `follow_view` ones when just the view moved; all of them get the
+  newest note bytes. Going to 3D with a 3D layer active opens its note on the layer's camera
+  (CSP's double-click), refused if the note open now is kept nowhere else.
+- **Files:** `.pcraft` has a `Model3d` manifest variant (scene as a blob). **PSD (step 9):** the
+  cache is written as the layer's pixels, and a private `wb3D` block holds the header (ids,
+  follow, fit) and the note; import turns it back into a 3D layer, and a damaged block leaves
+  plain pixels (`crates/io/src/model3d_map.rs`, `crates/io/tests/model3d.rs`).
+- **Agents:** `w3d.shoot {camera: "new" | "view" | id, fit}`, `w3d.retrace {layer?}`,
+  `w3d.edit {layer}`, `camera.roll {to | by}`, `camera.set {twist}`.
+
+Still open: the interactive capped-size render while a live layer follows the camera (4.4:
+today live layers update when you leave 3D), LT conversion (4.5; the RTTI's `C3DRidgeRender`
+and `C3DLTRenderOffscreen` suggest CSP's *3D Lines* render ridges from geometry, as planned),
+Paint on 3D (4.6), snapping and the derived perspective ruler (4.7), an off-centre frustum
+(6), a twist *tool* on the canvas like `C3DTwistTool` (the Roll slider and `camera.roll` do it
+by number), and undo across the two histories (6: they stay separate; a Shoot is one step in
+each).

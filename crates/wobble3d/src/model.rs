@@ -732,6 +732,10 @@ pub struct Scene {
     pub presets: Vec<Preset>,
     pub sequence: Sequence,
     pub next_id: u64,
+    /// Which note this is, stable across edits and saves (0 until something needs it, such as a
+    /// 2D trace layer made from the note): lets a picture's 3D layers find their note again.
+    #[serde(default)]
+    pub uid: u64,
 }
 
 impl Default for Scene {
@@ -751,11 +755,25 @@ impl Default for Scene {
             presets: Vec::new(),
             sequence: Sequence::default(),
             next_id: 2,
+            uid: 0,
         }
     }
 }
 
 impl Scene {
+    /// The note's [`Scene::uid`], giving it one from `seed` (any number that differs between
+    /// notes, such as a hash of the note) when it has none yet.
+    pub fn ensure_uid(&mut self, seed: u64) -> u64 {
+        if self.uid == 0 {
+            // splitmix64: spreads similar seeds apart; never 0.
+            let mut z = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            self.uid = (z ^ (z >> 31)).max(1);
+        }
+        self.uid
+    }
+
     pub fn alloc_id(&mut self) -> u64 {
         let id = self.next_id.max(1);
         self.next_id = id.saturating_add(1);

@@ -21,15 +21,20 @@ pub fn shot_camera(seq: &Sequence, t: f64, viewport: Viewport) -> Option<Camera>
     let e = f * f * (3.0 - 2.0 * f);
     let (a, b) = (seq.shots.get(i)?.camera, seq.shots.get(i + 1)?.camera);
     let lerp = |x: f32, y: f32| x + (y - x) * e;
-    let mut dyaw = b.yaw - a.yaw;
-    if dyaw > 180.0 {
-        dyaw -= 360.0;
-    } else if dyaw < -180.0 {
-        dyaw += 360.0;
-    }
+    // Angles take the short way round (a leg from +170° to -170° crosses ±180).
+    let lerp_angle = |x: f32, y: f32| {
+        let mut d = y - x;
+        if d > 180.0 {
+            d -= 360.0;
+        } else if d < -180.0 {
+            d += 360.0;
+        }
+        x + d * e
+    };
     Some(Camera {
         target: a.target.lerp(b.target, e),
-        yaw: a.yaw + dyaw * e,
+        yaw: lerp_angle(a.yaw, b.yaw),
+        twist: crate::camera::wrap_degrees(lerp_angle(a.twist, b.twist)),
         pitch: lerp(a.pitch, b.pitch),
         distance: lerp(a.distance, b.distance),
         focal_mm: lerp(a.focal_mm, b.focal_mm),
@@ -71,5 +76,17 @@ mod tests {
         assert!(shot_camera(&s, f64::NAN, vp).is_none());
         assert_eq!(legs(&s), 2.0);
         assert_eq!(legs(&Sequence::default()), 0.0);
+    }
+
+    #[test]
+    fn twist_flies_between_shots_the_short_way_too() {
+        let vp = Viewport { width: 100.0, height: 50.0 };
+        let mut s = seq(&[0.0, 0.0]);
+        s.shots[0].camera.twist = 170.0;
+        s.shots[1].camera.twist = -170.0;
+        let mid = shot_camera(&s, 0.5, vp).expect("mid");
+        assert!((mid.twist.abs() - 180.0).abs() < 1e-3, "across ±180: {}", mid.twist);
+        let quarter = shot_camera(&s, 0.25, vp).expect("quarter");
+        assert!(quarter.twist > 170.0 || quarter.twist < -179.0, "{}", quarter.twist);
     }
 }

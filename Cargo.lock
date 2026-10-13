@@ -6562,6 +6562,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "wobbleworks-3d",
+ "wobbleworks-trace3d",
 ]
 
 [[package]]
@@ -6573,6 +6574,16 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "wobbleworks-trace3d"
+version = "0.1.0"
+dependencies = [
+ "photocraft-doc",
+ "photocraft-raster",
+ "serde_json",
+ "wobbleworks-3d",
 ]
 
 [[package]]

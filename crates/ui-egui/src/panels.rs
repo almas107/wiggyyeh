@@ -1499,7 +1499,7 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         LayerContent::Adjustment(_) | LayerContent::Fill(_) => "adjustment",
                         LayerContent::Text(_) => "type",
                         LayerContent::Shape(_) => "shape",
-                        LayerContent::Smart(_) => "smart",
+                        LayerContent::Smart(_) | LayerContent::Model3d(_) => "smart",
                         LayerContent::Group(_) => "",
                     };
                     if !filter.iter().any(|k| k == kind) {

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use photocraft_color::{PixelFormat, SampleType};
 use photocraft_doc::{
     AlphaChannel, CompAppearance, CompLayerState, DocId, Document, Effects, FillCache, Group, Layer, LayerComp, LayerContent, LayerId, LayerMask, Metadata,
-    NamedPath, Pattern, ShapeLayer, SmartObject, SmartSource, TextLayer,
+    Model3dLayer, NamedPath, Pattern, ShapeLayer, SmartObject, SmartSource, TextLayer,
 };
 use photocraft_geom::{TILE_SIZE, TileCoord};
 use photocraft_raster::{Surface, Tile, decode_pixel, encode_pixel};
@@ -165,6 +165,18 @@ fn layer_m(l: &Layer, sink: &mut dyn Sink) -> LayerM {
             stack_mode: s.stack_mode,
             perspective: s.perspective,
         },
+        LayerContent::Model3d(m) => {
+            let Model3dLayer { scene, scene_id, main_camera_id, follow_view, fit, cache, dirty } = m;
+            ContentM::Model3d {
+                scene: sink.blob(scene),
+                scene_id: *scene_id,
+                main_camera_id: *main_camera_id,
+                follow_view: *follow_view,
+                fit: *fit,
+                cache: surface_m(cache, sink),
+                dirty: *dirty,
+            }
+        }
     };
     LayerM {
         id: l.id.0,
@@ -448,6 +460,15 @@ impl Loader<'_> {
                     perspective: perspective.filter(|p| p.iter().all(|v| v.is_finite())),
                 })
             }
+            ContentM::Model3d { scene, scene_id, main_camera_id, follow_view, fit, cache, dirty } => LayerContent::Model3d(Model3dLayer {
+                scene: self.fetch.blob(scene)?,
+                scene_id: *scene_id,
+                main_camera_id: *main_camera_id,
+                follow_view: *follow_view,
+                fit: *fit,
+                cache: self.surface(cache)?,
+                dirty: *dirty,
+            }),
         };
         let mask = match &m.mask {
             Some(mm) => {

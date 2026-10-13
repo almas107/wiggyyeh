@@ -472,6 +472,10 @@ impl Ex {
                     self.smart_blocks(l, sm, parsed, &mut raw);
                 }
             }
+            LayerContent::Model3d(m) => {
+                raw.retain(|(k, _)| *k != crate::model3d_map::KEY);
+                raw.push((crate::model3d_map::KEY, crate::model3d_map::write(m)));
+            }
             LayerContent::Raster(_) | LayerContent::Group(_) => {}
         }
         // Effects reference point: written from the field (in place, keeping block order).
@@ -797,6 +801,11 @@ impl Ex {
                 }
                 LayerContent::Smart(sm) => {
                     let r = self.record(l, extra, sm.cache.as_ref());
+                    self.records.push(r);
+                }
+                // Photoshop has no 3D layers: their last render, as pixels.
+                LayerContent::Model3d(m) => {
+                    let r = self.record(l, extra, Some(&m.cache));
                     self.records.push(r);
                 }
             }

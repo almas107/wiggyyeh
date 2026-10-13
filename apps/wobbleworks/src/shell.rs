@@ -337,7 +337,12 @@ impl WobbleApp {
                 self.control_shoot(&req.params)
             } else if req.method == "w3d.retrace" {
                 let only = req.params.get("layer").and_then(Value::as_u64).map(photocraft_doc::LayerId);
-                crate::space3d::trace::refresh(&mut self.app.session, &mut self.space.ed, only).map(|n| json!({"updated": n}))
+                self.retrace(only).map(|n| json!({"updated": n}))
+            } else if req.method == "w3d.edit" {
+                match req.params.get("layer").and_then(Value::as_u64) {
+                    Some(id) => self.edit_3d_layer(photocraft_doc::LayerId(id)),
+                    None => Err("missing `layer` (a 3D layer's id)".to_string()),
+                }
             } else if req.method == "w3d.show" {
                 match req.params.get("on").and_then(Value::as_bool) {
                     Some(on) => {
@@ -363,6 +368,17 @@ impl WobbleApp {
             // The 3D brush starts in the colour being painted with.
             let c = self.foreground();
             self.space.set_colour(c);
+            // Going to 3D on a 3D layer opens its note (Clip Studio: double-click a 3D layer).
+            let active = self
+                .app
+                .session
+                .active()
+                .and_then(|st| st.active_layer.and_then(|id| st.doc.layer(id)).filter(|l| crate::space3d::trace::model3d(l).is_some()).map(|l| l.id));
+            if let Some(id) = active
+                && let Err(e) = crate::space3d::trace::edit_layer(&mut self.app.session, &mut self.space.ed, id)
+            {
+                self.space.ed.status = e;
+            }
             self.trace_seen = (self.space.ed.scene_revision, self.space.ed.camera);
         }
         if !on && self.three_d {
@@ -371,45 +387,93 @@ impl WobbleApp {
         self.three_d = on;
     }
 
-    /// Shoot the 2D picture's 3D trace layers again if what they show changed in 3D: the note
-    /// (all of them) or the camera (those that follow the view or a shot).
+    /// Bring the picture's 3D layers of the open note up to date if what they show changed in
+    /// 3D: the note (all of them render again) or only the view camera (those that follow it).
     fn sync_traces(&mut self) {
         use crate::space3d::trace;
         let (rev, cam) = (self.space.ed.scene_revision, self.space.ed.camera);
         let (seen_rev, seen_cam) = self.trace_seen;
         self.trace_seen = (rev, cam);
-        let session = &self.app.session;
-        let stale = (rev != seen_rev && trace::has_traces(session)) || (cam != seen_cam && trace::has_following(session));
-        if stale && let Err(e) = trace::refresh(&mut self.app.session, &mut self.space.ed, None) {
+        let (note, view) = (rev != seen_rev, cam != seen_cam);
+        if !(note || view) || !trace::has_layers_of(&self.app.session, &self.space.ed, false) {
+            return;
+        }
+        if let Err(e) = trace::sync_with(&mut self.app.session, &mut self.space.ed, |_, m| note || m.follow_view) {
             self.space.ed.status = e;
         }
     }
 
-    /// Shoot the 3D view into a 2D trace layer and go to 2D to trace it.
-    pub fn shoot_3d(&mut self, link: crate::space3d::trace::CameraLink, fit: crate::space3d::trace::Fit) -> Result<Value, String> {
-        // Bring the layers already there up to date first, so leaving 3D shoots nothing twice.
+    /// Render the picture's 3D layers again (or one): those of the open note from it, the others
+    /// from their own saved notes.
+    pub fn retrace(&mut self, only: Option<photocraft_doc::LayerId>) -> Result<usize, String> {
+        use crate::space3d::trace;
+        let uid = self.space.ed.scene.uid;
+        let st = self.app.session.active().ok_or("there is no picture")?;
+        let layers: Vec<(photocraft_doc::LayerId, u64)> = st
+            .doc
+            .walk()
+            .into_iter()
+            .filter(|(_, _, l)| only.is_none_or(|id| id == l.id))
+            .filter_map(|(_, _, l)| trace::model3d(l).map(|m| (l.id, m.scene_id)))
+            .collect();
+        if layers.is_empty() {
+            return match only {
+                Some(_) => Err("that layer isn't a 3D layer".into()),
+                None => Ok(0),
+            };
+        }
+        let open: Vec<photocraft_doc::LayerId> = layers.iter().filter(|(_, s)| uid != 0 && *s == uid).map(|(id, _)| *id).collect();
+        let mut n = trace::sync_with(&mut self.app.session, &mut self.space.ed, |id, _| open.contains(&id))?;
+        for (id, s) in layers {
+            if uid == 0 || s != uid {
+                n += trace::rerender_saved(&mut self.app.session, Some(id))?;
+            }
+        }
+        Ok(n)
+    }
+
+    /// Open a 3D layer's note in the 3D mode, on the layer's camera.
+    pub fn edit_3d_layer(&mut self, id: photocraft_doc::LayerId) -> Result<Value, String> {
         if self.three_d {
             self.sync_traces();
         }
-        let r = crate::space3d::trace::shoot(&mut self.app.session, &mut self.space.ed, link, fit)?;
+        let r = crate::space3d::trace::edit_layer(&mut self.app.session, &mut self.space.ed, id)?;
+        if !self.three_d {
+            // Not through set_three_d: the layer's note is open already.
+            let c = self.foreground();
+            self.space.set_colour(c);
+            self.three_d = true;
+        }
+        self.trace_seen = (self.space.ed.scene_revision, self.space.ed.camera);
+        Ok(r)
+    }
+
+    /// Shoot the 3D view into a 3D layer of the 2D picture and go to 2D to trace it.
+    pub fn shoot_3d(&mut self, what: crate::space3d::trace::Shoot, fit: photocraft_doc::Model3dFit) -> Result<Value, String> {
+        // Bring the layers already there up to date first, so leaving 3D renders nothing twice.
+        if self.three_d {
+            self.sync_traces();
+        }
+        let r = crate::space3d::trace::shoot(&mut self.app.session, &mut self.space.ed, what, fit)?;
+        self.trace_seen = (self.space.ed.scene_revision, self.space.ed.camera);
         self.set_three_d(false);
         Ok(r)
     }
 
-    /// `w3d.shoot {link?: pinned|live|shot, shot?, fit?: height|width|contain}`.
+    /// `w3d.shoot {camera?: "new" | "view" | id, fit?: height|width|contain}`.
     fn control_shoot(&mut self, p: &Value) -> Result<Value, String> {
-        use crate::space3d::trace::{CameraLink, Fit};
-        let link = match p.get("link").and_then(Value::as_str).unwrap_or("pinned") {
-            "pinned" => CameraLink::Pinned,
-            "live" => CameraLink::Live,
-            "shot" => CameraLink::Shot(p.get("shot").and_then(Value::as_u64).ok_or("`shot` (a shot id) is needed with link: shot")?),
-            other => return Err(format!("unknown link {other:?} (pinned, live or shot)")),
+        use crate::space3d::trace::{self, Shoot};
+        let what = match p.get("camera") {
+            None => Shoot::Pinned,
+            Some(Value::String(s)) if s == "new" => Shoot::Pinned,
+            Some(Value::String(s)) if s == "view" => Shoot::Live,
+            Some(v) => Shoot::Camera(v.as_u64().ok_or("`camera` is \"new\", \"view\" or a camera id from the note's list")?),
         };
         let fit = match p.get("fit").and_then(Value::as_str) {
             None => self.space.trace_fit,
-            Some(f) => Fit::parse(f).ok_or_else(|| format!("unknown fit {f:?} (height, width or contain)"))?,
+            Some(f) => trace::parse_fit(f).ok_or_else(|| format!("unknown fit {f:?} (height, width or contain)"))?,
         };
-        self.shoot_3d(link, fit)
+        self.shoot_3d(what, fit)
     }
 
     /// Where the drawing is on screen (the 2D canvas or the 3D view).

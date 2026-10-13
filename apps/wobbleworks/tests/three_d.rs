@@ -371,29 +371,44 @@ fn right_drag_turns_about_the_centre_and_settles_on_quarter_turns() {
     assert!((h.state().space.ed.camera.yaw + 28.0).abs() < 0.01, "{}", h.state().space.ed.camera.yaw);
 }
 
-/// Clip Studio's 3D layer as a reference: Shoot renders the 3D view into the 2D picture as a
-/// dimmed trace layer with a layer to trace on, switches to 2D and leaves the note alone; a
-/// live trace layer is shot again when you come back from orbiting.
+/// Clip Studio's 3D layer as a reference: Shoot saves the view in the note's camera list and
+/// adds a 3D layer naming it, with a layer to trace on, then switches to 2D; a live 3D layer
+/// follows the view when you come back from orbiting, and going to 3D on a 3D layer opens it.
 #[test]
-fn shoot_traces_the_3d_view_in_2d_and_live_layers_follow() {
-    use wobbleworks::space3d::trace::{self, CameraLink, Fit};
+fn shoot_makes_3d_layers_and_live_ones_follow_the_view() {
+    use photocraft_doc::{LayerContent, Model3dFit};
+    use wobbleworks::space3d::trace::{self, Shoot};
     let (mut w, _) = app();
     w.space.ed.stable = 0.0;
     let line: Vec<[f32; 2]> = (0..40).map(|i| [500.0 + i as f32 * 8.0, 380.0]).collect();
     w.space.ed.run("stroke.draw", &json!({"points": line})).unwrap();
-    let note = w.space.ed.scene.clone();
-    let r = w.shoot_3d(CameraLink::Live, Fit::Height).expect("shoot");
+    let strokes = w.space.ed.scene.strokes.clone();
+    let pinned = w.shoot_3d(Shoot::Pinned, Model3dFit::Height).expect("shoot");
     assert!(!w.three_d, "Shoot goes to 2D to trace");
-    assert!(w.space.ed.scene == note, "the note is untouched");
-    let id = photocraft_doc::LayerId(r["layer"].as_u64().unwrap());
-    let yaw = |w: &WobbleApp| w.app.session.active().and_then(|st| st.doc.layer(id)).and_then(trace::layer_camera).unwrap().yaw;
-    let shot_yaw = yaw(&w);
-    // Back in 3D, turn, and leave: the live layer follows.
+    assert!(w.space.ed.scene.strokes == strokes, "the drawing is untouched");
+    let live = w.shoot_3d(Shoot::Live, Model3dFit::Height).expect("shoot live");
+    let cache = |w: &WobbleApp, r: &serde_json::Value| {
+        let id = photocraft_doc::LayerId(r["layer"].as_u64().unwrap());
+        let st = w.app.session.active().unwrap();
+        match &st.doc.layer(id).unwrap().content {
+            LayerContent::Model3d(m) => m.cache.clone(),
+            _ => panic!("a 3D layer"),
+        }
+    };
+    let (p0, l0) = (cache(&w, &pinned), cache(&w, &live));
+    // Back in 3D (the active layer is the empty trace layer), turn, and leave.
     w.set_three_d(true);
     w.space.ed.run("camera.orbit", &json!({"dx": 120.0})).unwrap();
     w.set_three_d(false);
-    assert_ne!(yaw(&w), shot_yaw);
-    assert_eq!(yaw(&w), w.space.ed.camera.yaw);
+    assert!(cache(&w, &pinned) == p0, "the pinned layer holds its angle");
+    assert!(cache(&w, &live) != l0, "the live layer follows the view");
+    // Going to 3D with the pinned 3D layer active puts the view on its camera.
+    let id = photocraft_doc::LayerId(pinned["layer"].as_u64().unwrap());
+    w.app.session.select_layer(id).unwrap();
+    w.set_three_d(true);
+    let cam = w.space.ed.scene.sequence.shots.iter().find(|s| Some(s.id) == pinned["camera"].as_u64()).unwrap().camera;
+    assert_eq!(w.space.ed.camera.yaw, cam.yaw);
+    assert!(trace::has_layers_of(&w.app.session, &w.space.ed, true));
 }
 
 /// Look at the centre ruler mid-turn: `WOBBLE3D_SNAPSHOT=orbit.png cargo test -p wobbleworks
@@ -440,5 +455,56 @@ fn orbit_ruler_snapshot() {
         h.step();
     }
     h.run_steps(4);
+    h.render().unwrap().save(&out).unwrap();
+}
+
+/// Look at a 3D layer in the 2D editor after Shoot: `WOBBLE3D_SNAPSHOT=shoot.png cargo test -p
+/// wobbleworks --test three_d shoot_snapshot -- --ignored`.
+#[test]
+#[ignore = "needs a GPU or software renderer; run on demand"]
+fn shoot_snapshot() {
+    use photocraft_doc::Model3dFit;
+    use wobbleworks::space3d::trace::Shoot;
+    let out = std::env::var("WOBBLE3D_SNAPSHOT").unwrap_or_else(|_| "wobble3d-shoot.png".into());
+    let mut h = Harness::builder().with_size(egui::vec2(1440.0, 900.0)).with_pixels_per_point(1.0).with_max_steps(32).wgpu().build_eframe(|cc| {
+        photocraft_ui_egui::PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        let mut a = app().0;
+        if let Some(rs) = cc.wgpu_render_state.clone() {
+            a.space.set_gpu(&rs);
+            a.app.set_wgpu(rs);
+        }
+        a
+    });
+    h.run_steps(4);
+    {
+        let w = h.state_mut();
+        let ed = &mut w.space.ed;
+        ed.stable = 0.0;
+        ed.run("brush.set", &json!({"size": 30})).unwrap();
+        ed.run("camera.view", &json!({"view": "front"})).unwrap();
+        let vp = ed.camera.viewport;
+        let (cx, cy) = (vp.width / 2.0, vp.height / 2.0);
+        let line = |a: [f32; 2], b: [f32; 2]| {
+            json!(
+                (0..=30)
+                    .map(|i| {
+                        let t = i as f32 / 30.0;
+                        [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+                    })
+                    .collect::<Vec<_>>()
+            )
+        };
+        let (l, r, t, b) = (cx - 100.0, cx + 100.0, cy - 100.0, cy + 100.0);
+        for (p, q) in [([l, t], [r, t]), ([r, t], [r, b]), ([r, b], [l, b]), ([l, b], [l, t])] {
+            ed.run("stroke.draw", &json!({"points": line(p, q)})).unwrap();
+        }
+        ed.run("camera.view", &json!({"view": "right"})).unwrap();
+        for (p, q) in [([cx, t], [cx + 200.0, t]), ([cx, b], [cx + 200.0, b]), ([cx + 200.0, t], [cx + 200.0, b])] {
+            ed.run("stroke.draw", &json!({"points": line(p, q)})).unwrap();
+        }
+        ed.run("camera.set", &json!({"yaw": 35.0, "pitch": 22.0, "orthographic": false, "twist": -8.0})).unwrap();
+        w.shoot_3d(Shoot::Pinned, Model3dFit::Contain).unwrap();
+    }
+    h.run_steps(8);
     h.render().unwrap().save(&out).unwrap();
 }

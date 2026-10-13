@@ -33,6 +33,7 @@ pub mod effects_map;
 mod flat;
 mod gradient_bake;
 pub mod linked;
+pub mod model3d_map;
 mod multichannel_map;
 pub mod pattern_map;
 mod pixels;

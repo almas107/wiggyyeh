@@ -531,6 +531,7 @@ fn kind_of(s: &Session, id: LayerId) -> Option<&'static str> {
         LayerContent::Shape(_) => "shape",
         LayerContent::Fill(_) => "fill",
         LayerContent::Smart(_) => "smart",
+        LayerContent::Model3d(_) => "3d",
         _ => return None,
     })
 }
@@ -546,7 +547,11 @@ fn rasterize_one(s: &mut Session, id: LayerId, only: Option<&str>, key: &str) ->
             s.execute("layer.rasterize.shape", json!({"layer": id.0, "coalesce": key}))?;
         }
         _ => {
-            let label = if kind == "fill" { "Rasterize Fill Content" } else { "Rasterize Smart Object" };
+            let label = match kind {
+                "fill" => "Rasterize Fill Content",
+                "3d" => "Rasterize 3D",
+                _ => "Rasterize Smart Object",
+            };
             s.coalesce_request = Some(key.to_string());
             let r = s.edit(label, |doc, _| {
                 let snap = doc.layer(id).cloned().ok_or(EngineError::NoLayer(id))?;
@@ -698,6 +703,7 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         spec!("layer.rasterize.layer", "Layer", &["Layer", "Rasterize"], None, r##"{"layer":id?}"##, has_layer, |s, p| rasterize(s, p, None)),
         spec!("layer.rasterize.allLayers", "All Layers", &["Layer", "Rasterize"], None, "{}", has_doc, |s, _| rasterize_all(s)),
+        spec!("layer.rasterize.3d", "3D", &["Layer", "Rasterize"], None, r##"{"layer":id?}"##, has_layer, |s, p| rasterize(s, p, Some("3d"))),
         spec!("layer.rasterize.type", "Type", &["Layer", "Rasterize"], None, r##"{"layer":id?}"##, has_layer, |s, p| rasterize(s, p, Some("type"))),
         spec!("layer.rasterize.fillContent", "Fill Content", &["Layer", "Rasterize"], None, r##"{"layer":id?}"##, has_layer, |s, p| rasterize(
             s,
@@ -1039,5 +1045,35 @@ mod tests {
         assert_eq!(s.execute("layer.rasterize.allLayers", json!({})).unwrap()["rasterized"], 1);
         assert_eq!(s.active().unwrap().history.past_len(), steps + 1);
         assert!(doc(&s).walk().iter().all(|(_, _, l)| !matches!(l.content, LayerContent::Fill(_))));
+    }
+
+    #[test]
+    fn rasterize_3d_keeps_the_render_as_pixels() {
+        let mut s = session(8);
+        let fmt = doc(&s).pixel_format();
+        let mut cache = photocraft_raster::Surface::new(fmt);
+        cache.fill_rect(Rect::new(2, 2, 6, 6), &[0.0, 0.0, 1.0, 1.0]);
+        let m = photocraft_doc::Model3dLayer {
+            scene: std::sync::Arc::new(b"note".to_vec()),
+            scene_id: 1,
+            main_camera_id: 2,
+            follow_view: false,
+            fit: photocraft_doc::Model3dFit::Height,
+            cache,
+            dirty: false,
+        };
+        s.edit("add 3D", |d, active| {
+            *active = Some(d.insert_above(*active, Layer::new("3D", LayerContent::Model3d(m))));
+            Ok(())
+        })
+        .unwrap();
+        // A 3D layer composites its render, and isn't paintable as pixels.
+        assert_eq!(pixel(&s, 3, 3), vec![0.0, 0.0, 1.0, 1.0]);
+        assert!(s.execute("layer.rasterize.smartObject", json!({})).is_err());
+        s.execute("layer.rasterize.3d", json!({})).unwrap();
+        assert!(matches!(active(&s).content, LayerContent::Raster(_)));
+        assert_eq!(pixel(&s, 3, 3), vec![0.0, 0.0, 1.0, 1.0]);
+        assert!(s.execute("layer.rasterize.3d", json!({})).is_err(), "nothing left to rasterize");
+        assert!(s.execute("layer.rasterize.3d", json!({"layer": 999_999})).is_err());
     }
 }

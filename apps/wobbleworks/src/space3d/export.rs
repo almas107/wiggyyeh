@@ -2,11 +2,9 @@
 //! looping GIF, and a 360° turntable GIF around the orbit point (Feather's Quick Export). Exports
 //! hide guides, the grid and the orbit point, as Feather's do.
 
-use std::collections::HashMap;
-
 use wobbleworks_3d::camera::Camera;
 use wobbleworks_3d::editor::Editor;
-use wobbleworks_3d::raster::{MAX_SIDE, Picture, Textures, rasterize};
+use wobbleworks_3d::raster::{MAX_SIDE, Picture};
 
 /// Most frames in an exported GIF.
 pub const GIF_FRAMES_MAX: usize = 120;
@@ -22,27 +20,10 @@ pub fn picture(ed: &mut Editor, camera: &Camera, frame: u32, scale: u32, transpa
     picture_at(ed, camera, frame, w as u32, h as u32, transparent)
 }
 
-/// The scene through `camera` at exactly `width` × `height` pixels (a document's size, say).
-/// The view's vertical field of view is kept, so the width decides how much is seen sideways
-/// (fit the lens first for anything else, see `trace::Fit`). `ed.scene` is only read and the
-/// live camera is put back: the 3D view is left exactly as it was.
+/// The scene through `camera` at exactly `width` × `height` pixels (see
+/// [`wobbleworks_trace3d::picture_at`]: one render path for exports and 3D layers).
 pub fn picture_at(ed: &mut Editor, camera: &Camera, frame: u32, width: u32, height: u32, transparent: bool) -> Result<Picture, String> {
-    if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
-        return Err(format!("{width} × {height} is too big to render (at most {MAX_SIDE} a side)"));
-    }
-    let (w, h) = (width as f32, height as f32);
-    let mut cam = *camera;
-    cam.viewport = wobbleworks_3d::camera::Viewport { width: w, height: h };
-    let saved = ed.camera;
-    ed.camera = cam;
-    let f = ed.render(frame, false);
-    ed.camera = saved;
-    let images: HashMap<u64, (u32, u32, &[u8])> =
-        ed.scene.images.iter().chain(ed.scene.environment.background_image.iter()).map(|i| (i.id, (i.width, i.height, i.rgba.as_slice()))).collect();
-    let tex = Textures { atlas: &ed.atlas, images };
-    let env = &ed.scene.environment;
-    let effects = env.render_mode.then_some(&env.effects);
-    rasterize(&f, &tex, w as u32, h as u32, (!transparent).then_some(env.background), if transparent { None } else { effects })
+    wobbleworks_trace3d::picture_at(ed, camera, frame, width, height, transparent)
 }
 
 pub fn png(ed: &mut Editor, frame: u32, scale: u32, transparent: bool) -> Result<Vec<u8>, String> {

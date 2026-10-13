@@ -137,9 +137,9 @@ pub struct Space3d {
     pub strip: shotstrip::ShotStrip,
     /// "Shoot" was asked for: the shell renders the view into a 2D trace layer (it owns the
     /// PhotoCraft session) and switches to 2D.
-    pub shoot: Option<trace::CameraLink>,
+    pub shoot: Option<trace::Shoot>,
     /// How shots fit the picture's shape.
-    pub trace_fit: trace::Fit,
+    pub trace_fit: photocraft_doc::Model3dFit,
     /// Where the timeline was last dragged to (shot-to-shot legs).
     pub scrub: f64,
     /// Shots: the camera's position, turn and lens over the view.
@@ -279,7 +279,7 @@ impl Space3d {
             show_thirds: false,
             strip: shotstrip::ShotStrip::default(),
             shoot: None,
-            trace_fit: trace::Fit::default(),
+            trace_fit: photocraft_doc::Model3dFit::default(),
             scrub: 0.0,
             show_camera_info: false,
             hover_group: None,

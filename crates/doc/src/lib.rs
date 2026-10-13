@@ -427,6 +427,42 @@ pub struct FillCache {
     pub surface: Surface,
 }
 
+/// How a 3D layer's camera is fitted to the document's shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Model3dFit {
+    /// Keep the camera's vertical field of view; the document's width decides how much is seen
+    /// sideways.
+    #[default]
+    Height,
+    /// Keep the horizontal field of view the scene was framed with.
+    Width,
+    /// Keep everything the scene was framed to show.
+    Contain,
+}
+
+/// A 3D layer (Clip Studio Paint's 3D layer as a tracing reference): a live 3D scene seen
+/// through one of its cameras, rasterised at the document's size. `doc` never parses the scene:
+/// the app that made it (WobbleWorks) renders it and keeps [`Self::cache`] up to date; everything
+/// else in PhotoCraft composites the cache like pixels.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Model3dLayer {
+    /// The scene, serialised by its app (WobbleWorks: a `.wob3d` note). Layers off one scene
+    /// share the bytes.
+    pub scene: Arc<Vec<u8>>,
+    /// Which scene this is (stable across edits), so its app can keep every layer of it in step.
+    pub scene_id: u64,
+    /// The camera the layer is traced through: an id in the scene's camera list (Clip Studio's
+    /// `MainCameraID`; WobbleWorks' camera shots). Ignored while [`Self::follow_view`].
+    pub main_camera_id: u64,
+    /// Follow the scene's view camera instead of a listed one.
+    pub follow_view: bool,
+    pub fit: Model3dFit,
+    /// The last render, in document coordinates: what compositing, thumbnails and exports use.
+    pub cache: Surface,
+    /// `scene` or the camera changed since `cache` was rendered.
+    pub dirty: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum LayerContent {
     Raster(Surface),
@@ -436,6 +472,7 @@ pub enum LayerContent {
     Text(TextLayer),
     Shape(ShapeLayer),
     Smart(SmartObject),
+    Model3d(Model3dLayer),
 }
 
 impl LayerContent {
@@ -448,6 +485,7 @@ impl LayerContent {
             LayerContent::Text(_) => "Type",
             LayerContent::Shape(_) => "Shape",
             LayerContent::Smart(_) => "Smart Object",
+            LayerContent::Model3d(_) => "3D",
         }
     }
 }
@@ -553,6 +591,7 @@ impl Layer {
             LayerContent::Text(t) => t.cache.as_ref(),
             LayerContent::Shape(s) => s.cache.as_ref(),
             LayerContent::Smart(s) => s.cache.as_ref(),
+            LayerContent::Model3d(m) => Some(&m.cache),
             _ => None,
         }
     }

@@ -245,6 +245,11 @@ The screenshot needs a GPU or `mesa-vulkan-drivers`; Linux builds need `libasoun
   layer as a reference rig): View › Trace in 2D › Shoot (pinned / live / from a shot), see
   [wobbleworks-3d-trace.md](wobbleworks-3d-trace.md); `w3d.shoot`, `w3d.retrace`.
   106 core tests, 53 app lib tests (+1 ignored), 10 3D UI tests (+2 ignored snapshots).
+- **2026-10-13, 3D layers (Clip Studio's model):** `LayerContent::Model3d` in PhotoCraft's
+  document (note bytes shared, a camera id from the note's camera list, or follow the view),
+  `crates/trace3d`, camera twist (roll), PSD `wb3D` block and `.pcraft` round trips, Layer ›
+  Rasterize › 3D, `w3d.edit`; see [wobbleworks-3d-trace.md](wobbleworks-3d-trace.md) §8.3.
+  110 core tests, 7 trace3d tests, 51 app lib tests, 10 3D UI tests (+3 ignored snapshots).
 - **Still open:** see "Gaps for any project" below; the egui-mesh fallback (no GPU) draws
   paint in drawing order without depth; more than four clipping bases in one view leave the
   rest unclipped; Feather's start line is green, ours orange; side-by-side feel tuning with

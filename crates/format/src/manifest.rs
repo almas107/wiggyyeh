@@ -296,6 +296,20 @@ pub enum ContentM {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         perspective: Option<[f64; 9]>,
     },
+    /// A 3D layer: the scene as an opaque blob (shared by every layer of that scene, so stored
+    /// once), the camera it is seen through, and its last render.
+    Model3d {
+        scene: Hash,
+        scene_id: u64,
+        main_camera_id: u64,
+        #[serde(default)]
+        follow_view: bool,
+        #[serde(default)]
+        fit: photocraft_doc::Model3dFit,
+        cache: SurfaceM,
+        #[serde(default)]
+        dirty: bool,
+    },
 }
 
 fn yes() -> bool {

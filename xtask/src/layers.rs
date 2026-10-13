@@ -49,6 +49,8 @@ pub const TABLE: &[(&str, Class)] = &[
     ("wobbleworks-3d", Class::Standalone),
     ("doc", Class::Layer(1)),
     ("ops", Class::Layer(2)),
+    // WobbleWorks' bridge between its 3D notes and documents (3D layers traced in 2D).
+    ("wobbleworks-trace3d", Class::Layer(2)),
     ("paint", Class::Layer(2)),
     ("algo", Class::Layer(2)),
     ("text", Class::Layer(2)),

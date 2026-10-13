@@ -764,6 +764,19 @@ impl Editor {
         None
     }
 
+    /// The note's [`Scene::uid`], giving it one (see [`Scene::ensure_uid`]) when it has none.
+    /// The id is stamped into the undo and redo snapshots too, so undoing past this moment
+    /// can't take it away from layers that already point at the note.
+    pub fn note_uid(&mut self, seed: u64) -> u64 {
+        let uid = self.scene.ensure_uid(seed);
+        for (_, sc) in self.undo.iter_mut().chain(self.redo.iter_mut()) {
+            if sc.uid == 0 {
+                sc.uid = uid;
+            }
+        }
+        uid
+    }
+
     /// The plane a stroke drawn in the air lands on: (a point on it, its normal). Strokes go on
     /// the plane through the orbit point (the centre of the view) facing the camera, as in
     /// Metaspace; a stroke being drawn from a curve uses the plane through where it started.
@@ -2309,6 +2322,17 @@ impl Editor {
                 self.touch();
                 ok
             }
+            "camera.roll" => {
+                // Clip Studio's twist tool: tilt the picture about the view axis.
+                match (f(p, "to"), f(p, "by")) {
+                    (Some(to), _) => self.camera.twist = to,
+                    (None, Some(by)) => self.camera.twist += by,
+                    (None, None) => return Err("give `to` or `by` (degrees)".into()),
+                }
+                self.camera.sanitize();
+                self.touch();
+                Ok(json!(self.camera.twist))
+            }
             "camera.settle" => {
                 let tol = f(p, "tolerance").unwrap_or(self.orbit_snap);
                 let moved = self.camera.settle(tol);
@@ -2422,6 +2446,9 @@ impl Editor {
                 }
                 if let Some(v) = b(p, "orthographic") {
                     self.camera.orthographic = v;
+                }
+                if let Some(v) = f(p, "twist") {
+                    self.camera.twist = v;
                 }
                 if let Some(v) = vec3(p, "target") {
                     self.camera.target = v;
@@ -3468,7 +3495,8 @@ impl Editor {
                     Some(a) => self.scene.sequence.shots.iter().position(|x| x.id == a).map_or(self.scene.sequence.shots.len(), |i| i + 1),
                     None => self.scene.sequence.shots.len(),
                 };
-                self.scene.sequence.shots.insert(at, Shot { id: sid, name: format!("Shot {n}"), camera: self.camera });
+                let name = s(p, "name").map(str::trim).filter(|t| !t.is_empty()).map_or_else(|| format!("Shot {n}"), |t| t.chars().take(60).collect());
+                self.scene.sequence.shots.insert(at, Shot { id: sid, name, camera: self.camera });
                 self.changed();
                 Ok(json!(sid))
             }
@@ -3803,6 +3831,7 @@ fn image_colour(im: &ImageResource, p: Vec3) -> Option<Rgba> {
 const COMMANDS: &[(&str, &str)] = &[
     ("camera.view", "{view: front|back|left|right|top|bottom|nearest} snap to a perfect view (orthographic)"),
     ("camera.orbit", "{dx, dy} orbit by a drag in pixels"),
+    ("camera.roll", "{to | by} degrees: tilt the view about its axis (Clip Studio's camera twist); perfect views are upright"),
     ("camera.settle", "{tolerance?} after a rotate: yaw and pitch within tolerance degrees (default orbitSnap) of a quarter turn land on it"),
     ("camera.pan", "{dx, dy} pan by a drag in pixels"),
     ("camera.zoom", "{factor} zoom (>1 in)"),
@@ -3812,7 +3841,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("camera.frameAll", "frame every visible curve"),
     ("camera.frameSelected", "frame the selection"),
     ("camera.setOrbitPoint", "{x, y} pin the orbit point on what is under the screen point (empty space unpins, then resets)"),
-    ("camera.set", "{yaw, pitch, distance, focal, orthographic, target: [x,y,z]}"),
+    ("camera.set", "{yaw, pitch, distance, focal, orthographic, twist, target: [x,y,z]}"),
     ("camera.viewport", "{width, height} the 3D view's size in pixels"),
     (
         "tool.set",
@@ -3927,7 +3956,7 @@ const COMMANDS: &[(&str, &str)] = &[
         "assist.set",
         "{guideShape, drawInAir, showOrbit, pinOrbit, quickShape, scaleThickness, startOnCurves, orbitSnap 0–44} startOnCurves: a stroke started on a curve is drawn on the plane through that point (else the orbit point's); orbitSnap: degrees within which camera.settle lands on a quarter turn; scaleThickness: scaling curves scales their brush size; quickShape: hold the pen still at the end of a Draw stroke to snap it to a line, rectangle, polygon, circle or ellipse",
     ),
-    ("shot.add", "{after?} add a camera shot of the current view"),
+    ("shot.add", "{after?, name?} add a camera shot of the current view (also the note's camera list for 3D layers)"),
     ("shot.go", "{id}"),
     ("shot.delete", "{ids}"),
     ("shot.move", "{id, index}"),

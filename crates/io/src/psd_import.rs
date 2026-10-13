@@ -340,11 +340,21 @@ impl Ctx<'_> {
                 }
             }
         } else {
-            LayerContent::Raster(self.record_surface(rec, &name))
+            let px = self.record_surface(rec, &name);
+            // Our 3D layers: the pixels are the last render, the block the scene and camera.
+            match rec.block(&crate::model3d_map::KEY).and_then(|b| crate::model3d_map::read(&b.data, px.clone())) {
+                Some(m) => LayerContent::Model3d(m),
+                None => LayerContent::Raster(px),
+            }
         };
         let rendered = matches!(content, LayerContent::Shape(_) | LayerContent::Text(_) | LayerContent::Smart(_));
+        let model3d = matches!(content, LayerContent::Model3d(_));
         let mut l = Layer::new(name, content);
         l.psd_blocks = blocks;
+        if model3d {
+            // Rewritten from the layer on export.
+            l.psd_blocks.retain(|(k, _)| *k != crate::model3d_map::KEY);
+        }
         l.fill_cache = fill_cache;
         self.apply_common(&mut l, rec, None);
         // Mask flag bit 3: the user mask was rendered from vector data. For
