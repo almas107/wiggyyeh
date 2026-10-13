@@ -28,6 +28,9 @@ fn main() -> Result<(), String> {
     if std::env::args().nth(2).as_deref() == Some("fills") {
         return fills(&out);
     }
+    if std::env::args().nth(2).as_deref() == Some("cube") {
+        return cube(&out);
+    }
     if std::env::args().nth(2).as_deref() == Some("deepsea") {
         return showcase(&out, true);
     }
@@ -312,4 +315,61 @@ fn panel(out: &str) -> Result<(), String> {
         println!("{path}");
     }
     Ok(())
+}
+
+/// Metaspace's "How to draw a cube", step by step, all drawn in the air: the front face, then
+/// a quarter turn so it is seen edge on and lines drawn out of it (they land on the plane
+/// through the edge they start on), the other side the same way, then the back face's top and
+/// bottom from behind. `cube` writes the steps and a three-quarter view.
+fn cube(out: &str) -> Result<(), String> {
+    let mut e = Editor::new();
+    e.set_viewport(1280.0, 800.0);
+    e.stable = 0.0;
+    let line = |a: [f32; 2], b: [f32; 2]| -> serde_json::Value {
+        json!(
+            (0..=40)
+                .map(|i| {
+                    let t = i as f32 / 40.0;
+                    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+                })
+                .collect::<Vec<_>>()
+        )
+    };
+    let draw = |e: &mut Editor, a: [f32; 2], b: [f32; 2]| e.run("stroke.draw", &json!({"points": line(a, b)})).map(|_| ());
+    let shot = |e: &mut Editor, name: &str| -> Result<(), String> {
+        let f = e.render(0, true);
+        let tex = Textures { atlas: &e.atlas, images: HashMap::new() };
+        let pic = rasterize(&f, &tex, 1280, 800, Some(e.scene.environment.background), None)?;
+        let path = format!("{out}/{name}.png");
+        image::save_buffer(&path, &pic.rgba, pic.width, pic.height, image::ColorType::Rgba8).map_err(|e| e.to_string())?;
+        println!("{path}");
+        Ok(())
+    };
+    let (l, r, t, b) = (540.0, 740.0, 300.0, 500.0);
+    // 1. The front face, centred on the orbit point.
+    e.run("camera.view", &json!({"view": "front"}))?;
+    for (p, q) in [([l, t], [r, t]), ([r, t], [r, b]), ([r, b], [l, b]), ([l, b], [l, t])] {
+        draw(&mut e, p, q)?;
+    }
+    shot(&mut e, "cube-1-front")?;
+    // 2. Turn to the right: the face is a line in the middle. Draw out of its ends.
+    e.run("camera.view", &json!({"view": "right"}))?;
+    draw(&mut e, [640.0, t], [840.0, t])?;
+    draw(&mut e, [640.0, b], [840.0, b])?;
+    draw(&mut e, [840.0, t], [840.0, b])?;
+    shot(&mut e, "cube-2-right")?;
+    // 3. The other side, from the left.
+    e.run("camera.view", &json!({"view": "left"}))?;
+    draw(&mut e, [640.0, t], [440.0, t])?;
+    draw(&mut e, [640.0, b], [440.0, b])?;
+    draw(&mut e, [440.0, t], [440.0, b])?;
+    shot(&mut e, "cube-3-left")?;
+    // 4. From behind, only the top and bottom are left to draw.
+    e.run("camera.view", &json!({"view": "back"}))?;
+    draw(&mut e, [l, t], [r, t])?;
+    draw(&mut e, [l, b], [r, b])?;
+    shot(&mut e, "cube-4-back")?;
+    // 5. A three-quarter view in perspective.
+    e.run("camera.set", &json!({"yaw": 35.0, "pitch": 22.0, "orthographic": false, "target": [0.0, 0.0, -0.9]}))?;
+    shot(&mut e, "cube-5-three-quarter")
 }

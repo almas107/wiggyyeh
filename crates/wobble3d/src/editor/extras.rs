@@ -82,7 +82,9 @@ impl Editor {
     }
 
     /// Pull a new curve's first and last points onto the nearest end of another visible curve
-    /// within [`SNAP_PX`] on screen, so outlines close and lines meet.
+    /// within [`SNAP_PX`] on screen, so outlines close and lines meet. Only ends that are near
+    /// in 3D too: an end that merely lines up on screen with a point far in front or behind
+    /// would yank the curve's end out of its plane into a spike.
     pub(super) fn snap_curve_ends(&self, pts: &mut [Point]) {
         if !self.snap_ends || pts.len() < 2 {
             return;
@@ -103,10 +105,12 @@ impl Editor {
         let last = pts.len() - 1;
         for i in [0, last] {
             let Some(q) = pts.get(i).and_then(|p| view.project(p.p)) else { continue };
+            let reach = view.world_per_px(q.depth) * SNAP_PX * 2.0;
             let best = ends
                 .iter()
                 .map(|(x, y, p)| (((x - q.x).powi(2) + (y - q.y).powi(2)).sqrt(), p))
                 .filter(|(d, _)| *d <= SNAP_PX)
+                .filter(|(_, p)| pts.get(i).is_some_and(|own| (own.p - p.p).length() <= reach))
                 .min_by(|a, b| a.0.total_cmp(&b.0));
             if let (Some((_, target)), Some(slot)) = (best, pts.get_mut(i)) {
                 slot.p = target.p;

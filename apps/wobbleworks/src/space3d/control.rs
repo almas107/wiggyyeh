@@ -9,7 +9,13 @@
 //! | `w3d.state` | | revision, tool, counts, selection, camera, environment flags |
 //! | `w3d.render` | `{kind?: png / boilGif / turntableGif / shotsGif / boilMp4 / turntableMp4 / shotsMp4, scale?, frame?, transparent?, width?, height?}` | `{mime, base64, bytes}` |
 //!
-//! `w3d.show` (switch the 3D mode on or off) lives in the shell, which owns the mode.
+//! `w3d.show` (switch the 3D mode on or off), `w3d.shoot` and `w3d.retrace` (trace the note in
+//! 2D, see `trace`) live in the shell, which owns the mode and the PhotoCraft session:
+//!
+//! | Method | Params | Result |
+//! |---|---|---|
+//! | `w3d.shoot` | `{link?: pinned / live / shot, shot?, fit?: height / width / contain}` | `{layer, traceOn, link, size}`: a dimmed trace layer and an empty layer above it; switches to 2D |
+//! | `w3d.retrace` | `{layer?}` | `{updated}`: shoot the trace layers (or one) again |
 
 use base64::Engine as _;
 use serde_json::{Value, json};

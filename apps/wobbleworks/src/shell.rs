@@ -122,6 +122,9 @@ pub struct WobbleApp {
     pub space: Space3d,
     /// The 3D mode is showing instead of the 2D editor.
     pub three_d: bool,
+    /// The 3D note's revision and camera when the 3D mode was last entered or its trace layers
+    /// last shot: leaving 3D shoots the 2D picture's trace layers again if these moved.
+    trace_seen: (u64, wobbleworks_3d::camera::Camera),
     /// The control channel: requests from the transport, and where the ones PhotoCraft
     /// answers go (the 3D mode's `w3d.*` methods are answered here).
     control: Option<(Receiver<ControlRequest>, Sender<ControlRequest>)>,
@@ -177,6 +180,7 @@ impl WobbleApp {
             frames: 0,
             space: Space3d::new(),
             three_d: false,
+            trace_seen: (0, wobbleworks_3d::camera::Camera::default()),
             control: None,
         };
         w.app.ui.theme = theme::base_kind(&theme);
@@ -329,7 +333,12 @@ impl WobbleApp {
                 }
                 continue;
             }
-            let result = if req.method == "w3d.show" {
+            let result = if req.method == "w3d.shoot" {
+                self.control_shoot(&req.params)
+            } else if req.method == "w3d.retrace" {
+                let only = req.params.get("layer").and_then(Value::as_u64).map(photocraft_doc::LayerId);
+                crate::space3d::trace::refresh(&mut self.app.session, &mut self.space.ed, only).map(|n| json!({"updated": n}))
+            } else if req.method == "w3d.show" {
                 match req.params.get("on").and_then(Value::as_bool) {
                     Some(on) => {
                         self.set_three_d(on);
@@ -354,8 +363,53 @@ impl WobbleApp {
             // The 3D brush starts in the colour being painted with.
             let c = self.foreground();
             self.space.set_colour(c);
+            self.trace_seen = (self.space.ed.scene_revision, self.space.ed.camera);
+        }
+        if !on && self.three_d {
+            self.sync_traces();
         }
         self.three_d = on;
+    }
+
+    /// Shoot the 2D picture's 3D trace layers again if what they show changed in 3D: the note
+    /// (all of them) or the camera (those that follow the view or a shot).
+    fn sync_traces(&mut self) {
+        use crate::space3d::trace;
+        let (rev, cam) = (self.space.ed.scene_revision, self.space.ed.camera);
+        let (seen_rev, seen_cam) = self.trace_seen;
+        self.trace_seen = (rev, cam);
+        let session = &self.app.session;
+        let stale = (rev != seen_rev && trace::has_traces(session)) || (cam != seen_cam && trace::has_following(session));
+        if stale && let Err(e) = trace::refresh(&mut self.app.session, &mut self.space.ed, None) {
+            self.space.ed.status = e;
+        }
+    }
+
+    /// Shoot the 3D view into a 2D trace layer and go to 2D to trace it.
+    pub fn shoot_3d(&mut self, link: crate::space3d::trace::CameraLink, fit: crate::space3d::trace::Fit) -> Result<Value, String> {
+        // Bring the layers already there up to date first, so leaving 3D shoots nothing twice.
+        if self.three_d {
+            self.sync_traces();
+        }
+        let r = crate::space3d::trace::shoot(&mut self.app.session, &mut self.space.ed, link, fit)?;
+        self.set_three_d(false);
+        Ok(r)
+    }
+
+    /// `w3d.shoot {link?: pinned|live|shot, shot?, fit?: height|width|contain}`.
+    fn control_shoot(&mut self, p: &Value) -> Result<Value, String> {
+        use crate::space3d::trace::{CameraLink, Fit};
+        let link = match p.get("link").and_then(Value::as_str).unwrap_or("pinned") {
+            "pinned" => CameraLink::Pinned,
+            "live" => CameraLink::Live,
+            "shot" => CameraLink::Shot(p.get("shot").and_then(Value::as_u64).ok_or("`shot` (a shot id) is needed with link: shot")?),
+            other => return Err(format!("unknown link {other:?} (pinned, live or shot)")),
+        };
+        let fit = match p.get("fit").and_then(Value::as_str) {
+            None => self.space.trace_fit,
+            Some(f) => Fit::parse(f).ok_or_else(|| format!("unknown fit {f:?} (height, width or contain)"))?,
+        };
+        self.shoot_3d(link, fit)
     }
 
     /// Where the drawing is on screen (the 2D canvas or the 3D view).
@@ -1089,6 +1143,12 @@ impl eframe::App for WobbleApp {
                 self.app.stylus.pressure()
             };
             self.space.show(ui, &look, pressure);
+            if let Some(link) = self.space.shoot.take() {
+                let fit = self.space.trace_fit;
+                if let Err(e) = self.shoot_3d(link, fit) {
+                    self.space.ed.status = e;
+                }
+            }
             if std::mem::take(&mut self.space.leave) {
                 self.set_three_d(false);
             }

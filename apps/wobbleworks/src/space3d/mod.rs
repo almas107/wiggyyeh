@@ -16,6 +16,7 @@ pub mod mp4;
 mod panels;
 pub mod previews;
 pub mod shotstrip;
+pub mod trace;
 pub mod view;
 
 use std::sync::{Arc, Mutex};
@@ -134,6 +135,11 @@ pub struct Space3d {
     pub show_thirds: bool,
     /// Feather's Sequence bar: shot thumbnails and the timeline.
     pub strip: shotstrip::ShotStrip,
+    /// "Shoot" was asked for: the shell renders the view into a 2D trace layer (it owns the
+    /// PhotoCraft session) and switches to 2D.
+    pub shoot: Option<trace::CameraLink>,
+    /// How shots fit the picture's shape.
+    pub trace_fit: trace::Fit,
     /// Where the timeline was last dragged to (shot-to-shot legs).
     pub scrub: f64,
     /// Shots: the camera's position, turn and lens over the view.
@@ -272,6 +278,8 @@ impl Space3d {
             previews: previews::Previews::default(),
             show_thirds: false,
             strip: shotstrip::ShotStrip::default(),
+            shoot: None,
+            trace_fit: trace::Fit::default(),
             scrub: 0.0,
             show_camera_info: false,
             hover_group: None,
@@ -317,6 +325,10 @@ impl Space3d {
             "side": self.show_side,
             "emulateMmb": self.view.emulate_mmb,
             "orbitAboutPointer": self.view.orbit_about_pointer,
+            // 2: orbiting about the pointer became opt-in (it moved the drawing plane).
+            "placement": 2,
+            "startOnCurves": self.ed.start_on_curves,
+            "orbitSnap": self.ed.orbit_snap,
             "holdBoil": self.hold_boil_while_drawing,
             "stable": self.ed.stable,
             "feel": self.ed.feel,
@@ -348,8 +360,16 @@ impl Space3d {
         if let Some(b) = flag("emulateMmb") {
             self.view.emulate_mmb = b;
         }
-        if let Some(b) = flag("orbitAboutPointer") {
+        // Saved before orbiting about the pointer became opt-in: keep the new default.
+        let placement = v.get("placement").and_then(Value::as_u64).unwrap_or(1);
+        if let Some(b) = flag("orbitAboutPointer").filter(|_| placement >= 2) {
             self.view.orbit_about_pointer = b;
+        }
+        if let Some(b) = flag("startOnCurves") {
+            self.ed.start_on_curves = b;
+        }
+        if let Some(x) = v.get("orbitSnap").and_then(Value::as_f64).filter(|x| x.is_finite()) {
+            self.ed.orbit_snap = (x as f32).clamp(0.0, 44.0);
         }
         if let Some(b) = flag("holdBoil") {
             self.hold_boil_while_drawing = b;

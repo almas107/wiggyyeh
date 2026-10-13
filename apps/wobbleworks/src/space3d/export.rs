@@ -19,6 +19,18 @@ pub fn picture(ed: &mut Editor, camera: &Camera, frame: u32, scale: u32, transpa
     if w < 1.0 || h < 1.0 || w > MAX_SIDE as f32 || h > MAX_SIDE as f32 {
         return Err(format!("{w} × {h} is too big to export"));
     }
+    picture_at(ed, camera, frame, w as u32, h as u32, transparent)
+}
+
+/// The scene through `camera` at exactly `width` × `height` pixels (a document's size, say).
+/// The view's vertical field of view is kept, so the width decides how much is seen sideways
+/// (fit the lens first for anything else, see `trace::Fit`). `ed.scene` is only read and the
+/// live camera is put back: the 3D view is left exactly as it was.
+pub fn picture_at(ed: &mut Editor, camera: &Camera, frame: u32, width: u32, height: u32, transparent: bool) -> Result<Picture, String> {
+    if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
+        return Err(format!("{width} × {height} is too big to render (at most {MAX_SIDE} a side)"));
+    }
+    let (w, h) = (width as f32, height as f32);
     let mut cam = *camera;
     cam.viewport = wobbleworks_3d::camera::Viewport { width: w, height: h };
     let saved = ed.camera;

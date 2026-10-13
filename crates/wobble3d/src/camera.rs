@@ -218,6 +218,27 @@ impl Camera {
         self.sanitize();
     }
 
+    /// Metaspace's settle after a rotate: an angle within `tol` degrees of a quarter turn lands
+    /// on it exactly (yaw and pitch each), so a face turned "side on" is truly side on and the
+    /// drawing plane through the orbit point is a true floor, wall or side. The orbit point
+    /// stays where it is. Returns whether anything moved.
+    pub fn settle(&mut self, tol: f32) -> bool {
+        if !(tol.is_finite() && tol > 0.0) {
+            return false;
+        }
+        let tol = tol.min(44.0);
+        let snap = |a: f32| {
+            let q = (a / 90.0).round() * 90.0;
+            if (a - q).abs() <= tol { q } else { a }
+        };
+        let (yaw, pitch) = (snap(self.yaw), snap(self.pitch));
+        let moved = yaw != self.yaw || pitch != self.pitch;
+        self.yaw = yaw;
+        self.pitch = pitch;
+        self.sanitize();
+        moved
+    }
+
     /// Pan by a screen drag: the scene follows the pointer.
     pub fn pan(&mut self, dx: f32, dy: f32) {
         if !(dx.is_finite() && dy.is_finite()) {

@@ -23,6 +23,7 @@ use crate::transform::{self, Delta, GizmoKind, Handle, Modal, Mode, Part};
 
 mod extras;
 mod fills;
+pub use extras::SNAP_PX;
 pub use fills::{ShapeKind, shape_corners};
 
 pub const UNDO_MAX: usize = 256;
@@ -32,6 +33,8 @@ pub const HOLD_SECONDS: f64 = 0.45;
 pub const SHIFT_STABLE: f32 = 0.5;
 /// Most points in one command's point list.
 pub const PARAM_POINTS_MAX: usize = 100_000;
+/// Default [`Editor::orbit_snap`]: degrees from a quarter turn within which a rotate settles on it.
+pub const ORBIT_SNAP_DEG: f32 = 6.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
@@ -254,6 +257,9 @@ struct Live {
     adjusting: bool,
     mods: Mods,
     moved: bool,
+    /// The point a stroke drawn in the air is drawn through (it started on this point of a
+    /// curve); None = the orbit point.
+    anchor: Option<Vec3>,
 }
 
 #[derive(Debug, Clone)]
@@ -343,6 +349,13 @@ pub struct Editor {
     /// With no guide, draw on the plane through the orbit point facing the view (Feather needs a
     /// guide; WobbleWorks lets you sketch straight away).
     pub draw_in_air: bool,
+    /// Metaspace's placement: a stroke started on a curve (within [`SNAP_PX`] on screen) is drawn
+    /// on the view-facing plane through that point of the curve, so drawing out of a line seen
+    /// edge on continues it in 3D, instead of landing on the orbit point's plane.
+    pub start_on_curves: bool,
+    /// A rotate that ends within this many degrees of a quarter turn lands on it (0 = off), as
+    /// Metaspace's does: faces turned side on are exactly side on.
+    pub orbit_snap: f32,
     pub pin_orbit: bool,
     pub show_orbit: bool,
     pub liquify: Liquify,
@@ -461,6 +474,8 @@ impl Editor {
             shape_sides: 5,
             shape_filled: true,
             draw_in_air: true,
+            start_on_curves: true,
+            orbit_snap: ORBIT_SNAP_DEG,
             pin_orbit: false,
             show_orbit: true,
             liquify: Liquify::default(),
@@ -743,9 +758,72 @@ impl Editor {
         if self.draw_in_air {
             // The plane through the orbit point facing the view: its normal is kept with the
             // point (flat tape lies on it, and strokes on it layer in drawing order).
-            return Some((view.unproject_at(x, y, self.camera.target), view.back));
+            let anchor = self.live.as_ref().and_then(|l| l.anchor).unwrap_or(self.camera.target);
+            return Some((view.unproject_at(x, y, anchor), view.back));
         }
         None
+    }
+
+    /// The plane a stroke drawn in the air lands on: (a point on it, its normal). Strokes go on
+    /// the plane through the orbit point (the centre of the view) facing the camera, as in
+    /// Metaspace; a stroke being drawn from a curve uses the plane through where it started.
+    pub fn air_plane(&self) -> (Vec3, Vec3) {
+        let anchor = self.live.as_ref().and_then(|l| l.anchor).unwrap_or(self.camera.target);
+        (anchor, self.view().back)
+    }
+
+    /// Whether a press at a screen point would draw in the air (no guide, image or model there).
+    fn lands_in_air(&self, view: &View, x: f32, y: f32) -> bool {
+        if !self.draw_in_air || self.scene.active_guide().is_some() {
+            return false;
+        }
+        let (o, d) = view.ray(x, y);
+        ops::raycast_resources(&self.scene, o, d, true).is_none()
+    }
+
+    /// Where a stroke drawn in the air from (x, y) should be anchored: the nearest (frontmost)
+    /// point of a shown curve within [`SNAP_PX`] on screen, when [`Self::start_on_curves`] is on.
+    fn air_anchor_at(&self, x: f32, y: f32) -> Option<Vec3> {
+        if !self.start_on_curves || !(x.is_finite() && y.is_finite()) {
+            return None;
+        }
+        let view = self.view();
+        if !self.lands_in_air(&view, x, y) {
+            return None;
+        }
+        let mut best: Option<(f32, f32, Vec3)> = None;
+        for st in self.scene.strokes.iter().filter(|s| !s.is_fill() && self.scene.group_shown(s.group)) {
+            // Between samples too: a long straight line has few points.
+            for w in st.points.windows(2) {
+                let (Some(a), Some(b)) = (w.first(), w.get(1)) else { continue };
+                let (Some(pa), Some(pb)) = (view.project(a.p), view.project(b.p)) else { continue };
+                let (ex, ey) = (pb.x - pa.x, pb.y - pa.y);
+                let len2 = ex * ex + ey * ey;
+                let t = if len2 > 1e-6 { (((x - pa.x) * ex + (y - pa.y) * ey) / len2).clamp(0.0, 1.0) } else { 0.0 };
+                let (cx, cy) = (pa.x + ex * t, pa.y + ey * t);
+                let d2 = (cx - x).powi(2) + (cy - y).powi(2);
+                if d2 > SNAP_PX * SNAP_PX {
+                    continue;
+                }
+                let p = a.p + (b.p - a.p) * t;
+                let depth = pa.depth + (pb.depth - pa.depth) * t;
+                // Nearest on screen first; between equally near curves, the front one.
+                let better = best.is_none_or(|(bd2, bdepth, _)| d2 + 1.0 < bd2 || (d2 <= bd2 + 1.0 && depth < bdepth));
+                if better {
+                    best = Some((d2, depth, p));
+                }
+            }
+            if st.points.len() == 1
+                && let Some(q) = st.points.first()
+                && let Some(s) = view.project(q.p)
+            {
+                let d2 = (s.x - x).powi(2) + (s.y - y).powi(2);
+                if d2 <= SNAP_PX * SNAP_PX && best.is_none_or(|(bd2, _, _)| d2 < bd2) {
+                    best = Some((d2, s.depth, q.p));
+                }
+            }
+        }
+        best.map(|(_, _, p)| p)
     }
 
     fn can_draw(&mut self) -> bool {
@@ -977,6 +1055,7 @@ impl Editor {
             (true, false) => SHIFT_STABLE,
         };
         let stab = Stabilizer::new(if kind == LiveKind::Draw || kind == LiveKind::Guide || kind == LiveKind::Bend { stable } else { 0.0 });
+        let anchor = if kind == LiveKind::Draw { self.air_anchor_at(x, y) } else { None };
         self.live = Some(Live {
             kind,
             raw: Vec::new(),
@@ -991,6 +1070,7 @@ impl Editor {
             adjusting: false,
             mods,
             moved: false,
+            anchor,
         });
         match kind {
             LiveKind::Draw | LiveKind::Guide | LiveKind::Bend => {
@@ -2229,6 +2309,12 @@ impl Editor {
                 self.touch();
                 ok
             }
+            "camera.settle" => {
+                let tol = f(p, "tolerance").unwrap_or(self.orbit_snap);
+                let moved = self.camera.settle(tol);
+                self.touch();
+                Ok(json!({"snapped": moved, "yaw": self.camera.yaw, "pitch": self.camera.pitch}))
+            }
             "camera.pan" => {
                 self.camera.pan(f(p, "dx").unwrap_or(0.0), f(p, "dy").unwrap_or(0.0));
                 self.touch();
@@ -2533,6 +2619,7 @@ impl Editor {
                     adjusting: false,
                     mods,
                     moved: false,
+                    anchor: None,
                 };
                 self.finish_select(&live, x, y, mods);
                 self.touch();
@@ -3354,6 +3441,12 @@ impl Editor {
                 if let Some(v) = b(p, "pinOrbit") {
                     self.pin_orbit = v;
                 }
+                if let Some(v) = b(p, "startOnCurves") {
+                    self.start_on_curves = v;
+                }
+                if let Some(v) = f(p, "orbitSnap") {
+                    self.orbit_snap = v.clamp(0.0, 44.0);
+                }
                 if let Some(v) = b(p, "quickShape") {
                     self.quick_shape = v;
                 }
@@ -3710,6 +3803,7 @@ fn image_colour(im: &ImageResource, p: Vec3) -> Option<Rgba> {
 const COMMANDS: &[(&str, &str)] = &[
     ("camera.view", "{view: front|back|left|right|top|bottom|nearest} snap to a perfect view (orthographic)"),
     ("camera.orbit", "{dx, dy} orbit by a drag in pixels"),
+    ("camera.settle", "{tolerance?} after a rotate: yaw and pitch within tolerance degrees (default orbitSnap) of a quarter turn land on it"),
     ("camera.pan", "{dx, dy} pan by a drag in pixels"),
     ("camera.zoom", "{factor} zoom (>1 in)"),
     ("camera.fov", "{mm} or {by: percent} lens 10–500 mm"),
@@ -3831,7 +3925,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "assist.set",
-        "{guideShape, drawInAir, showOrbit, pinOrbit, quickShape, scaleThickness} scaleThickness: scaling curves scales their brush size; quickShape: hold the pen still at the end of a Draw stroke to snap it to a line, rectangle, polygon, circle or ellipse",
+        "{guideShape, drawInAir, showOrbit, pinOrbit, quickShape, scaleThickness, startOnCurves, orbitSnap 0–44} startOnCurves: a stroke started on a curve is drawn on the plane through that point (else the orbit point's); orbitSnap: degrees within which camera.settle lands on a quarter turn; scaleThickness: scaling curves scales their brush size; quickShape: hold the pen still at the end of a Draw stroke to snap it to a line, rectangle, polygon, circle or ellipse",
     ),
     ("shot.add", "{after?} add a camera shot of the current view"),
     ("shot.go", "{id}"),

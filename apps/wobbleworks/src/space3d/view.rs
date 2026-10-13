@@ -115,7 +115,9 @@ pub struct Viewport {
     orbit_pivot: Option<wobbleworks_3d::math::Vec3>,
     /// Right button pressed here: a drag orbits, a click (no drag) opens the context menu.
     right_click: Option<Pos2>,
-    /// Orbit drags turn about what is under the pointer (else about the orbit point).
+    /// Orbit drags turn about what is under the pointer (else about the orbit point). Off by
+    /// default: turning about the pointer moves the orbit point, and with it the plane strokes
+    /// drawn in the air land on. Metaspace always turns about the centre of the view.
     pub orbit_about_pointer: bool,
     /// When the last right click (no drag) was, for Feather's double tap: a double right
     /// click snaps to the nearest perfect view.
@@ -147,7 +149,7 @@ impl Default for Viewport {
             nav: None,
             orbit_pivot: None,
             right_click: None,
-            orbit_about_pointer: true,
+            orbit_about_pointer: false,
             last_right_click: f64::NEG_INFINITY,
             touch_tap: None,
             drawing: false,
@@ -163,6 +165,13 @@ impl Default for Viewport {
 }
 
 impl Viewport {
+    /// A navigation drag ended: a rotate settles on a quarter turn when it is close (Metaspace).
+    fn end_nav(&mut self, ed: &mut Editor) {
+        if let Some((NavMode::Orbit, _)) = self.nav.take() {
+            let _ = ed.run("camera.settle", &serde_json::Value::Null);
+        }
+    }
+
     fn pivot_at(&self, ed: &Editor, mode: NavMode, x: f32, y: f32) -> Option<wobbleworks_3d::math::Vec3> {
         (mode == NavMode::Orbit && self.orbit_about_pointer).then(|| ed.orbit_pivot(x, y)).flatten()
     }
@@ -213,7 +222,7 @@ impl Viewport {
                             {
                                 let _ = ed.run("camera.view", &serde_json::json!({"view": "nearest"}));
                             }
-                            self.nav = None;
+                            self.end_nav(ed);
                         }
                         (PointerButton::Primary, true) if over_us(*pos) => {
                             if self.emulate_mmb && modifiers.alt && !ed.in_modal() {
@@ -226,7 +235,7 @@ impl Viewport {
                         }
                         (PointerButton::Primary, false) => {
                             if self.nav.is_some() && self.emulate_mmb {
-                                self.nav = None;
+                                self.end_nav(ed);
                             }
                             if self.drawing {
                                 self.drawing = false;
@@ -249,7 +258,7 @@ impl Viewport {
                         }
                         (PointerButton::Secondary, false) => {
                             if let Some(start) = self.right_click.take() {
-                                self.nav = None;
+                                self.end_nav(ed);
                                 if start.distance(*pos) < 4.0 {
                                     if t - self.last_right_click < 0.35 {
                                         // Feather's one-finger double tap: the nearest perfect view.
@@ -395,6 +404,9 @@ impl Viewport {
         }
         let overlay = ed.overlay();
         self.overlay(&painter, &overlay, look, rect, ed);
+        if matches!(self.nav, Some((NavMode::Orbit, _))) {
+            centre_ruler(&painter, look, rect, ed);
+        }
         if resp.hovered() {
             let icon = match ed.tool {
                 _ if ed.in_modal() => egui::CursorIcon::Move,
@@ -580,4 +592,40 @@ pub fn navigator(ui: &mut Ui, ed: &mut Editor, look: &Look, rect: Rect) {
         resp.on_hover_text(tip);
         y += 36.0;
     }
+}
+
+/// Metaspace's centre ruler, shown while the view turns: tick marks through the point strokes
+/// drawn in the air land on (the orbit point), so you can line an edge up with it before
+/// drawing out of it.
+fn centre_ruler(painter: &egui::Painter, look: &Look, rect: Rect, ed: &Editor) {
+    if !ed.draw_in_air || ed.scene.active_guide().is_some() {
+        return;
+    }
+    let (anchor, _) = ed.air_plane();
+    let Some(c) = ed.view().project(anchor) else { return };
+    let (cx, cy) = (rect.min.x + c.x, rect.min.y + c.y);
+    if !rect.expand(1.0).contains(pos2(cx, cy)) {
+        return;
+    }
+    let ink = Stroke::new(1.0, look.t.ink.gamma_multiply(0.35));
+    const STEP: f32 = 14.0;
+    let ticks = (rect.height() / STEP) as i32 / 2 + 1;
+    for k in -ticks..=ticks {
+        let y = cy + k as f32 * STEP;
+        if y < rect.min.y || y > rect.max.y {
+            continue;
+        }
+        let half = if k % 5 == 0 { 7.0 } else { 3.5 };
+        painter.line_segment([pos2(cx - half, y), pos2(cx + half, y)], ink);
+    }
+    let ticks = (rect.width() / STEP) as i32 / 2 + 1;
+    for k in -ticks..=ticks {
+        let x = cx + k as f32 * STEP;
+        if x < rect.min.x || x > rect.max.x {
+            continue;
+        }
+        let half = if k % 5 == 0 { 7.0 } else { 3.5 };
+        painter.line_segment([pos2(x, rect.min.y + 2.0), pos2(x, rect.min.y + 2.0 + half * 1.5)], ink);
+    }
+    painter.circle_stroke(pos2(cx, cy), 4.0, ink);
 }

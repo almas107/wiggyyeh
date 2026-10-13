@@ -341,3 +341,104 @@ fn control_requests_drive_the_3d_mode_and_photocraft() {
     let r = ask(&mut h, "w3d.show", json!({}));
     assert_eq!(r["ok"], false, "{r}");
 }
+
+/// Metaspace's navigation: a right drag turns the view about its centre (the orbit point, where
+/// strokes drawn in the air land), even when it starts on a curve, and a turn that ends close to
+/// a quarter turn lands on it.
+#[test]
+fn right_drag_turns_about_the_centre_and_settles_on_quarter_turns() {
+    let mut h = harness();
+    let c = view_centre(&h);
+    let line: Vec<Pos2> = (0..20).map(|i| pos2(c.x + 120.0 + i as f32 * 6.0, c.y - 80.0)).collect();
+    drag(&mut h, &line, PointerButton::Primary);
+    h.run_steps(2);
+    assert_eq!(h.state().space.ed.scene.strokes.len(), 1);
+    {
+        let ed = &mut h.state_mut().space.ed;
+        ed.run("camera.set", &json!({"yaw": 0.0, "pitch": 0.0, "orthographic": false})).unwrap();
+    }
+    let target = h.state().space.ed.camera.target;
+    // Start on the curve; 10 px is 3.5°, within the settle tolerance.
+    let start = pos2(c.x + 150.0, c.y - 80.0);
+    drag(&mut h, &[start, pos2(start.x + 5.0, start.y), pos2(start.x + 10.0, start.y)], PointerButton::Secondary);
+    h.run_steps(2);
+    let cam = h.state().space.ed.camera;
+    assert_eq!(cam.target, target, "turning never moves the drawing plane");
+    assert_eq!((cam.yaw, cam.pitch), (0.0, 0.0), "settled back on the front");
+    // A long turn stays where it was let go.
+    drag(&mut h, &[start, pos2(start.x + 40.0, start.y), pos2(start.x + 80.0, start.y)], PointerButton::Secondary);
+    h.run_steps(2);
+    assert!((h.state().space.ed.camera.yaw + 28.0).abs() < 0.01, "{}", h.state().space.ed.camera.yaw);
+}
+
+/// Clip Studio's 3D layer as a reference: Shoot renders the 3D view into the 2D picture as a
+/// dimmed trace layer with a layer to trace on, switches to 2D and leaves the note alone; a
+/// live trace layer is shot again when you come back from orbiting.
+#[test]
+fn shoot_traces_the_3d_view_in_2d_and_live_layers_follow() {
+    use wobbleworks::space3d::trace::{self, CameraLink, Fit};
+    let (mut w, _) = app();
+    w.space.ed.stable = 0.0;
+    let line: Vec<[f32; 2]> = (0..40).map(|i| [500.0 + i as f32 * 8.0, 380.0]).collect();
+    w.space.ed.run("stroke.draw", &json!({"points": line})).unwrap();
+    let note = w.space.ed.scene.clone();
+    let r = w.shoot_3d(CameraLink::Live, Fit::Height).expect("shoot");
+    assert!(!w.three_d, "Shoot goes to 2D to trace");
+    assert!(w.space.ed.scene == note, "the note is untouched");
+    let id = photocraft_doc::LayerId(r["layer"].as_u64().unwrap());
+    let yaw = |w: &WobbleApp| w.app.session.active().and_then(|st| st.doc.layer(id)).and_then(trace::layer_camera).unwrap().yaw;
+    let shot_yaw = yaw(&w);
+    // Back in 3D, turn, and leave: the live layer follows.
+    w.set_three_d(true);
+    w.space.ed.run("camera.orbit", &json!({"dx": 120.0})).unwrap();
+    w.set_three_d(false);
+    assert_ne!(yaw(&w), shot_yaw);
+    assert_eq!(yaw(&w), w.space.ed.camera.yaw);
+}
+
+/// Look at the centre ruler mid-turn: `WOBBLE3D_SNAPSHOT=orbit.png cargo test -p wobbleworks
+/// --test three_d orbit_ruler_snapshot -- --ignored`.
+#[test]
+#[ignore = "needs a GPU or software renderer; run on demand"]
+fn orbit_ruler_snapshot() {
+    let out = std::env::var("WOBBLE3D_SNAPSHOT").unwrap_or_else(|_| "wobble3d-orbit.png".into());
+    let mut h = Harness::builder().with_size(egui::vec2(1440.0, 900.0)).with_pixels_per_point(1.0).with_max_steps(32).wgpu().build_eframe(|cc| {
+        photocraft_ui_egui::PhotocraftApp::setup_context(&cc.egui_ctx, Default::default());
+        let mut a = app().0;
+        if let Some(rs) = cc.wgpu_render_state.clone() {
+            a.space.set_gpu(&rs);
+            a.app.set_wgpu(rs);
+        }
+        a
+    });
+    h.run_steps(4);
+    {
+        let ed = &mut h.state_mut().space.ed;
+        ed.stable = 0.0;
+        ed.run("camera.view", &json!({"view": "front"})).unwrap();
+        let vp = ed.camera.viewport;
+        let (cx, cy) = (vp.width / 2.0, vp.height / 2.0);
+        let mut sq = Vec::new();
+        for (a, b) in
+            [([-100.0, -100.0], [100.0, -100.0]), ([100.0, -100.0], [100.0, 100.0]), ([100.0, 100.0], [-100.0, 100.0]), ([-100.0, 100.0], [-100.0, -100.0])]
+        {
+            for i in 0..20 {
+                let t = i as f32 / 20.0;
+                sq.push([cx + a[0] + (b[0] - a[0]) * t, cy + a[1] + (b[1] - a[1]) * t]);
+            }
+        }
+        ed.run("stroke.draw", &json!({"points": sq})).unwrap();
+    }
+    h.run_steps(2);
+    // Hold a right drag part way through a turn and take the picture.
+    let c = view_centre(&h);
+    h.input_mut().events.push(Event::PointerMoved(c));
+    h.step();
+    button(&mut h, c, PointerButton::Secondary, true);
+    for i in 1..=8 {
+        h.input_mut().events.push(Event::PointerMoved(pos2(c.x - i as f32 * 20.0, c.y)));
+        h.step();
+    }
+    h.run_steps(4);
+    h.render().unwrap().save(&out).unwrap();
+}

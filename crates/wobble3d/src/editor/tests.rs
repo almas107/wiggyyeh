@@ -908,3 +908,95 @@ fn shots_scrub_rename_and_thumbnail() {
     assert!(e.run("shot.thumbnail", &json!({"id": 424_242})).is_err());
     assert!(e.run("shot.thumbnail", &json!({"id": a, "width": 1_000_000, "height": 0})).is_ok(), "sizes are clamped");
 }
+
+/// A square drawn facing the front, in the air, centred on the orbit point (z = 0).
+fn front_square(e: &mut Editor) -> f32 {
+    e.run("camera.view", &json!({"view": "front"})).expect("front");
+    let mut sq: Vec<[f32; 2]> = Vec::new();
+    for i in 0..=40 {
+        sq.push([540.0 + i as f32 * 5.0, 300.0]);
+    }
+    for i in 1..=40 {
+        sq.push([740.0, 300.0 + i as f32 * 5.0]);
+    }
+    for i in 1..=40 {
+        sq.push([740.0 - i as f32 * 5.0, 500.0]);
+    }
+    for i in 1..=40 {
+        sq.push([540.0, 500.0 - i as f32 * 5.0]);
+    }
+    e.run("stroke.draw", &json!({"points": pts(&sq)})).expect("square");
+    let st = e.scene.strokes.last().expect("square stroke");
+    assert!(st.points.iter().all(|p| p.p.z.abs() < 1e-3), "the square lies on the orbit point's plane");
+    e.view().world_per_px(e.camera.distance) * 100.0
+}
+
+#[test]
+fn metaspace_cube_a_line_drawn_out_of_an_edge_on_face_continues_from_it() {
+    // Metaspace's cube: draw the front face, turn the view a quarter turn so the face is seen
+    // edge on (a vertical line), then draw out of that line. The new line must start on the
+    // face's near edge and stay in the plane through it, where the eye says it is.
+    let mut e = ed();
+    let half = front_square(&mut e);
+    e.run("camera.view", &json!({"view": "right"})).expect("right");
+    // The face is a vertical line at the centre; the near edge is the one at x = +half.
+    let line: Vec<[f32; 2]> = (0..30).map(|i| [640.0 + i as f32 * 6.0, 330.0]).collect();
+    e.run("stroke.draw", &json!({"points": pts(&line)})).expect("draw out of the face");
+    let st = e.scene.strokes.last().expect("new stroke");
+    for p in &st.points {
+        assert!((p.p.x - half).abs() < half * 0.02, "on the plane through the near edge: x = {} (edge {half})", p.p.x);
+    }
+    let start = st.points.first().expect("start").p;
+    assert!(start.z.abs() < half * 0.05, "starts on the face: {start:?}");
+
+    // Without it, the line lands on the orbit point's plane (x = 0), through the face's middle.
+    let mut e = ed();
+    e.start_on_curves = false;
+    front_square(&mut e);
+    e.run("camera.view", &json!({"view": "right"})).expect("right");
+    e.run("stroke.draw", &json!({"points": pts(&line)})).expect("draw");
+    let st = e.scene.strokes.last().expect("new stroke");
+    assert!(st.points.iter().all(|p| p.p.x.abs() < 1e-3));
+}
+
+#[test]
+fn rotating_about_the_centre_keeps_the_drawing_plane_on_the_orbit_point() {
+    // Metaspace turns the view about the centre of the screen, where the drawing plane is: a
+    // turn never moves the plane, and settling lands exactly on the quarter turn.
+    let mut e = ed();
+    e.run("camera.set", &json!({"pitch": 4.0})).expect("pitch");
+    let target = e.camera.target;
+    e.run("camera.orbit", &json!({"dx": -(64.0 / 0.35)})).expect("orbit");
+    assert!((e.camera.yaw - 94.0).abs() < 0.01, "{}", e.camera.yaw);
+    let r = e.run("camera.settle", &Value::Null).expect("settle");
+    assert_eq!(r["snapped"], json!(true));
+    assert_eq!((e.camera.yaw, e.camera.pitch), (90.0, 0.0));
+    assert_eq!(e.camera.target, target);
+    let (p, n) = e.air_plane();
+    assert_eq!(p, target);
+    assert!((n.x - 1.0).abs() < 1e-5 && n.y.abs() < 1e-5, "a true side plane: {n:?}");
+    // Far from a quarter turn nothing moves; hostile tolerances are ignored.
+    e.run("camera.orbit", &json!({"dx": -(30.0 / 0.35)})).expect("orbit");
+    assert_eq!(e.run("camera.settle", &Value::Null).expect("settle")["snapped"], json!(false));
+    for tol in [f32::NAN, -5.0, 0.0] {
+        assert!(!e.camera.settle(tol));
+    }
+    e.run("assist.set", &json!({"orbitSnap": 1e9})).expect("set");
+    assert_eq!(e.orbit_snap, 44.0);
+}
+
+#[test]
+fn ends_only_snap_to_points_near_in_3d() {
+    // Seen edge on, the square's far edge lines up on screen with its near edge. A line ending
+    // there must not have its end pulled out of its plane to the far edge (a spike).
+    let mut e = ed();
+    e.start_on_curves = false;
+    let half = front_square(&mut e);
+    e.run("camera.view", &json!({"view": "right"})).expect("right");
+    // From x = 0's plane, end on the screen spot where the square's corners line up (y = 300).
+    let line: Vec<[f32; 2]> = (0..=30).map(|i| [460.0 + i as f32 * 6.0, 300.0]).collect();
+    e.run("stroke.draw", &json!({"points": pts(&line)})).expect("draw");
+    let st = e.scene.strokes.last().expect("stroke");
+    let end = st.points.last().expect("end").p;
+    assert!(end.x.abs() < 1e-3, "the end stays on its plane: {end:?} (corners at x = ±{half})");
+}

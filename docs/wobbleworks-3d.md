@@ -53,6 +53,52 @@ Status: **done**, **partial** (works, details differ), **open**.
 | Keyboard shortcuts | done (Blender) | Rebindable in the Keys tab |
 | (WobbleWorks) Agents | done | `w3d.*` control methods, MCP via `control_call` |
 
+## Where strokes land (Metaspace's placement, 2026-10-13)
+
+Source: Metaspace's "How to draw a cube" video (supplied by the user), read frame by frame with
+its captions: *"we align this center and use two fingers to rotate the view"*, *"now we can
+extend this just like so, and again align the center"*, *"for the final side we no longer need
+to draw the sides"*.
+
+What Metaspace does, and why its strokes land where the eye expects:
+
+1. **One drawing plane, and you can see where it is.** A stroke drawn in the air lands on the
+   plane through the centre of the view (the orbit point), facing the camera. While the view
+   turns, a ruler of tick marks runs through that centre, so you can see where the plane is.
+2. **The view always turns about that centre.** Turning never moves the plane. To draw a new
+   face you pan an existing edge onto the centre ("align the centre"), turn a quarter turn so the
+   face is seen edge on, and draw out of it.
+3. **Turns end on exact quarter turns.** In the video the square becomes a perfect line when seen
+   side on, so the new face is exactly at right angles.
+4. **Ortho** (parallel projection) to get the angles right, a perfect-view minimap, and a
+   line tool for straight edges.
+
+Why WobbleWorks missed: the view turned about **whatever was under the pointer** (on by
+default), which swings the orbit point, and with it the invisible drawing plane, somewhere you
+can't see. The next stroke then landed on that plane, not where you saw it start. End snapping
+made it worse: an end that lined up on screen with a far point was pulled there, leaving a
+spike.
+
+| Metaspace | WobbleWorks now |
+|---|---|
+| Strokes land on the plane through the view's centre | same (`Editor::air_plane`), as before |
+| The view turns about the centre | **default**: "Orbit around what's under the pointer" is now opt-in (Settings menu; old saved settings don't turn it back on) |
+| Centre ruler while turning | tick marks through the orbit point while a turn is held (`view.rs` `centre_ruler`) |
+| Turns land on quarter turns | `camera.settle` after every orbit drag: within 6° (`orbitSnap`, 0 turns it off) yaw and pitch each land on the quarter turn |
+| Align an edge with the centre, then draw out of it | **better**: start a stroke on a curve and it lands on the plane through that point of the curve ("Draw out of curves", `startOnCurves`, on by default), so no aligning is needed; of overlapping curves the front one wins, which is how "the final side" is drawn from behind |
+| (no spikes) | end snapping only joins ends that are near in 3D, not just on screen |
+
+`cargo run -p wobbleworks-3d --example render -- out cube` draws the video's cube the same way
+(front face; right view, draw out of the edge-on face; left view; back view, top and bottom
+only) and writes each step and a three-quarter view. Tests:
+`metaspace_cube_a_line_drawn_out_of_an_edge_on_face_continues_from_it`,
+`rotating_about_the_centre_keeps_the_drawing_plane_on_the_orbit_point`,
+`ends_only_snap_to_points_near_in_3d` (core) and
+`right_drag_turns_about_the_centre_and_settles_on_quarter_turns` (real egui input).
+
+Not done from the video: the perfect-view minimap (the axis navigator does the job), and the
+"line tool" is QuickShape / Draw Shape here.
+
 ## What the tutorials taught (2026-10-12)
 
 Sources: Feather's own videos, supplied by the user as three zips (basic tutorials 1–3, advanced
@@ -192,6 +238,13 @@ The screenshot needs a GPU or `mesa-vulkan-drivers`; Linux builds need `libasoun
     rename, update, delete, + for this view), and a Play tab with previous / play / next and a
     timeline that scrubs the camera (`sequence.at`, `shot.rename`, `shot.thumbnail`).
   - 103 core tests, 55 app tests.
+- **2026-10-13, placement and tracing:** strokes land where they look like they start
+  (Metaspace's placement, above): the view turns about its centre by default, turns settle on
+  quarter turns, a stroke started on a curve continues from it in 3D, ends only snap to points
+  near in 3D, and a centre ruler shows while turning. Tracing the note in 2D (Clip Studio's 3D
+  layer as a reference rig): View › Trace in 2D › Shoot (pinned / live / from a shot), see
+  [wobbleworks-3d-trace.md](wobbleworks-3d-trace.md); `w3d.shoot`, `w3d.retrace`.
+  106 core tests, 53 app lib tests (+1 ignored), 10 3D UI tests (+2 ignored snapshots).
 - **Still open:** see "Gaps for any project" below; the egui-mesh fallback (no GPU) draws
   paint in drawing order without depth; more than four clipping bases in one view leave the
   rest unclipped; Feather's start line is green, ours orange; side-by-side feel tuning with
@@ -209,7 +262,9 @@ What a user would miss on most projects, most important first. S/M/L is the size
 3. OBJ / glTF export makes every curve a round tube: flat, ribbon, square and diamond lose
    their shape; opacity and glow are lost (no alphaMode / emissive). (M)
 4. No floating clipboard reference window to trace over (Basic 2 0:31, Clipboard video);
-   at most two images in the scene, so no front / side / top blueprint set. (M)
+   at most two images in the scene, so no front / side / top blueprint set. (M) *Partly
+   answered the other way round: the note can now be traced in 2D (Shoot, a trace layer under a
+   layer to draw on).*
 5. Touch screens: one finger always draws; no finger orbit, three-finger lens slide or
    pen-vs-finger split (Navigate, Draw with Finger). (M)
 

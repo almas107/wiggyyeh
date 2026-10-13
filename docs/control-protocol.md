@@ -226,6 +226,8 @@ WobbleWorks answers the 3D mode's methods itself:
 | `w3d.execute` | `{command, params?}` | the command's result (draw, guides, brushes, transforms, camera, files…) |
 | `w3d.state` | | revision, tool, counts, selection, camera, render mode, status |
 | `w3d.render` | `{kind?: png, boilGif, turntableGif, shotsGif, boilMp4, turntableMp4, shotsMp4; scale?, frame?, transparent?, width?, height?}` | `{mime, bytes, base64}` (MP4s are AV1) |
+| `w3d.shoot` | `{link?: pinned, live, shot; shot?, fit?: height, width, contain}` | `{layer, traceOn, link, size}`: render the 3D view at the picture's size into a dimmed, locked trace layer of the 2D picture with an empty layer above it (active), then switch to 2D. The note is not changed. `live` layers follow the 3D view, `shot` layers a camera shot |
+| `w3d.retrace` | `{layer?}` | `{updated}`: shoot the trace layers (or one layer) again; leaving the 3D mode does this for layers whose note or camera changed |
 
 Pictures come back as base64, so `w3d.*` never touches the file system. In MCP bridge mode
 (`photocraft-cli mcp --bridge 127.0.0.1:<port>`) agents reach them through `control_call`.

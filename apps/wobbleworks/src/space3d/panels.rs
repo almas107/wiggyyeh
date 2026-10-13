@@ -259,6 +259,38 @@ fn view_menu(s: &mut Space3d, ui: &mut Ui) {
         }
     }
     ui.separator();
+    ui.label(RichText::new("Trace in 2D").strong())
+        .on_hover_text("Render this view into a dimmed layer of the 2D picture, with an empty layer above it to trace on. The 3D note is not changed");
+    if ui.button("Shoot (pinned)").on_hover_text("The layer keeps this angle: orbit on freely, shoot again for more angles").clicked() {
+        s.shoot = Some(super::trace::CameraLink::Pinned);
+        ui.close();
+    }
+    if ui.button("Shoot live").on_hover_text("The layer follows the 3D view: it is shot again each time you go back to 2D").clicked() {
+        s.shoot = Some(super::trace::CameraLink::Live);
+        ui.close();
+    }
+    let shots: Vec<(u64, String)> = s.ed.scene.sequence.shots.iter().map(|sh| (sh.id, sh.name.clone())).collect();
+    if !shots.is_empty() {
+        ui.menu_button("Shoot from a camera shot", |ui| {
+            for (id, name) in shots {
+                if ui.button(name).clicked() {
+                    s.shoot = Some(super::trace::CameraLink::Shot(id));
+                    ui.close();
+                }
+            }
+        });
+    }
+    ui.horizontal(|ui| {
+        ui.label("Fit");
+        for (label, fit, tip) in [
+            ("Height", super::trace::Fit::Height, "Keep the view's height; the picture's width decides how much is seen sideways"),
+            ("Width", super::trace::Fit::Width, "Keep the view's width"),
+            ("All", super::trace::Fit::Contain, "Keep everything the view shows"),
+        ] {
+            ui.selectable_value(&mut s.trace_fit, fit, label).on_hover_text(tip);
+        }
+    });
+    ui.separator();
     if ui.checkbox(&mut s.strip.open, "Sequence (shot strip and timeline)").changed() {
         ui.close();
     }
@@ -292,8 +324,25 @@ fn view_menu(s: &mut Space3d, ui: &mut Ui) {
     {
         s.run("assist.set", json!({"scaleThickness": thick}));
     }
-    ui.checkbox(&mut s.view.orbit_about_pointer, "Orbit around what's under the pointer")
-        .on_hover_text("Right drag, middle drag and Alt+drag turn the view about the curve or guide you grabbed");
+    ui.checkbox(&mut s.view.orbit_about_pointer, "Orbit around what's under the pointer").on_hover_text(
+        "Right drag, middle drag and Alt+drag turn the view about the curve or guide you grabbed. Off: the view turns about its centre, where strokes drawn in the air land (Metaspace)",
+    );
+    let mut start = s.ed.start_on_curves;
+    if ui
+        .checkbox(&mut start, "Draw out of curves")
+        .on_hover_text("A stroke started on a curve continues from it in 3D: it lands on the plane through that point instead of the orbit point's")
+        .changed()
+    {
+        s.run("assist.set", json!({"startOnCurves": start}));
+    }
+    let mut settle = s.ed.orbit_snap > 0.0;
+    if ui
+        .checkbox(&mut settle, "Turns settle on quarter turns")
+        .on_hover_text("A turn that ends close to front, side, top or a 90° step lands on it exactly, so a face seen side on is truly side on")
+        .changed()
+    {
+        s.run("assist.set", json!({"orbitSnap": if settle { wobbleworks_3d::editor::ORBIT_SNAP_DEG } else { 0.0 }}));
+    }
     ui.checkbox(&mut s.left_handed, "Left-handed layout");
     ui.checkbox(&mut s.show_tools, "Toolbar");
     ui.checkbox(&mut s.show_brush, "Brush panel");
